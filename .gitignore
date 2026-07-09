@@ -1,0 +1,19 @@
+# Compiled Binaries
+stwp_server
+stwp_client
+
+# Objects and Archives
+*.o
+*.obj
+*.a
+*.lib
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
