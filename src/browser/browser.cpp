@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstring>
 #include <unordered_map>
+#include <cmath>
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -24,1128 +25,12 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 
-// Structural definitions for DOM and CSS
-struct CssStyle {
-    ImVec4 color = ImVec4(1, 1, 1, 1);
-    ImVec4 bg_color = ImVec4(0, 0, 0, 0);
-    bool has_bg = false;
-    bool has_color = false;
-    float border_radius = -1.0f;
-    ImVec4 gradient_start = ImVec4(0, 0, 0, 0);
-    ImVec4 gradient_end = ImVec4(0, 0, 0, 0);
-    bool has_gradient = false;
-    std::string text_align = "left";
-    
-    // Spacing and boundaries
-    float padding_left = 0.0f;
-    float padding_right = 0.0f;
-    float padding_top = 0.0f;
-    float padding_bottom = 0.0f;
-    
-    float margin_left = 0.0f;
-    float margin_right = 0.0f;
-    float margin_top = 0.0f;
-    float margin_bottom = 0.0f;
-    
-    float width = -1.0f;
-    float height = -1.0f;
-    
-    float border_width = 0.0f;
-    ImVec4 border_color = ImVec4(0, 0, 0, 0);
-    bool has_border_color = false;
-    
-    float font_size = 1.0f;
-    std::string display = "";
-};
-
-struct DomNode {
-    std::string tag;
-    std::string class_name;
-    std::string id;
-    std::string onclick;
-    std::string href;
-    std::string text_content;
-    std::string type;
-    std::string value;
-    std::string placeholder;
-    std::string inline_style;
-    bool has_inline_style = false;
-    CssStyle parsed_inline_style;
-    std::vector<DomNode> children;
-};
-
-struct FetchResult {
-    bool success = false;
-    int status_code = 0;
-    std::string status_text;
-    std::unordered_map<std::string, std::string> headers;
-    std::string body;
-    std::string error_message;
-    DomNode dom;
-    std::unordered_map<std::string, CssStyle> css_classes;
-};
-
-// Global State
-std::string current_url = "moon://localhost/index.html";
-char url_input[512] = "moon://localhost/index.html";
-std::string status_text = "Idle";
-bool is_fetching = false;
-
-std::mutex fetch_mutex;
-FetchResult active_page;
-bool new_page_ready = false;
-int active_socket_fd = -1;
-
-DomNode page_dom;
-std::unordered_map<std::string, CssStyle> css_classes;
-std::string alert_text = "";
-bool show_alert = false;
-
-// Parser helper functions
-inline std::string trim_spaces(std::string_view str) {
-    auto start = str.find_first_not_of(" \t\r\n");
-    if (start == std::string_view::npos) return "";
-    auto end = str.find_last_not_of(" \t\r\n");
-    return std::string(str.substr(start, end - start + 1));
-}
-
-inline std::string collapse_whitespace(std::string_view str) {
-    std::string result;
-    result.reserve(str.size());
-    bool last_was_space = false;
-    
-    auto start = str.find_first_not_of(" \t\r\n");
-    if (start == std::string_view::npos) return "";
-    auto end = str.find_last_not_of(" \t\r\n");
-    
-    for (size_t i = start; i <= end; ++i) {
-        char c = str[i];
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
-            if (!last_was_space) {
-                result += ' ';
-                last_was_space = true;
-            }
-        } else {
-            result += c;
-            last_was_space = false;
-        }
-    }
-    return result;
-}
-
-ImVec4 parse_color(std::string_view str) {
-    std::string s = trim_spaces(str);
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
-    
-    if (s == "white") return ImVec4(1, 1, 1, 1);
-    if (s == "black") return ImVec4(0, 0, 0, 1);
-    if (s == "red") return ImVec4(1, 0, 0, 1);
-    if (s == "green") return ImVec4(0, 1, 0, 1);
-    if (s == "blue") return ImVec4(0, 0, 1, 1);
-    if (s == "gray" || s == "grey") return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
-    if (s == "lightgray" || s == "lightgrey") return ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
-    if (s == "darkgray" || s == "darkgrey") return ImVec4(0.25f, 0.25f, 0.25f, 1.0f);
-    if (s == "yellow") return ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
-    
-    if (s.rfind("rgba", 0) == 0) {
-        try {
-            auto start = s.find('(');
-            auto end = s.find(')');
-            if (start != std::string::npos && end != std::string::npos) {
-                std::string parts = s.substr(start + 1, end - start - 1);
-                std::stringstream ss(parts);
-                std::string r_s, g_s, b_s, a_s;
-                std::getline(ss, r_s, ',');
-                std::getline(ss, g_s, ',');
-                std::getline(ss, b_s, ',');
-                std::getline(ss, a_s, ',');
-                return ImVec4(
-                    std::stof(r_s) / 255.0f,
-                    std::stof(g_s) / 255.0f,
-                    std::stof(b_s) / 255.0f,
-                    std::stof(a_s)
-                );
-            }
-        } catch(...) {}
-    }
-    if (s.rfind("rgb", 0) == 0) {
-        try {
-            auto start = s.find('(');
-            auto end = s.find(')');
-            if (start != std::string::npos && end != std::string::npos) {
-                std::string parts = s.substr(start + 1, end - start - 1);
-                std::stringstream ss(parts);
-                std::string r_s, g_s, b_s;
-                std::getline(ss, r_s, ',');
-                std::getline(ss, g_s, ',');
-                std::getline(ss, b_s, ',');
-                return ImVec4(
-                    std::stof(r_s) / 255.0f,
-                    std::stof(g_s) / 255.0f,
-                    std::stof(b_s) / 255.0f,
-                    1.0f
-                );
-            }
-        } catch(...) {}
-    }
-    if (!s.empty() && s[0] == '#') {
-        std::string hex = s.substr(1);
-        if (hex.length() == 3) {
-            std::string expanded = "";
-            expanded += hex[0]; expanded += hex[0];
-            expanded += hex[1]; expanded += hex[1];
-            expanded += hex[2]; expanded += hex[2];
-            hex = expanded;
-        }
-        if (hex.length() == 6) {
-            try {
-                unsigned int r = std::stoul(hex.substr(0, 2), nullptr, 16);
-                unsigned int g = std::stoul(hex.substr(2, 2), nullptr, 16);
-                unsigned int b = std::stoul(hex.substr(4, 2), nullptr, 16);
-                return ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
-            } catch (...) {}
-        }
-    }
-    return ImVec4(1, 1, 1, 1);
-}
-
-void parse_background(std::string_view value, CssStyle& style) {
-    std::string val_str = trim_spaces(value);
-    if (val_str.find("linear-gradient") != std::string::npos) {
-        style.has_gradient = true;
-        size_t first_hash = val_str.find('#');
-        if (first_hash != std::string::npos) {
-            size_t second_hash = val_str.find('#', first_hash + 1);
-            if (second_hash != std::string::npos) {
-                style.gradient_start = parse_color(val_str.substr(first_hash, 7));
-                style.gradient_end = parse_color(val_str.substr(second_hash, 7));
-            }
-        }
-    } else {
-        style.has_bg = true;
-        style.bg_color = parse_color(val_str);
-    }
-}
-
-void parse_css_properties(const std::string& properties, CssStyle& style) {
-    std::stringstream ss(properties);
-    std::string prop;
-    while (std::getline(ss, prop, ';')) {
-        auto colon = prop.find(':');
-        if (colon == std::string::npos) continue;
-        std::string name = trim_spaces(prop.substr(0, colon));
-        std::string val = trim_spaces(prop.substr(colon + 1));
-        
-        if (name == "background" || name == "background-color") {
-            parse_background(val, style);
-        } else if (name == "color") {
-            style.has_color = true;
-            style.color = parse_color(val);
-        } else if (name == "border-radius") {
-            try {
-                style.border_radius = std::stof(val);
-            } catch(...) {}
-        } else if (name == "text-align") {
-            style.text_align = val;
-        } else if (name == "padding") {
-            try {
-                float p = std::stof(val);
-                style.padding_left = style.padding_right = style.padding_top = style.padding_bottom = p;
-            } catch(...) {}
-        } else if (name == "padding-left") {
-            try { style.padding_left = std::stof(val); } catch(...) {}
-        } else if (name == "padding-right") {
-            try { style.padding_right = std::stof(val); } catch(...) {}
-        } else if (name == "padding-top") {
-            try { style.padding_top = std::stof(val); } catch(...) {}
-        } else if (name == "padding-bottom") {
-            try { style.padding_bottom = std::stof(val); } catch(...) {}
-        } else if (name == "margin") {
-            try {
-                float m = std::stof(val);
-                style.margin_left = style.margin_right = style.margin_top = style.margin_bottom = m;
-            } catch(...) {}
-        } else if (name == "margin-left") {
-            try { style.margin_left = std::stof(val); } catch(...) {}
-        } else if (name == "margin-right") {
-            try { style.margin_right = std::stof(val); } catch(...) {}
-        } else if (name == "margin-top") {
-            try { style.margin_top = std::stof(val); } catch(...) {}
-        } else if (name == "margin-bottom") {
-            try { style.margin_bottom = std::stof(val); } catch(...) {}
-        } else if (name == "width") {
-            try { style.width = std::stof(val); } catch(...) {}
-        } else if (name == "height") {
-            try { style.height = std::stof(val); } catch(...) {}
-        } else if (name == "border-width") {
-            try { style.border_width = std::stof(val); } catch(...) {}
-        } else if (name == "border-color") {
-            style.border_color = parse_color(val);
-            style.has_border_color = true;
-        } else if (name == "font-size") {
-            try {
-                style.font_size = std::stof(val);
-            } catch(...) {}
-        } else if (name == "display") {
-            style.display = val;
-        }
-    }
-}
-
-void parse_css(const std::string& css_content, std::unordered_map<std::string, CssStyle>& styles) {
-    size_t i = 0;
-    size_t len = css_content.size();
-    while (i < len) {
-        size_t open_brace = css_content.find('{', i);
-        if (open_brace == std::string::npos) break;
-        
-        std::string selector = trim_spaces(css_content.substr(i, open_brace - i));
-        size_t close_brace = css_content.find('}', open_brace);
-        if (close_brace == std::string::npos) break;
-        
-        std::string properties = css_content.substr(open_brace + 1, close_brace - open_brace - 1);
-        i = close_brace + 1;
-        
-        CssStyle style;
-        parse_css_properties(properties, style);
-        styles[selector] = style;
-    }
-}
-
-DomNode parse_html_to_dom(const std::string& html, std::string& css_content) {
-    DomNode root;
-    root.tag = "root";
-
-    std::vector<DomNode*> node_stack;
-    node_stack.push_back(&root);
-
-    size_t i = 0;
-    size_t len = html.size();
-
-    while (i < len) {
-        if (html[i] == '<') {
-            size_t tag_end = html.find('>', i);
-            if (tag_end == std::string::npos) {
-                node_stack.back()->text_content += html[i];
-                i++;
-                continue;
-            }
-
-            std::string tag_inner = html.substr(i + 1, tag_end - i - 1);
-            i = tag_end + 1;
-
-            if (tag_inner.empty()) continue;
-
-            // Check if closing tag
-            if (tag_inner[0] == '/') {
-                std::string tag_name = trim_spaces(tag_inner.substr(1));
-                std::transform(tag_name.begin(), tag_name.end(), tag_name.begin(),
-                               [](unsigned char c) { return std::tolower(c); });
-                
-                if (tag_name == "style" && node_stack.size() > 1 && node_stack.back()->tag == "style") {
-                    css_content = node_stack.back()->text_content;
-                }
-
-                if (node_stack.size() > 1 && node_stack.back()->tag == tag_name) {
-                    node_stack.pop_back();
-                }
-                continue;
-            }
-
-            bool self_closing = false;
-            if (tag_inner.back() == '/') {
-                self_closing = true;
-                tag_inner = tag_inner.substr(0, tag_inner.size() - 1);
-            }
-
-            // Extract tag name
-            size_t tag_name_end = 0;
-            while (tag_name_end < tag_inner.size() && !std::isspace(tag_inner[tag_name_end])) {
-                tag_name_end++;
-            }
-            std::string tag_name = tag_inner.substr(0, tag_name_end);
-            std::transform(tag_name.begin(), tag_name.end(), tag_name.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-
-            DomNode child;
-            child.tag = tag_name;
-
-            // Parse attributes
-            size_t attr_pos = tag_name_end;
-            while (attr_pos < tag_inner.size()) {
-                while (attr_pos < tag_inner.size() && std::isspace(tag_inner[attr_pos])) {
-                    attr_pos++;
-                }
-                if (attr_pos >= tag_inner.size()) break;
-                
-                size_t name_start = attr_pos;
-                while (attr_pos < tag_inner.size() && tag_inner[attr_pos] != '=' && !std::isspace(tag_inner[attr_pos])) {
-                    attr_pos++;
-                }
-                std::string attr_name = tag_inner.substr(name_start, attr_pos - name_start);
-                
-                while (attr_pos < tag_inner.size() && std::isspace(tag_inner[attr_pos])) {
-                    attr_pos++;
-                }
-                
-                std::string attr_val = "";
-                if (attr_pos < tag_inner.size() && tag_inner[attr_pos] == '=') {
-                    attr_pos++;
-                    while (attr_pos < tag_inner.size() && std::isspace(tag_inner[attr_pos])) {
-                        attr_pos++;
-                    }
-                    if (attr_pos < tag_inner.size()) {
-                        if (tag_inner[attr_pos] == '"' || tag_inner[attr_pos] == '\'') {
-                            char quote = tag_inner[attr_pos];
-                            attr_pos++;
-                            size_t val_start = attr_pos;
-                            while (attr_pos < tag_inner.size() && tag_inner[attr_pos] != quote) {
-                                attr_pos++;
-                            }
-                            attr_val = tag_inner.substr(val_start, attr_pos - val_start);
-                            if (attr_pos < tag_inner.size()) attr_pos++;
-                        } else {
-                            size_t val_start = attr_pos;
-                            while (attr_pos < tag_inner.size() && !std::isspace(tag_inner[attr_pos])) {
-                                attr_pos++;
-                            }
-                            attr_val = tag_inner.substr(val_start, attr_pos - val_start);
-                        }
-                    }
-                }
-                
-                if (attr_name == "class") {
-                    child.class_name = attr_val;
-                } else if (attr_name == "onclick") {
-                    child.onclick = attr_val;
-                } else if (attr_name == "href") {
-                    child.href = attr_val;
-                } else if (attr_name == "id") {
-                    child.id = attr_val;
-                } else if (attr_name == "style") {
-                    child.inline_style = attr_val;
-                    child.has_inline_style = true;
-                    parse_css_properties(attr_val, child.parsed_inline_style);
-                } else if (attr_name == "type") {
-                    child.type = attr_val;
-                } else if (attr_name == "value") {
-                    child.value = attr_val;
-                } else if (attr_name == "placeholder") {
-                    child.placeholder = attr_val;
-                }
-            }
-
-            node_stack.back()->children.push_back(std::move(child));
-            
-            if (!self_closing && tag_name != "hr" && tag_name != "img" && tag_name != "br" && tag_name != "meta" && tag_name != "link" && tag_name != "input") {
-                node_stack.push_back(&(node_stack.back()->children.back()));
-            }
-        } else {
-            node_stack.back()->text_content += html[i];
-            i++;
-        }
-    }
-
-    return root;
-}
-
-std::string extract_alert_message(const std::string& html) {
-    size_t script_start = html.find("<script>");
-    if (script_start != std::string::npos) {
-        size_t script_end = html.find("</script>", script_start);
-        if (script_end != std::string::npos) {
-            std::string script_content = html.substr(script_start + 8, script_end - script_start - 8);
-            size_t alert_pos = script_content.find("alert(");
-            if (alert_pos != std::string::npos) {
-                size_t val_start = script_content.find_first_of("\"'", alert_pos);
-                if (val_start != std::string::npos) {
-                    size_t val_end = script_content.find_first_of("\"'", val_start + 1);
-                    if (val_end != std::string::npos) {
-                        return script_content.substr(val_start + 1, val_end - val_start - 1);
-                    }
-                }
-            }
-        }
-    }
-    return "Action performed.";
-}
-
-void apply_style(CssStyle& dest, const CssStyle& src) {
-    if (src.has_color) {
-        dest.color = src.color;
-        dest.has_color = true;
-    }
-    if (src.has_bg) {
-        dest.bg_color = src.bg_color;
-        dest.has_bg = true;
-        dest.has_gradient = false;
-    }
-    if (src.has_gradient) {
-        dest.gradient_start = src.gradient_start;
-        dest.gradient_end = src.gradient_end;
-        dest.has_gradient = true;
-        dest.has_bg = false;
-    }
-    if (src.border_radius >= 0.0f) {
-        dest.border_radius = src.border_radius;
-    }
-    if (src.text_align != "left") {
-        dest.text_align = src.text_align;
-    }
-    if (src.padding_left > 0.0f) dest.padding_left = src.padding_left;
-    if (src.padding_right > 0.0f) dest.padding_right = src.padding_right;
-    if (src.padding_top > 0.0f) dest.padding_top = src.padding_top;
-    if (src.padding_bottom > 0.0f) dest.padding_bottom = src.padding_bottom;
-    
-    if (src.margin_left > 0.0f) dest.margin_left = src.margin_left;
-    if (src.margin_right > 0.0f) dest.margin_right = src.margin_right;
-    if (src.margin_top > 0.0f) dest.margin_top = src.margin_top;
-    if (src.margin_bottom > 0.0f) dest.margin_bottom = src.margin_bottom;
-    
-    if (src.width > -1.0f) dest.width = src.width;
-    if (src.height > -1.0f) dest.height = src.height;
-    if (src.border_width > 0.0f) dest.border_width = src.border_width;
-    if (src.has_border_color) {
-        dest.border_color = src.border_color;
-        dest.has_border_color = true;
-    }
-    if (src.font_size != 1.0f) dest.font_size = src.font_size;
-    if (!src.display.empty()) dest.display = src.display;
-}
-
-// Helpers for URL resolution, stylesheet scanning and title lookup
-std::string resolve_url(const std::string& base_url, const std::string& relative_url) {
-    if (relative_url.empty()) return base_url;
-    if (relative_url.find("://") != std::string::npos) {
-        return relative_url;
-    }
-    
-    auto base_opt = parse_url(base_url);
-    if (!base_opt) return relative_url;
-    
-    std::string scheme = base_opt->scheme;
-    std::string host = base_opt->host;
-    int port = base_opt->port;
-    
-    std::string path;
-    if (relative_url[0] == '/') {
-        path = relative_url;
-    } else {
-        std::string base_path = base_opt->path;
-        auto last_slash = base_path.find_last_of('/');
-        if (last_slash != std::string::npos) {
-            path = base_path.substr(0, last_slash + 1) + relative_url;
-        } else {
-            path = "/" + relative_url;
-        }
-    }
-    
-    return scheme + "://" + host + ":" + std::to_string(port) + path;
-}
-
-std::string find_title_in_dom(const DomNode& node) {
-    if (node.tag == "title") {
-        return node.text_content;
-    }
-    for (const auto& child : node.children) {
-        std::string t = find_title_in_dom(child);
-        if (!t.empty()) return t;
-    }
-    return "";
-}
-
-void find_stylesheets_in_dom(const DomNode& node, std::vector<std::string>& hrefs) {
-    if (node.tag == "link") {
-        if (!node.href.empty()) {
-            hrefs.push_back(node.href);
-        }
-    }
-    for (const auto& child : node.children) {
-        find_stylesheets_in_dom(child, hrefs);
-    }
-}
-
-bool is_inline_element(const DomNode& node, const CssStyle& merged) {
-    if (merged.display == "inline" || merged.display == "inline-block") return true;
-    if (merged.display == "block") return false;
-    
-    if (node.tag == "span" || node.tag == "a" || node.tag == "button" || 
-        node.tag == "input" || node.tag == "textarea" || node.tag == "select" || node.tag == "option") {
-        return true;
-    }
-    return false;
-}
-
-// Fetch Logic
-FetchResult perform_fetch(const std::string& url_str, bool is_main_resource = true) {
-    FetchResult result;
-    auto opt_parsed = parse_url(url_str);
-    if (!opt_parsed) {
-        result.error_message = "Invalid URL format.";
-        return result;
-    }
-
-    auto parsed = *opt_parsed;
-    if (parsed.scheme != "moon") {
-        result.error_message = "Only 'moon://' scheme is supported.";
-        return result;
-    }
-
-    struct addrinfo hints{}, *res_info;
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    std::string port_str = std::to_string(parsed.port);
-    int status = getaddrinfo(parsed.host.c_str(), port_str.c_str(), &hints, &res_info);
-    if (status != 0) {
-        result.error_message = "Host resolution failed: " + std::string(gai_strerror(status));
-        return result;
-    }
-
-    int socket_fd = -1;
-    struct addrinfo* rp;
-    for (rp = res_info; rp != nullptr; rp = rp->ai_next) {
-        socket_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (socket_fd == -1) continue;
-
-        {
-            std::lock_guard<std::mutex> lock(fetch_mutex);
-            // If the URL has changed in the meantime, abort early
-            if (is_main_resource && url_str != current_url) {
-                close(socket_fd);
-                freeaddrinfo(res_info);
-                result.error_message = "Cancelled";
-                return result;
-            }
-            if (is_main_resource) {
-                active_socket_fd = socket_fd;
-            }
-        }
-
-        struct timeval tv;
-        tv.tv_sec = 4;
-        tv.tv_usec = 0;
-        setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
-        setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
-
-        if (connect(socket_fd, rp->ai_addr, rp->ai_addrlen) != -1) {
-            break;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(fetch_mutex);
-            if (is_main_resource && active_socket_fd == socket_fd) {
-                active_socket_fd = -1;
-            }
-        }
-        close(socket_fd);
-    }
-
-    freeaddrinfo(res_info);
-
-    if (rp == nullptr) {
-        result.error_message = "Connection failed to " + parsed.host + ":" + port_str;
-        return result;
-    }
-
-    StwpRequest req;
-    req.method = "GET";
-    req.path = parsed.path;
-    req.headers["Host"] = parsed.host + (parsed.port == 8090 ? "" : ":" + port_str);
-    req.headers["User-Agent"] = "StarBrowser/1.0";
-    req.headers["Connection"] = "close";
-
-    std::string serialized_req = req.serialize();
-    if (send(socket_fd, serialized_req.data(), serialized_req.size(), 0) < 0) {
-        result.error_message = "Failed to send request.";
-        {
-            std::lock_guard<std::mutex> lock(fetch_mutex);
-            if (is_main_resource && active_socket_fd == socket_fd) active_socket_fd = -1;
-        }
-        close(socket_fd);
-        return result;
-    }
-
-    std::string raw_response;
-    char recv_buf[4096];
-    while (true) {
-        ssize_t bytes_received = recv(socket_fd, recv_buf, sizeof(recv_buf), 0);
-        if (bytes_received < 0) {
-            result.error_message = "Socket read failure.";
-            break;
-        }
-        if (bytes_received == 0) {
-            break;
-        }
-        raw_response.append(recv_buf, bytes_received);
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(fetch_mutex);
-        if (is_main_resource && active_socket_fd == socket_fd) {
-            active_socket_fd = -1;
-        }
-    }
-    close(socket_fd);
-
-    if (result.error_message == "Socket read failure.") {
-        return result;
-    }
-
-    StwpResponse res_msg;
-    size_t bytes_consumed = 0;
-    if (!parse_response(raw_response, bytes_consumed, res_msg)) {
-        result.error_message = "Failed to parse STWP response.";
-        return result;
-    }
-
-    result.success = true;
-    result.status_code = res_msg.status_code;
-    result.status_text = res_msg.status_text;
-    result.headers = res_msg.headers;
-    result.body = res_msg.body;
-    return result;
-}
-
-void start_async_fetch(const std::string& url_str) {
-    // Automatically prepend moon:// if missing
-    std::string final_url = url_str;
-    if (final_url.find("://") == std::string::npos) {
-        final_url = "moon://" + final_url;
-    }
-
-    // Cancel active socket to abort current download immediately
-    {
-        std::lock_guard<std::mutex> lock(fetch_mutex);
-        if (active_socket_fd != -1) {
-            close(active_socket_fd);
-            active_socket_fd = -1;
-        }
-        new_page_ready = false;
-    }
-
-    is_fetching = true;
-    status_text = "Fetching " + final_url + "...";
-    current_url = final_url;
-
-    std::strncpy(url_input, final_url.c_str(), sizeof(url_input) - 1);
-    url_input[sizeof(url_input) - 1] = '\0';
-
-    std::thread([final_url]() {
-        FetchResult res = perform_fetch(final_url, true);
-        
-        if (res.success) {
-            std::string css_content = "";
-            res.dom = parse_html_to_dom(res.body, css_content);
-            
-            // Scan for stylesheet links
-            std::vector<std::string> stylesheet_hrefs;
-            find_stylesheets_in_dom(res.dom, stylesheet_hrefs);
-            
-            for (const auto& href : stylesheet_hrefs) {
-                std::string sheet_url = resolve_url(final_url, href);
-                FetchResult sheet_res = perform_fetch(sheet_url, false);
-                if (sheet_res.success) {
-                    css_content += "\n" + sheet_res.body;
-                }
-            }
-            
-            parse_css(css_content, res.css_classes);
-        }
-        
-        std::lock_guard<std::mutex> lock(fetch_mutex);
-        // Only accept if this thread's URL is still the active URL
-        if (final_url == current_url) {
-            active_page = std::move(res);
-            new_page_ready = true;
-        }
-    }).detach();
-}
-
-// Hierarchical rendering logic
-// Hierarchical rendering logic
-void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_flow, int li_index = -1) {
-    // Filter tags that are headers or layout structural nodes
-    if (node.tag == "script" || node.tag == "style" || node.tag == "head" || node.tag == "title" || node.tag == "meta" || node.tag == "option") {
-        return;
-    }
-
-    CssStyle merged;
-    // Copy only inherited CSS properties
-    if (parent_style.has_color) {
-        merged.color = parent_style.color;
-        merged.has_color = true;
-    }
-    merged.font_size = parent_style.font_size;
-    merged.text_align = parent_style.text_align;
-    auto tag_it = css_classes.find(node.tag);
-    if (tag_it != css_classes.end()) {
-        apply_style(merged, tag_it->second);
-    }
-    if (!node.class_name.empty()) {
-        auto class_it = css_classes.find("." + node.class_name);
-        if (class_it != css_classes.end()) {
-            apply_style(merged, class_it->second);
-        }
-    }
-    if (node.has_inline_style) {
-        apply_style(merged, node.parsed_inline_style);
-    }
-
-    // Determine inline-ness
-    bool is_inline = is_inline_element(node, merged);
-    if (is_inline) {
-        if (is_inline_flow) {
-            ImGui::SameLine(0, 8.0f + merged.margin_left);
-        }
-        is_inline_flow = true;
-    } else {
-        is_inline_flow = false;
-    }
-
-    // Setup backgrounds, gradients, borders using ImGui channel splitting
-    bool draw_bg = (merged.has_bg || merged.has_gradient || (merged.border_width > 0.0f)) &&
-                   (node.tag != "input" && node.tag != "textarea" && node.tag != "select" && node.tag != "button" && node.tag != "a");
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    ImDrawListSplitter splitter;
-    ImVec2 start_pos = ImGui::GetCursorScreenPos();
-    ImVec2 content_start = start_pos;
-
-    // Font size scaling
-    float base_font_scale = merged.font_size;
-    if (node.tag == "h1") base_font_scale *= 1.8f;
-    else if (node.tag == "h2") base_font_scale *= 1.4f;
-    else if (node.tag == "h3") base_font_scale *= 1.2f;
-    else if (node.tag == "h4") base_font_scale *= 1.1f;
-    else if (node.tag == "h5") base_font_scale *= 1.0f;
-    else if (node.tag == "h6") base_font_scale *= 0.9f;
-
-    if (base_font_scale != 1.0f) {
-        ImGui::SetWindowFontScale(base_font_scale);
-    }
-
-    if (draw_bg) {
-        // Adjust for margins
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.margin_top);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.margin_left);
-        
-        content_start = ImGui::GetCursorScreenPos();
-        
-        // Adjust Y for padding top, X for padding left
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.padding_top);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.padding_left);
-        
-        splitter.Split(draw_list, 2);
-        splitter.SetCurrentChannel(draw_list, 1); // Content is drawn in channel 1
-    } else {
-        // Apply margins and padding even if no background
-        if (merged.margin_top > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.margin_top);
-        if (merged.margin_left > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.margin_left);
-        if (merged.padding_top > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.padding_top);
-        if (merged.padding_left > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.padding_left);
-    }
-
-    ImGui::BeginGroup();
-
-    // Render tag specific behaviors
-    if (node.tag == "div") {
-        bool child_inline_flow = false;
-        for (auto& child : node.children) {
-            render_node(child, merged, child_inline_flow);
-        }
-    } else if (node.tag == "ol") {
-        int index = 1;
-        bool child_inline_flow = false;
-        for (auto& child : node.children) {
-            if (child.tag == "li") {
-                render_node(child, merged, child_inline_flow, index++);
-            } else {
-                render_node(child, merged, child_inline_flow);
-            }
-        }
-    } else if (node.tag == "ul") {
-        bool child_inline_flow = false;
-        for (auto& child : node.children) {
-            render_node(child, merged, child_inline_flow);
-        }
-    } else if (node.tag == "li") {
-        std::string cleaned_text = collapse_whitespace(node.text_content);
-        if (li_index >= 0) {
-            ImGui::TextColored(merged.color, "%d. %s", li_index, cleaned_text.c_str());
-        } else {
-            ImGui::PushStyleColor(ImGuiCol_Text, merged.color);
-            ImGui::BulletText("%s", cleaned_text.c_str());
-            ImGui::PopStyleColor();
-        }
-    } else if (node.tag == "h1" || node.tag == "h2" || node.tag == "h3" || node.tag == "h4" || node.tag == "h5" || node.tag == "h6" || node.tag == "p" || node.tag == "span") {
-        std::string cleaned_text = collapse_whitespace(node.text_content);
-        if (!cleaned_text.empty()) {
-            if (merged.text_align == "center") {
-                float text_width = ImGui::CalcTextSize(cleaned_text.c_str()).x;
-                float avail_width = merged.width > 0.0f ? merged.width : ImGui::GetContentRegionAvail().x;
-                float offset = (avail_width - text_width) * 0.5f;
-                if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-            } else if (merged.text_align == "right") {
-                float text_width = ImGui::CalcTextSize(cleaned_text.c_str()).x;
-                float avail_width = merged.width > 0.0f ? merged.width : ImGui::GetContentRegionAvail().x;
-                float offset = avail_width - text_width;
-                if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-            }
-            
-            float wrap_width = merged.width > 0.0f ? merged.width : ImGui::GetContentRegionAvail().x;
-            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap_width);
-            
-            if (node.tag == "span") {
-                ImGui::TextColored(merged.color, "%s", cleaned_text.c_str());
-            } else {
-                ImGui::TextColored(merged.color, "%s", cleaned_text.c_str());
-                ImGui::Spacing();
-            }
-            
-            ImGui::PopTextWrapPos();
-        }
-        
-        // Also render inline children of headings/p if any
-        bool child_inline_flow = true;
-        for (auto& child : node.children) {
-            render_node(child, merged, child_inline_flow);
-        }
-    } else if (node.tag == "button") {
-        std::string cleaned_text = collapse_whitespace(node.text_content);
-        float btn_width = merged.width > 0.0f ? merged.width : (ImGui::CalcTextSize(cleaned_text.c_str()).x + 36.0f);
-        float btn_height = merged.height > 0.0f ? merged.height : 0.0f;
-        
-        ImVec4 btn_bg = merged.has_bg ? merged.bg_color : ImVec4(0.9f, 0.9f, 0.9f, 1.0f);
-        ImVec4 btn_text = merged.has_color ? merged.color : ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
-        
-        ImGui::PushStyleColor(ImGuiCol_Button, btn_bg);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(btn_bg.x * 0.95f, btn_bg.y * 0.95f, btn_bg.z * 0.95f, btn_bg.w));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(btn_bg.x * 0.9f, btn_bg.y * 0.9f, btn_bg.z * 0.9f, btn_bg.w));
-        ImGui::PushStyleColor(ImGuiCol_Text, btn_text);
-        
-        float rounding = merged.border_radius >= 0.0f ? merged.border_radius : 0.0f;
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, merged.border_width >= 0.0f ? merged.border_width : 0.0f);
-        
-        ImGui::PushStyleColor(ImGuiCol_Border, merged.has_border_color ? merged.border_color : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-        
-        std::string btn_id = cleaned_text + "##" + (node.id.empty() ? std::to_string((uintptr_t)&node) : node.id);
-        if (ImGui::Button(btn_id.c_str(), ImVec2(btn_width, btn_height))) {
-            if (!node.onclick.empty()) {
-                alert_text = extract_alert_message(node.onclick);
-                show_alert = true;
-            } else {
-                alert_text = "Button clicked.";
-                show_alert = true;
-            }
-        }
-        
-        ImGui::PopStyleColor(); // Pop border color
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor(4);
-    } else if (node.tag == "a") {
-        std::string cleaned_text = collapse_whitespace(node.text_content);
-        ImVec4 link_color = merged.has_color ? merged.color : ImVec4(0.1f, 0.3f, 0.85f, 1.0f);
-        ImGui::PushStyleColor(ImGuiCol_Text, link_color);
-        ImGui::Text("%s", cleaned_text.c_str());
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            ImVec2 min_pos = ImGui::GetItemRectMin();
-            ImVec2 max_pos = ImGui::GetItemRectMax();
-            min_pos.y = max_pos.y;
-            ImGui::GetWindowDrawList()->AddLine(min_pos, max_pos, ImGui::ColorConvertFloat4ToU32(link_color));
-            
-            if (ImGui::IsItemClicked()) {
-                std::string new_url = node.href;
-                if (new_url.find("://") == std::string::npos) {
-                    auto opt_curr = parse_url(current_url);
-                    if (opt_curr) {
-                        if (!new_url.empty() && new_url[0] != '/') {
-                            new_url = "/" + new_url;
-                        }
-                        new_url = opt_curr->scheme + "://" + opt_curr->host + ":" + std::to_string(opt_curr->port) + new_url;
-                    }
-                }
-                start_async_fetch(new_url);
-            }
-        }
-        ImGui::PopStyleColor();
-    } else if (node.tag == "hr") {
-        ImGui::Separator();
-        ImGui::Spacing();
-    } else if (node.tag == "input") {
-        std::string type = node.type;
-        if (type.empty() || type == "text" || type == "password") {
-            char buf[1024] = {0};
-            std::strncpy(buf, node.value.c_str(), sizeof(buf) - 1);
-            
-            float width = merged.width > 0.0f ? merged.width : 200.0f;
-            ImGui::PushItemWidth(width);
-            
-            ImGuiInputTextFlags flags = 0;
-            if (node.type == "password") {
-                flags |= ImGuiInputTextFlags_Password;
-            }
-            
-            std::string input_label = "##" + (node.id.empty() ? std::to_string((uintptr_t)&node) : node.id);
-            
-            float rounding = merged.border_radius >= 0.0f ? merged.border_radius : 0.0f;
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, merged.border_width >= 0.0f ? merged.border_width : 1.0f);
-            
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, merged.has_bg ? merged.bg_color : ImVec4(1,1,1,1));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, merged.has_bg ? ImVec4(merged.bg_color.x*0.95f, merged.bg_color.y*0.95f, merged.bg_color.z*0.95f, merged.bg_color.w) : ImVec4(0.95f,0.95f,0.95f,1));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgActive, merged.has_bg ? ImVec4(merged.bg_color.x*0.9f, merged.bg_color.y*0.9f, merged.bg_color.z*0.9f, merged.bg_color.w) : ImVec4(0.9f,0.9f,0.9f,1));
-            ImGui::PushStyleColor(ImGuiCol_Text, merged.has_color ? merged.color : ImVec4(0,0,0,1));
-            ImGui::PushStyleColor(ImGuiCol_Border, merged.has_border_color ? merged.border_color : ImVec4(0.7f,0.7f,0.7f,1));
-            ImGui::PushStyleColor(ImGuiCol_InputTextCursor, merged.has_color ? merged.color : ImVec4(0,0,0,1));
-            
-            if (ImGui::InputTextWithHint(input_label.c_str(), node.placeholder.c_str(), buf, sizeof(buf), flags)) {
-                node.value = buf;
-            }
-            
-            ImGui::PopStyleColor(6);
-            ImGui::PopStyleVar(2);
-            ImGui::PopItemWidth();
-        }
-    } else if (node.tag == "textarea") {
-        char buf[4096] = {0};
-        std::strncpy(buf, node.value.c_str(), sizeof(buf) - 1);
-        
-        float width = merged.width > 0.0f ? merged.width : 300.0f;
-        float height = merged.height > 0.0f ? merged.height : 100.0f;
-        
-        std::string label = "##" + (node.id.empty() ? std::to_string((uintptr_t)&node) : node.id);
-        
-        float rounding = merged.border_radius >= 0.0f ? merged.border_radius : 0.0f;
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, merged.border_width >= 0.0f ? merged.border_width : 1.0f);
-        
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, merged.has_bg ? merged.bg_color : ImVec4(1,1,1,1));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, merged.has_bg ? ImVec4(merged.bg_color.x*0.95f, merged.bg_color.y*0.95f, merged.bg_color.z*0.95f, merged.bg_color.w) : ImVec4(0.95f,0.95f,0.95f,1));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, merged.has_bg ? ImVec4(merged.bg_color.x*0.9f, merged.bg_color.y*0.9f, merged.bg_color.z*0.9f, merged.bg_color.w) : ImVec4(0.9f,0.9f,0.9f,1));
-        ImGui::PushStyleColor(ImGuiCol_Text, merged.has_color ? merged.color : ImVec4(0,0,0,1));
-        ImGui::PushStyleColor(ImGuiCol_Border, merged.has_border_color ? merged.border_color : ImVec4(0.7f,0.7f,0.7f,1));
-        ImGui::PushStyleColor(ImGuiCol_InputTextCursor, merged.has_color ? merged.color : ImVec4(0,0,0,1));
-        
-        if (ImGui::InputTextMultiline(label.c_str(), buf, sizeof(buf), ImVec2(width, height))) {
-            node.value = buf;
-        }
-        
-        ImGui::PopStyleColor(6);
-        ImGui::PopStyleVar(2);
-    } else if (node.tag == "select") {
-        std::vector<std::string> options;
-        std::vector<std::string> option_vals;
-        int current_item = -1;
-        
-        for (size_t idx = 0; idx < node.children.size(); idx++) {
-            if (node.children[idx].tag == "option") {
-                std::string opt_text = trim_spaces(node.children[idx].text_content);
-                std::string opt_val = node.children[idx].value.empty() ? opt_text : node.children[idx].value;
-                options.push_back(opt_text);
-                option_vals.push_back(opt_val);
-                
-                if (node.value == opt_val) {
-                    current_item = (int)idx;
-                }
-            }
-        }
-        
-        if (current_item == -1 && !option_vals.empty()) {
-            current_item = 0;
-            node.value = option_vals[0];
-        }
-        
-        std::string combo_label = "##" + (node.id.empty() ? std::to_string((uintptr_t)&node) : node.id);
-        
-        std::vector<const char*> items;
-        for (const auto& opt : options) {
-            items.push_back(opt.c_str());
-        }
-        
-        float width = merged.width > 0.0f ? merged.width : 150.0f;
-        ImGui::PushItemWidth(width);
-        
-        float rounding = merged.border_radius >= 0.0f ? merged.border_radius : 0.0f;
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, merged.border_width >= 0.0f ? merged.border_width : 1.0f);
-        
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, merged.has_bg ? merged.bg_color : ImVec4(1,1,1,1));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, merged.has_bg ? ImVec4(merged.bg_color.x*0.95f, merged.bg_color.y*0.95f, merged.bg_color.z*0.95f, merged.bg_color.w) : ImVec4(0.95f,0.95f,0.95f,1));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, merged.has_bg ? ImVec4(merged.bg_color.x*0.9f, merged.bg_color.y*0.9f, merged.bg_color.z*0.9f, merged.bg_color.w) : ImVec4(0.9f,0.9f,0.9f,1));
-        ImGui::PushStyleColor(ImGuiCol_Text, merged.has_color ? merged.color : ImVec4(0,0,0,1));
-        ImGui::PushStyleColor(ImGuiCol_Border, merged.has_border_color ? merged.border_color : ImVec4(0.7f,0.7f,0.7f,1));
-        
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.9f, 0.9f, 0.9f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.8f, 0.8f, 0.8f, 1.0f));
-        
-        if (!items.empty()) {
-            if (ImGui::Combo(combo_label.c_str(), &current_item, items.data(), items.size())) {
-                if (current_item >= 0 && current_item < (int)option_vals.size()) {
-                    node.value = option_vals[current_item];
-                }
-            }
-        }
-        
-        ImGui::PopStyleColor(8);
-        ImGui::PopStyleVar(2);
-        ImGui::PopItemWidth();
-    } else {
-        // Fallback recursive render
-        bool child_inline_flow = false;
-        for (auto& child : node.children) {
-            render_node(child, merged, child_inline_flow);
-        }
-    }
-
-    ImGui::EndGroup();
-
-    // End layout wrapping and draw background in bottom layer channel
-    if (draw_bg) {
-        ImVec2 min_p = content_start;
-        ImVec2 max_p = ImGui::GetItemRectMax();
-        
-        // Add padding bottom and right
-        max_p.x += merged.padding_right;
-        max_p.y += merged.padding_bottom;
-        
-        // Sizing override
-        if (merged.width > 0.0f) max_p.x = min_p.x + merged.width;
-        if (merged.height > 0.0f) max_p.y = min_p.y + merged.height;
-        
-        splitter.SetCurrentChannel(draw_list, 0); // Select background channel
-        
-        float rounding = merged.border_radius;
-        if (merged.has_gradient) {
-            ImU32 col_start = ImGui::ColorConvertFloat4ToU32(merged.gradient_start);
-            ImU32 col_end = ImGui::ColorConvertFloat4ToU32(merged.gradient_end);
-            draw_list->AddRectFilledMultiColor(min_p, max_p, col_start, col_start, col_end, col_end);
-        } else if (merged.has_bg) {
-            draw_list->AddRectFilled(min_p, max_p, ImGui::ColorConvertFloat4ToU32(merged.bg_color), rounding);
-        }
-        
-        if (merged.border_width > 0.0f && merged.has_border_color) {
-            draw_list->AddRect(min_p, max_p, ImGui::ColorConvertFloat4ToU32(merged.border_color), rounding, 0, merged.border_width);
-        }
-        
-        splitter.Merge(draw_list);
-        
-        // Position cursor after this block, including margins
-        ImGui::SetCursorScreenPos(ImVec2(start_pos.x, max_p.y + merged.margin_bottom));
-        ImGui::Dummy(ImVec2(0.0f, 0.0f));
-    } else {
-        // Adjust for margins and paddings on exit
-        if (merged.padding_bottom > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.padding_bottom);
-        if (merged.margin_bottom > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.margin_bottom);
-        ImGui::Dummy(ImVec2(0.0f, 0.0f));
-    }
-
-    if (base_font_scale != 1.0f) {
-        ImGui::SetWindowFontScale(1.0f);
-    }
-}
+#include "types.hpp"
+#include "globals.hpp"
+#include "theme.hpp"
+#include "parser.hpp"
+#include "fetcher.hpp"
+#include "renderer.hpp"
 
 int main() {
     if (!glfwInit()) {
@@ -1165,7 +50,8 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 #endif
 
-    GLFWwindow* window = glfwCreateWindow(1024, 768, "StarBrowser", nullptr, nullptr);
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    GLFWwindow* window = glfwCreateWindow(1024, 768, "Starmap", nullptr, nullptr);
     if (!window) {
         std::cerr << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -1179,7 +65,6 @@ int main() {
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    // Load custom TrueType Font (Arial) for smooth modern typography
     ImFont* font = io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Supplemental/Arial.ttf", 16.0f);
     if (font == nullptr) {
         io.Fonts->AddFontDefault();
@@ -1191,54 +76,89 @@ int main() {
     style.WindowRounding = 8.0f;
     style.FrameRounding = 6.0f;
     style.GrabRounding = 6.0f;
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.06f, 0.07f, 0.13f, 0.95f);
-    style.Colors[ImGuiCol_TitleBg] = ImVec4(0.08f, 0.10f, 0.20f, 1.00f);
-    style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.14f, 0.28f, 1.00f);
-    style.Colors[ImGuiCol_Button] = ImVec4(0.60f, 0.45f, 0.94f, 0.60f);
-    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.60f, 0.45f, 0.94f, 0.80f);
-    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.60f, 0.45f, 0.94f, 1.00f);
-    style.Colors[ImGuiCol_Header] = ImVec4(0.12f, 0.14f, 0.28f, 0.80f);
-    style.Colors[ImGuiCol_InputTextCursor] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
+    style.PopupRounding = 6.0f;
+    style.ChildRounding = 6.0f;
+
+    style.Colors[ImGuiCol_WindowBg] = Theme::window_bg;
+    style.Colors[ImGuiCol_ChildBg] = Theme::child_bg;
+    style.Colors[ImGuiCol_PopupBg] = Theme::popup_bg;
+    style.Colors[ImGuiCol_Border] = Theme::border;
+    style.Colors[ImGuiCol_BorderShadow] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+
+    style.Colors[ImGuiCol_FrameBg] = Theme::frame_bg;
+    style.Colors[ImGuiCol_FrameBgHovered] = Theme::frame_bg_hovered;
+    style.Colors[ImGuiCol_FrameBgActive] = Theme::frame_bg_active;
+
+    style.Colors[ImGuiCol_Header] = Theme::header;
+    style.Colors[ImGuiCol_HeaderHovered] = Theme::header_hovered;
+    style.Colors[ImGuiCol_HeaderActive] = Theme::header_active;
+
+    style.Colors[ImGuiCol_Button] = Theme::button;
+    style.Colors[ImGuiCol_ButtonHovered] = Theme::button_hovered;
+    style.Colors[ImGuiCol_ButtonActive] = Theme::button_active;
+
+    style.Colors[ImGuiCol_ScrollbarGrab] = Theme::scrollbar_grab;
+    style.Colors[ImGuiCol_ScrollbarGrabHovered] = Theme::scrollbar_grab_hovered;
+    style.Colors[ImGuiCol_ScrollbarGrabActive] = Theme::scrollbar_grab_active;
+
+    style.Colors[ImGuiCol_CheckMark] = Theme::checkmark;
+    style.Colors[ImGuiCol_SliderGrab] = Theme::slider_grab;
+    style.Colors[ImGuiCol_SliderGrabActive] = Theme::slider_grab_active;
+
+    style.Colors[ImGuiCol_InputTextCursor] = Theme::input_text_cursor;
+    style.Colors[ImGuiCol_Text] = Theme::text;
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
-    // Initial page load
-    start_async_fetch(current_url);
-
-    std::string page_raw_html = "";
+    Tab initial_tab;
+    initial_tab.id = next_tab_id++;
+    tabs.push_back(initial_tab);
+    active_tab_idx = 0;
+    start_async_fetch(tabs[active_tab_idx].id, tabs[active_tab_idx].current_url);
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        // Check for complete downloads
         {
             std::lock_guard<std::mutex> lock(fetch_mutex);
-            if (new_page_ready) {
-                is_fetching = false;
-                new_page_ready = false;
-                if (active_page.success) {
-                    status_text = "Success (" + std::to_string(active_page.status_code) + " " + active_page.status_text + ")";
-                    page_dom = std::move(active_page.dom);
-                    css_classes = std::move(active_page.css_classes);
-                    
-                    // Update window title
-                    std::string title = find_title_in_dom(page_dom);
-                    if (!title.empty()) {
-                        glfwSetWindowTitle(window, ("StarBrowser - " + trim_spaces(title)).c_str());
+            for (size_t idx = 0; idx < tabs.size(); idx++) {
+                auto& tab = tabs[idx];
+                if (tab.new_page_ready) {
+                    tab.is_fetching = false;
+                    tab.new_page_ready = false;
+                    tab.reset_scroll_next_frame = true;
+                    if (tab.active_page.success) {
+                        tab.status_text = "Success (" + std::to_string(tab.active_page.status_code) + " " + tab.active_page.status_text + ")";
+                        tab.page_dom = std::move(tab.active_page.dom);
+                        tab.css_classes = std::move(tab.active_page.css_classes);
+                        
+                        std::string parsed_title = find_title_in_dom(tab.page_dom);
+                        if (!parsed_title.empty()) {
+                            tab.title = trim_spaces(parsed_title);
+                        } else {
+                            auto opt_parsed = parse_url(tab.current_url);
+                            if (opt_parsed) {
+                                tab.title = opt_parsed->host + opt_parsed->path;
+                            } else {
+                                tab.title = "Starmap";
+                            }
+                        }
+                        
+                        tab.alert_text = extract_alert_message(tab.active_page.body);
                     } else {
-                        glfwSetWindowTitle(window, "StarBrowser");
+                        tab.status_text = "Error: " + tab.active_page.error_message;
+                        std::string error_html = "<h1>Error loading page</h1><p>" + tab.active_page.error_message + "</p>";
+                        std::string temp_css = "";
+                        tab.page_dom = parse_html_to_dom(error_html, temp_css);
+                        tab.css_classes.clear();
+                        tab.title = "Error Loading";
+                        tab.alert_text = "";
                     }
                     
-                    alert_text = extract_alert_message(active_page.body);
-                } else {
-                    status_text = "Error: " + active_page.error_message;
-                    std::string error_html = "<h1>Error loading page</h1><p>" + active_page.error_message + "</p>";
-                    std::string temp_css = "";
-                    page_dom = parse_html_to_dom(error_html, temp_css);
-                    css_classes.clear();
-                    glfwSetWindowTitle(window, "StarBrowser - Error");
-                    alert_text = "";
+                    if (idx == (size_t)active_tab_idx) {
+                        glfwSetWindowTitle(window, ("Starmap - " + tab.title).c_str());
+                    }
                 }
             }
         }
@@ -1247,88 +167,560 @@ int main() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        {
+            static int current_resize_dir = 0;
+            static ImVec2 resize_start_mouse;
+            static int resize_start_win_x, resize_start_win_y;
+            static int resize_start_win_w, resize_start_win_h;
+            
+            enum {
+                RESIZE_NONE = 0,
+                RESIZE_LEFT = 1 << 0,
+                RESIZE_RIGHT = 1 << 1,
+                RESIZE_TOP = 1 << 2,
+                RESIZE_BOTTOM = 1 << 3
+            };
+            
+            int ww, wh;
+            glfwGetWindowSize(window, &ww, &wh);
+            double mx, my;
+            glfwGetCursorPos(window, &mx, &my);
+            
+            const float border_size = 6.0f;
+            int hover_dir = RESIZE_NONE;
+            
+            if (!is_window_maximized) {
+                if (mx >= 0 && mx < ww && my >= 0 && my < wh) {
+                    if (mx < border_size) hover_dir |= RESIZE_LEFT;
+                    else if (mx >= ww - border_size) hover_dir |= RESIZE_RIGHT;
+                    
+                    if (my < border_size) hover_dir |= RESIZE_TOP;
+                    else if (my >= wh - border_size) hover_dir |= RESIZE_BOTTOM;
+                }
+            }
+            
+            if (current_resize_dir == RESIZE_NONE) {
+                if (hover_dir != RESIZE_NONE && ImGui::IsMouseClicked(0)) {
+                    current_resize_dir = hover_dir;
+                    resize_start_mouse = ImVec2((float)mx, (float)my);
+                    glfwGetWindowPos(window, &resize_start_win_x, &resize_start_win_y);
+                    glfwGetWindowSize(window, &resize_start_win_w, &resize_start_win_h);
+                }
+            }
+            
+            if (current_resize_dir != RESIZE_NONE) {
+                if (ImGui::IsMouseDown(0)) {
+                    int current_win_x, current_win_y;
+                    glfwGetWindowPos(window, &current_win_x, &current_win_y);
+                    double curr_mx, curr_my;
+                    glfwGetCursorPos(window, &curr_mx, &curr_my);
+                    
+                    ImVec2 start_mouse_screen = ImVec2((float)resize_start_win_x + resize_start_mouse.x, (float)resize_start_win_y + resize_start_mouse.y);
+                    ImVec2 curr_mouse_screen = ImVec2((float)current_win_x + (float)curr_mx, (float)current_win_y + (float)curr_my);
+                    ImVec2 delta = ImVec2(curr_mouse_screen.x - start_mouse_screen.x, curr_mouse_screen.y - start_mouse_screen.y);
+                    
+                    int new_w = resize_start_win_w;
+                    int new_h = resize_start_win_h;
+                    int new_x = resize_start_win_x;
+                    int new_y = resize_start_win_y;
+                    
+                    if (current_resize_dir & RESIZE_LEFT) {
+                        new_w = resize_start_win_w - (int)delta.x;
+                        new_x = resize_start_win_x + (int)delta.x;
+                    }
+                    if (current_resize_dir & RESIZE_RIGHT) {
+                        new_w = resize_start_win_w + (int)delta.x;
+                    }
+                    if (current_resize_dir & RESIZE_TOP) {
+                        new_h = resize_start_win_h - (int)delta.y;
+                        new_y = resize_start_win_y + (int)delta.y;
+                    }
+                    if (current_resize_dir & RESIZE_BOTTOM) {
+                        new_h = resize_start_win_h + (int)delta.y;
+                    }
+                    
+                    const int min_w = 400;
+                    const int min_h = 300;
+                    
+                    if (new_w < min_w) {
+                        if (current_resize_dir & RESIZE_LEFT) {
+                            new_x = resize_start_win_x + (resize_start_win_w - min_w);
+                        }
+                        new_w = min_w;
+                    }
+                    if (new_h < min_h) {
+                        if (current_resize_dir & RESIZE_TOP) {
+                            new_y = resize_start_win_y + (resize_start_win_h - min_h);
+                        }
+                        new_h = min_h;
+                    }
+                    
+                    glfwSetWindowPos(window, new_x, new_y);
+                    glfwSetWindowSize(window, new_w, new_h);
+                } else {
+                    current_resize_dir = RESIZE_NONE;
+                }
+            }
+            
+            int active_dir = (current_resize_dir != RESIZE_NONE) ? current_resize_dir : hover_dir;
+            if (active_dir != RESIZE_NONE) {
+                if ((active_dir & RESIZE_LEFT) && (active_dir & RESIZE_TOP)) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+                } else if ((active_dir & RESIZE_RIGHT) && (active_dir & RESIZE_BOTTOM)) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+                } else if ((active_dir & RESIZE_RIGHT) && (active_dir & RESIZE_TOP)) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNESW);
+                } else if ((active_dir & RESIZE_LEFT) && (active_dir & RESIZE_BOTTOM)) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNESW);
+                } else if (active_dir & (RESIZE_LEFT | RESIZE_RIGHT)) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                } else if (active_dir & (RESIZE_TOP | RESIZE_BOTTOM)) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                }
+            }
+        }
+
         int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
         
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y));
-        ImGui::Begin("StarBrowserWorkspace", nullptr,
+        ImGui::Begin("StarmapWorkspace", nullptr,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                     ImGuiWindowFlags_NoBringToFrontOnFocus);
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
         
-        // Navigation Bar
-        ImGui::PushItemWidth(-110.0f);
-        if (ImGui::InputText("##url", url_input, IM_ARRAYSIZE(url_input), ImGuiInputTextFlags_EnterReturnsTrue)) {
-            start_async_fetch(url_input);
+        // ----------------- TAB BAR -----------------
+        float tab_height = 34.0f;
+        float max_tab_width = 180.0f;
+        float min_tab_width = 36.0f;
+        
+        float window_avail_width = ImGui::GetContentRegionAvail().x;
+        float avail_w = window_avail_width - 140.0f; 
+        float tab_width = avail_w / tabs.size();
+        if (tab_width > max_tab_width) tab_width = max_tab_width;
+        if (tab_width < min_tab_width) tab_width = min_tab_width;
+
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
+        
+        ImVec2 bar_min = cursor_pos;
+        ImVec2 bar_max = ImVec2(bar_min.x + window_avail_width, bar_min.y + tab_height);
+        draw_list->AddRectFilled(bar_min, bar_max, Theme::bar_bg);
+
+        // Draw Custom macOS Traffic Lights
+        ImVec2 tl_pos = cursor_pos;
+        ImVec2 mouse_pos = ImGui::GetIO().MousePos;
+        bool mouse_clicked = ImGui::IsMouseClicked(0);
+        
+        bool red_hovered = (mouse_pos.x >= tl_pos.x + 12.0f && mouse_pos.x < tl_pos.x + 28.0f &&
+                            mouse_pos.y >= tl_pos.y + 9.0f && mouse_pos.y < tl_pos.y + 25.0f);
+        bool yellow_hovered = (mouse_pos.x >= tl_pos.x + 32.0f && mouse_pos.x < tl_pos.x + 48.0f &&
+                               mouse_pos.y >= tl_pos.y + 9.0f && mouse_pos.y < tl_pos.y + 25.0f);
+        bool green_hovered = (mouse_pos.x >= tl_pos.x + 52.0f && mouse_pos.x < tl_pos.x + 68.0f &&
+                              mouse_pos.y >= tl_pos.y + 9.0f && mouse_pos.y < tl_pos.y + 25.0f);
+
+        if (mouse_clicked) {
+            if (red_hovered) {
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            } else if (yellow_hovered) {
+                glfwIconifyWindow(window);
+            } else if (green_hovered) {
+                if (is_window_maximized) {
+                    glfwSetWindowMonitor(window, nullptr, restored_x, restored_y, restored_w, restored_h, 0);
+                    is_window_maximized = false;
+                } else {
+                    glfwGetWindowPos(window, &restored_x, &restored_y);
+                    glfwGetWindowSize(window, &restored_w, &restored_h);
+                    
+                    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+                    int count;
+                    GLFWmonitor** monitors = glfwGetMonitors(&count);
+                    if (count > 0) {
+                        int win_x, win_y;
+                        glfwGetWindowPos(window, &win_x, &win_y);
+                        for (int m = 0; m < count; ++m) {
+                            int mx, my;
+                            glfwGetMonitorPos(monitors[m], &mx, &my);
+                            const GLFWvidmode* mode = glfwGetVideoMode(monitors[m]);
+                            if (mode) {
+                                if (win_x >= mx && win_x < mx + mode->width && win_y >= my && win_y < my + mode->height) {
+                                    monitor = monitors[m];
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    int monitor_x, monitor_y, monitor_w, monitor_h;
+                    glfwGetMonitorWorkarea(monitor, &monitor_x, &monitor_y, &monitor_w, &monitor_h);
+                    glfwSetWindowMonitor(window, nullptr, monitor_x, monitor_y, monitor_w, monitor_h, 0);
+                    is_window_maximized = true;
+                }
+            }
+        }
+
+        draw_list->AddCircleFilled(ImVec2(tl_pos.x + 20.0f, tl_pos.y + 17.0f), 6.0f, red_hovered ? IM_COL32(255, 70, 70, 255) : IM_COL32(255, 95, 87, 255));
+        draw_list->AddCircleFilled(ImVec2(tl_pos.x + 40.0f, tl_pos.y + 17.0f), 6.0f, yellow_hovered ? IM_COL32(240, 170, 30, 255) : IM_COL32(255, 189, 46, 255));
+        draw_list->AddCircleFilled(ImVec2(tl_pos.x + 60.0f, tl_pos.y + 17.0f), 6.0f, green_hovered ? IM_COL32(30, 180, 50, 255) : IM_COL32(40, 201, 64, 255));
+
+        ImVec2 clip_min = ImVec2(cursor_pos.x + 80.0f, cursor_pos.y);
+        ImVec2 clip_max = ImVec2(cursor_pos.x + window_avail_width - 36.0f, cursor_pos.y + tab_height);
+        draw_list->PushClipRect(clip_min, clip_max, true);
+
+        int tab_to_close = -1;
+        int tab_to_select = -1;
+
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            auto& tab = tabs[i];
+            bool is_active = ((int)i == active_tab_idx);
+            
+            ImVec2 tab_min = ImVec2(cursor_pos.x + i * tab_width + 80.0f, cursor_pos.y);
+            ImVec2 tab_max = ImVec2(tab_min.x + tab_width, tab_min.y + tab_height);
+            bool tab_hovered = (mouse_pos.x >= tab_min.x && mouse_pos.x < tab_max.x &&
+                                mouse_pos.y >= tab_min.y && mouse_pos.y < tab_max.y);
+            
+            bool show_close = (tab_width >= 50.0f) || tab_hovered;
+            bool close_hovered = show_close && tab_hovered && (mouse_pos.x >= tab_max.x - 28.0f);
+            bool click_hovered = tab_hovered && !close_hovered;
+
+            if (mouse_clicked) {
+                if (close_hovered) {
+                    tab_to_close = (int)i;
+                } else if (click_hovered) {
+                    tab_to_select = (int)i;
+                }
+            }
+
+            float rounding = 6.0f;
+            ImU32 tab_bg_col;
+            if (is_active) {
+                tab_bg_col = Theme::tab_active_bg;
+            } else if (tab_hovered) {
+                tab_bg_col = Theme::tab_hover_bg;
+            } else {
+                tab_bg_col = Theme::tab_inactive_bg;
+            }
+
+            draw_list->AddRectFilled(tab_min, tab_max, tab_bg_col, rounding, ImDrawFlags_RoundCornersTop);
+
+            if (is_active) {
+                draw_list->AddRectFilled(ImVec2(tab_min.x, tab_min.y), ImVec2(tab_max.x, tab_min.y + 2.0f), Theme::tab_accent_stripe);
+            }
+
+            if (!is_active && i < tabs.size() - 1 && (int)i + 1 != active_tab_idx) {
+                draw_list->AddLine(
+                    ImVec2(tab_max.x, tab_min.y + 7.0f), 
+                    ImVec2(tab_max.x, tab_max.y - 7.0f), 
+                    Theme::tab_divider, 
+                    1.0f
+                );
+            }
+
+            float text_center_y = std::round(tab_min.y + tab_height * 0.5f);
+            if (tab_width >= 60.0f) {
+                float text_y = std::round(text_center_y - ImGui::GetFontSize() * 0.5f);
+                ImVec2 text_min = ImVec2(tab_min.x + 10.0f, text_y);
+                ImVec2 text_max = ImVec2(tab_max.x - 42.0f, text_y + ImGui::GetFontSize());
+                draw_list->PushClipRect(text_min, text_max, true);
+                draw_list->AddText(text_min, is_active ? IM_COL32(240, 240, 240, 255) : IM_COL32(170, 170, 180, 255), tab.title.c_str());
+                draw_list->PopClipRect();
+
+                ImVec2 mask_min = ImVec2(text_max.x - 20.0f, text_min.y);
+                ImVec2 mask_max = ImVec2(text_max.x, text_max.y);
+                ImU32 transparent_bg = tab_bg_col & 0x00FFFFFF;
+                draw_list->AddRectFilledMultiColor(
+                    mask_min, mask_max,
+                    transparent_bg, tab_bg_col,
+                    tab_bg_col, transparent_bg
+                );
+            }
+
+            if (show_close) {
+                ImVec2 x_center = ImVec2(std::round(tab_max.x - 14.0f), text_center_y);
+                float x_size = 6.0f;
+                float half_size = x_size * 0.5f;
+                
+                ImU32 x_color = close_hovered ? IM_COL32(240, 240, 240, 255) : (is_active ? IM_COL32(180, 180, 190, 255) : IM_COL32(120, 120, 130, 255));
+                if (close_hovered) {
+                    draw_list->AddCircleFilled(x_center, 7.0f, IM_COL32(120, 120, 120, 70));
+                }
+                draw_list->AddLine(ImVec2(x_center.x - half_size, x_center.y - half_size), ImVec2(x_center.x + half_size, x_center.y + half_size), x_color, 1.5f);
+                draw_list->AddLine(ImVec2(x_center.x - half_size, x_center.y + half_size), ImVec2(x_center.x + half_size, x_center.y - half_size), x_color, 1.5f);
+            }
+        }
+
+        draw_list->PopClipRect();
+
+        float max_plus_x = cursor_pos.x + window_avail_width - 36.0f;
+        float plus_x = cursor_pos.x + tabs.size() * tab_width + 80.0f + 8.0f;
+        if (plus_x > max_plus_x) plus_x = max_plus_x;
+
+        ImVec2 plus_min = ImVec2(plus_x, cursor_pos.y + 6.0f);
+        ImVec2 plus_max = ImVec2(plus_min.x + 22.0f, plus_min.y + 22.0f);
+        
+        bool plus_hovered = (mouse_pos.x >= plus_min.x && mouse_pos.x < plus_max.x &&
+                             mouse_pos.y >= plus_min.y && mouse_pos.y < plus_max.y);
+        bool plus_active = plus_hovered && ImGui::IsMouseDown(0);
+
+        if (plus_hovered && mouse_clicked) {
+            Tab new_tab;
+            new_tab.id = next_tab_id++;
+            tabs.push_back(new_tab);
+            active_tab_idx = (int)tabs.size() - 1;
+            start_async_fetch(tabs[active_tab_idx].id, tabs[active_tab_idx].current_url);
+            glfwSetWindowTitle(window, ("Starmap - " + tabs[active_tab_idx].title).c_str());
+        }
+        
+        ImU32 plus_bg = plus_active ? Theme::plus_bg_active : (plus_hovered ? Theme::plus_bg_hover : Theme::plus_bg_normal);
+        draw_list->AddRectFilled(plus_min, plus_max, plus_bg, 4.0f);
+        
+        ImVec2 plus_center = ImVec2((plus_min.x + plus_max.x) * 0.5f, (plus_min.y + plus_max.y) * 0.5f);
+        ImU32 plus_color = plus_hovered ? Theme::plus_color_hover : Theme::plus_color_normal;
+        draw_list->AddLine(ImVec2(plus_center.x - 5.0f, plus_center.y), ImVec2(plus_center.x + 5.0f, plus_center.y), plus_color, 1.5f);
+        draw_list->AddLine(ImVec2(plus_center.x, plus_center.y - 5.0f), ImVec2(plus_center.x, plus_center.y + 5.0f), plus_color, 1.5f);
+
+        if (tab_to_select != -1) {
+            active_tab_idx = tab_to_select;
+            glfwSetWindowTitle(window, ("Starmap - " + tabs[active_tab_idx].title).c_str());
+        }
+        if (tab_to_close != -1) {
+            if (tabs[tab_to_close].active_socket_fd != -1) {
+                close(tabs[tab_to_close].active_socket_fd);
+                tabs[tab_to_close].active_socket_fd = -1;
+            }
+            
+            tabs.erase(tabs.begin() + tab_to_close);
+            if (tabs.empty()) {
+                Tab new_tab;
+                new_tab.id = next_tab_id++;
+                tabs.push_back(new_tab);
+                active_tab_idx = 0;
+                start_async_fetch(tabs[active_tab_idx].id, tabs[active_tab_idx].current_url);
+            } else {
+                if (active_tab_idx >= (int)tabs.size()) {
+                    active_tab_idx = (int)tabs.size() - 1;
+                }
+            }
+            glfwSetWindowTitle(window, ("Starmap - " + tabs[active_tab_idx].title).c_str());
+        }
+
+        float active_tab_min_x = cursor_pos.x + active_tab_idx * tab_width + 80.0f;
+        float active_tab_max_x = active_tab_min_x + tab_width;
+        
+        draw_list->AddLine(
+            ImVec2(cursor_pos.x, cursor_pos.y + tab_height), 
+            ImVec2(active_tab_min_x, cursor_pos.y + tab_height), 
+            Theme::border_separator,
+            1.5f
+        );
+        draw_list->AddLine(
+            ImVec2(active_tab_max_x, cursor_pos.y + tab_height), 
+            ImVec2(cursor_pos.x + window_avail_width, cursor_pos.y + tab_height), 
+            Theme::border_separator,
+            1.5f
+        );
+
+        static bool is_dragging = false;
+        static double drag_start_x = 0;
+        static double drag_start_y = 0;
+        if (ImGui::IsMouseClicked(0)) {
+            ImVec2 m_pos = ImGui::GetIO().MousePos;
+            ImVec2 w_pos = ImGui::GetWindowPos();
+            if (m_pos.y >= w_pos.y + 6.0f && m_pos.y <= w_pos.y + tab_height && m_pos.x >= w_pos.x && m_pos.x < w_pos.x + window_avail_width) {
+                bool over_interactive = false;
+                if (m_pos.x < w_pos.x + 80.0f) over_interactive = true;
+                
+                for (size_t i = 0; i < tabs.size(); ++i) {
+                    float t_min_x = w_pos.x + 80.0f + i * tab_width;
+                    float t_max_x = t_min_x + tab_width;
+                    if (m_pos.x >= t_min_x && m_pos.x <= t_max_x) {
+                        over_interactive = true;
+                        break;
+                    }
+                }
+                
+                float plus_start_x = w_pos.x + 80.0f + tabs.size() * tab_width + 8.0f;
+                if (m_pos.x >= plus_start_x && m_pos.x <= plus_start_x + 30.0f) {
+                    over_interactive = true;
+                }
+                
+                if (!over_interactive) {
+                    if (is_window_maximized) {
+                        double mouse_x_on_screen, mouse_y_on_screen;
+                        glfwGetCursorPos(window, &mouse_x_on_screen, &mouse_y_on_screen);
+                        int win_x, win_y;
+                        glfwGetWindowPos(window, &win_x, &win_y);
+                        
+                        double absolute_mouse_x = win_x + mouse_x_on_screen;
+                        float click_pct = (float)mouse_x_on_screen / ImGui::GetWindowWidth();
+                        
+                        glfwSetWindowMonitor(window, nullptr, (int)(absolute_mouse_x - restored_w * click_pct), win_y + 10, restored_w, restored_h, 0);
+                        is_window_maximized = false;
+                    }
+                    is_dragging = true;
+                    glfwGetCursorPos(window, &drag_start_x, &drag_start_y);
+                }
+            }
+        }
+        
+        if (is_dragging) {
+            if (ImGui::IsMouseDown(0)) {
+                double curr_x, curr_y;
+                glfwGetCursorPos(window, &curr_x, &curr_y);
+                int win_x, win_y;
+                glfwGetWindowPos(window, &win_x, &win_y);
+                glfwSetWindowPos(window, win_x + (int)(curr_x - drag_start_x), win_y + (int)(curr_y - drag_start_y));
+            } else {
+                is_dragging = false;
+            }
+        }
+
+        Tab& active_tab = tabs[active_tab_idx];
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 6.0f));
+        
+        float btn_size = ImGui::GetFrameHeight();
+        float toolbar_height = btn_size + 16.0f;
+        
+        ImVec2 toolbar_min = ImVec2(cursor_pos.x, cursor_pos.y + tab_height);
+        ImVec2 toolbar_max = ImVec2(toolbar_min.x + window_avail_width, toolbar_min.y + toolbar_height);
+        draw_list->AddRectFilled(toolbar_min, toolbar_max, Theme::toolbar_bg);
+        
+        draw_list->AddLine(
+            ImVec2(toolbar_min.x, toolbar_max.y),
+            ImVec2(toolbar_max.x, toolbar_max.y),
+            Theme::border_separator,
+            1.0f
+        );
+
+        ImGui::SetCursorScreenPos(ImVec2(toolbar_min.x + 8.0f, toolbar_min.y + 8.0f));
+
+        ImGui::BeginGroup();
+        
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Theme::btn_hover_highlight);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, Theme::btn_active_highlight);
+        
+        float rounding = btn_size * 0.5f;
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
+        
+        bool back_disabled = (active_tab.history_index <= 0);
+        ImGui::BeginDisabled(back_disabled);
+        bool back_clicked = ImGui::Button("##back", ImVec2(btn_size, btn_size));
+        ImVec2 back_center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
+                                    (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
+        ImU32 back_color = back_disabled ? IM_COL32(75, 75, 75, 255) : ImGui::GetColorU32(ImGuiCol_Text);
+        DrawBackArrowIcon(back_center, back_color);
+        if (back_clicked) {
+            active_tab.history_index--;
+            start_async_fetch(active_tab.id, active_tab.navigation_history[active_tab.history_index], true);
+        }
+        ImGui::EndDisabled();
+        
+        ImGui::SameLine();
+        
+        bool forward_disabled = (active_tab.history_index >= (int)active_tab.navigation_history.size() - 1 || active_tab.navigation_history.empty());
+        ImGui::BeginDisabled(forward_disabled);
+        bool forward_clicked = ImGui::Button("##forward", ImVec2(btn_size, btn_size));
+        ImVec2 forward_center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
+                                       (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
+        ImU32 forward_color = forward_disabled ? IM_COL32(75, 75, 75, 255) : ImGui::GetColorU32(ImGuiCol_Text);
+        DrawForwardArrowIcon(forward_center, forward_color);
+        if (forward_clicked) {
+            active_tab.history_index++;
+            start_async_fetch(active_tab.id, active_tab.navigation_history[active_tab.history_index], true);
+        }
+        ImGui::EndDisabled();
+        
+        ImGui::SameLine();
+        
+        if (active_tab.is_fetching) {
+            ImGui::Dummy(ImVec2(btn_size, btn_size));
+            ImVec2 spinner_center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
+                                           (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
+            DrawSpinner(spinner_center, 6.0f, 2.0f, Theme::spinner);
+        } else {
+            bool reload_clicked = ImGui::Button("##reload", ImVec2(btn_size, btn_size));
+            ImVec2 reload_center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
+                                          (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
+            DrawReloadIcon(reload_center, 6.0f, ImGui::GetColorU32(ImGuiCol_Text));
+            if (reload_clicked) {
+                start_async_fetch(active_tab.id, active_tab.current_url);
+            }
+        }
+        
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(3);
+        
+        ImGui::SameLine();
+        
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, Theme::omnibox_bg);
+        
+        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - 8.0f);
+        if (ImGui::InputText("##url", active_tab.url_input, IM_ARRAYSIZE(active_tab.url_input), ImGuiInputTextFlags_EnterReturnsTrue)) {
+            start_async_fetch(active_tab.id, active_tab.url_input);
         }
         ImGui::PopItemWidth();
-        ImGui::SameLine();
-        if (ImGui::Button("Go", ImVec2(100, 0))) {
-            start_async_fetch(url_input);
-        }
-        ImGui::Spacing();
-
-        // Content Viewport
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 1));
-        ImGui::PushStyleColor(ImGuiCol_InputTextCursor, ImVec4(0, 0, 0, 1));
-        ImGui::BeginChild("RenderViewport", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 5), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
         
-        // Draw the document body background using ImGui DrawList
-        auto body_it = css_classes.find("body");
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+        
+        ImGui::EndGroup();
+        
+        ImGui::PopStyleVar();
+        
+        ImGui::SetCursorScreenPos(ImVec2(toolbar_min.x, toolbar_max.y + 4.0f));
+
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_InputTextCursor, ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
+        ImGui::BeginChild("RenderViewport", ImVec2(0, 0), false, 0);
+        if (active_tab.reset_scroll_next_frame) {
+            ImGui::SetScrollY(0.0f);
+            active_tab.reset_scroll_next_frame = false;
+        }
+        
+        auto body_it = active_tab.css_classes.find("body");
+        ImDrawList* vp_draw_list = ImGui::GetWindowDrawList();
         ImVec2 min_p = ImGui::GetWindowPos();
         ImVec2 max_p = ImVec2(min_p.x + ImGui::GetWindowWidth(), min_p.y + ImGui::GetWindowHeight());
         
-        if (body_it != css_classes.end()) {
+        float inner_radius = ImGui::GetStyle().ChildRounding;
+        
+        if (body_it != active_tab.css_classes.end()) {
             const auto& body_style = body_it->second;
             if (body_style.has_gradient) {
                 ImU32 col_start = ImGui::ColorConvertFloat4ToU32(body_style.gradient_start);
                 ImU32 col_end = ImGui::ColorConvertFloat4ToU32(body_style.gradient_end);
-                // Draw vertical gradient (using corners)
-                draw_list->AddRectFilledMultiColor(min_p, max_p, col_start, col_start, col_end, col_end);
+                vp_draw_list->AddRectFilledMultiColor(min_p, max_p, col_start, col_start, col_end, col_end);
             } else if (body_style.has_bg) {
-                draw_list->AddRectFilled(min_p, max_p, ImGui::ColorConvertFloat4ToU32(body_style.bg_color));
+                vp_draw_list->AddRectFilled(min_p, max_p, ImGui::ColorConvertFloat4ToU32(body_style.bg_color), inner_radius, ImDrawFlags_RoundCornersBottom);
             } else {
-                draw_list->AddRectFilled(min_p, max_p, IM_COL32(255, 255, 255, 255));
+                vp_draw_list->AddRectFilled(min_p, max_p, Theme::viewport_bg, inner_radius, ImDrawFlags_RoundCornersBottom);
             }
         } else {
-            // Default to white background
-            draw_list->AddRectFilled(min_p, max_p, IM_COL32(255, 255, 255, 255));
+            vp_draw_list->AddRectFilled(min_p, max_p, Theme::viewport_bg, inner_radius, ImDrawFlags_RoundCornersBottom);
         }
 
-        // Render DOM tree
         CssStyle default_style;
-        default_style.color = ImVec4(0, 0, 0, 1); // Default text color is black
+        default_style.color = ImVec4(0.95f, 0.95f, 0.95f, 1.0f);
         default_style.has_color = true;
         bool default_inline_flow = false;
-        render_node(page_dom, default_style, default_inline_flow);
+        render_node(active_tab.page_dom, default_style, default_inline_flow, active_tab);
 
         ImGui::EndChild();
         ImGui::PopStyleColor(2);
 
-        // Bottom Status Bar
-        ImGui::Separator();
-        if (is_fetching) {
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Loading...");
-        } else if (status_text.find("Success") != std::string::npos) {
-            ImGui::TextDisabled("Ready");
-        } else if (status_text.find("Error") != std::string::npos) {
-            ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "%s", status_text.c_str());
-        } else {
-            ImGui::TextDisabled("Ready");
-        }
-
-        // Alert Popup simulation
-        if (show_alert) {
+        if (active_tab.show_alert) {
             ImGui::OpenPopup("Alert");
         }
         if (ImGui::BeginPopupModal("Alert", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::Text("%s", alert_text.c_str());
+            ImGui::Text("%s", active_tab.alert_text.c_str());
             ImGui::Separator();
             ImGui::Spacing();
             if (ImGui::Button("OK", ImVec2(120, 0))) {
-                show_alert = false;
+                active_tab.show_alert = false;
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndPopup();
@@ -1336,7 +728,6 @@ int main() {
 
         ImGui::End();
 
-        // OpenGL rendering
         ImGui::Render();
         glViewport(0, 0, display_w, display_h);
         glClearColor(0.07f, 0.09f, 0.15f, 1.0f);

@@ -38,9 +38,9 @@ stwp_server: src/server/server.cpp src/common/stwp_msg.hpp
 stwp_client: src/client/client.cpp src/common/url_parser.hpp src/common/stwp_msg.hpp
 	$(CXX) $(CXXFLAGS) src/client/client.cpp -o stwp_client
 
-stwp_browser: src/browser/browser.cpp $(IMGUI_OBJS) src/common/url_parser.hpp src/common/stwp_msg.hpp
+stwp_browser: src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/renderer.cpp $(IMGUI_OBJS) src/common/url_parser.hpp src/common/stwp_msg.hpp
 	$(CXX) $(CXXFLAGS) $(GLFW_CFLAGS) $(IMGUI_INC) \
-		src/browser/browser.cpp $(IMGUI_OBJS) \
+		src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/renderer.cpp $(IMGUI_OBJS) \
 		$(GLFW_LIBS) -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo -o stwp_browser
 
 clean:
