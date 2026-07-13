@@ -1,4 +1,6 @@
 #include "globals.hpp"
+#include <algorithm>
+#include <cctype>
 
 std::vector<Tab> tabs;
 int active_tab_idx = 0;

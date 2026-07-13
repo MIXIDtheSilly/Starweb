@@ -29,7 +29,7 @@ int main(int argc, char* argv[]) {
 
     // Set up hints for address resolution
     struct addrinfo hints{}, *res_info;
-    hints.ai_family = AF_UNSPEC; // Allow both IPv4 and IPv6
+    hints.ai_family = AF_INET; // server only binds an AF_INET listening socket
     hints.ai_socktype = SOCK_STREAM;
 
     std::string port_str = std::to_string(parsed.port);

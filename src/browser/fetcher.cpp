@@ -3,10 +3,7 @@
 #include "parser.hpp"
 #include "../common/url_parser.hpp"
 #include "../common/stwp_msg.hpp"
-#include <unistd.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <arpa/inet.h>
+#include "../common/net.hpp"
 #include <thread>
 #include <cstring>
 #include <algorithm>
@@ -131,7 +128,7 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
     }
 
     struct addrinfo hints{}, *res_info;
-    hints.ai_family = AF_UNSPEC;
+    hints.ai_family = AF_INET; // server only binds an AF_INET listening socket
     hints.ai_socktype = SOCK_STREAM;
 
     std::string port_str = std::to_string(parsed.port);
@@ -141,23 +138,23 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
         return result;
     }
 
-    int socket_fd = -1;
+    net::socket_t socket_fd = net::kInvalidSocket;
     struct addrinfo* rp;
     for (rp = res_info; rp != nullptr; rp = rp->ai_next) {
         socket_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (socket_fd == -1) continue;
+        if (!net::is_valid(socket_fd)) continue;
 
         {
             std::lock_guard<std::mutex> lock(fetch_mutex);
             Tab* tab = find_tab_by_id(tab_id);
             if (!tab) {
-                close(socket_fd);
+                net::close(socket_fd);
                 freeaddrinfo(res_info);
                 result.error_message = "Tab closed";
                 return result;
             }
             if (is_main_resource && url_str != tab->current_url) {
-                close(socket_fd);
+                net::close(socket_fd);
                 freeaddrinfo(res_info);
                 result.error_message = "Cancelled";
                 return result;
@@ -167,11 +164,8 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
             }
         }
 
-        struct timeval tv;
-        tv.tv_sec = 4;
-        tv.tv_usec = 0;
-        setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
-        setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+        net::set_recv_timeout(socket_fd, 4);
+        net::set_send_timeout(socket_fd, 4);
 
         if (connect(socket_fd, rp->ai_addr, rp->ai_addrlen) != -1) {
             break;
@@ -181,10 +175,10 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
             std::lock_guard<std::mutex> lock(fetch_mutex);
             Tab* tab = find_tab_by_id(tab_id);
             if (tab && is_main_resource && tab->active_socket_fd == socket_fd) {
-                tab->active_socket_fd = -1;
+                tab->active_socket_fd = net::kInvalidSocket;
             }
         }
-        close(socket_fd);
+        net::close(socket_fd);
     }
 
     freeaddrinfo(res_info);
@@ -208,17 +202,17 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
             std::lock_guard<std::mutex> lock(fetch_mutex);
             Tab* tab = find_tab_by_id(tab_id);
             if (tab && is_main_resource && tab->active_socket_fd == socket_fd) {
-                tab->active_socket_fd = -1;
+                tab->active_socket_fd = net::kInvalidSocket;
             }
         }
-        close(socket_fd);
+        net::close(socket_fd);
         return result;
     }
 
     std::string raw_response;
     char recv_buf[4096];
     while (true) {
-        ssize_t bytes_received = recv(socket_fd, recv_buf, sizeof(recv_buf), 0);
+        net::ssize_t_ bytes_received = recv(socket_fd, recv_buf, sizeof(recv_buf), 0);
         if (bytes_received < 0) {
             result.error_message = "Socket read failure.";
             break;
@@ -233,10 +227,10 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
         std::lock_guard<std::mutex> lock(fetch_mutex);
         Tab* tab = find_tab_by_id(tab_id);
         if (tab && is_main_resource && tab->active_socket_fd == socket_fd) {
-            tab->active_socket_fd = -1;
+            tab->active_socket_fd = net::kInvalidSocket;
         }
     }
-    close(socket_fd);
+    net::close(socket_fd);
 
     if (result.error_message == "Socket read failure.") {
         return result;
@@ -293,9 +287,9 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
         tab->history_index = (int)tab->navigation_history.size() - 1;
     }
 
-    if (tab->active_socket_fd != -1) {
-        close(tab->active_socket_fd);
-        tab->active_socket_fd = -1;
+    if (net::is_valid(tab->active_socket_fd)) {
+        net::close(tab->active_socket_fd);
+        tab->active_socket_fd = net::kInvalidSocket;
     }
     tab->new_page_ready = false;
 

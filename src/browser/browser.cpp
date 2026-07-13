@@ -18,6 +18,25 @@
 #define GL_SILENCE_DEPRECATION
 #include <GLFW/glfw3.h>
 
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
+
+#if defined(_WIN32)
+// DWM's per-pixel-alpha compositing (GLFW_TRANSPARENT_FRAMEBUFFER) doesn't reach the
+// real screen under some display paths (e.g. remote/virtual display adapters), so the
+// rounded window shape is additionally enforced via a hard Win32 clip region, which
+// works regardless of compositor alpha blending.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
+
 #include "../common/url_parser.hpp"
 #include "../common/stwp_msg.hpp"
 #include "../common/net.hpp"
@@ -64,6 +83,7 @@ bool LoadTextureFromMemory(const unsigned char* image_data, int image_size, unsi
 }
 
 int main() {
+    net::Startup net_startup;
     std::filesystem::create_directories("cache");
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW" << std::endl;
@@ -83,6 +103,7 @@ int main() {
 #endif
 
     glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
     GLFWwindow* window = glfwCreateWindow(1024, 768, "Starmap", nullptr, nullptr);
     if (!window) {
         std::cerr << "Failed to create GLFW window" << std::endl;
@@ -97,30 +118,67 @@ int main() {
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
+#if defined(_WIN32)
+    const char* main_font_candidates[] = { "C:\\Windows\\Fonts\\arial.ttf" };
+    const char* mono_font_candidates[] = { "C:\\Windows\\Fonts\\cour.ttf" };
+    const char* cjk_fonts[] = {
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\msgothic.ttc",
+        "C:\\Windows\\Fonts\\simsun.ttc"
+    };
+#elif defined(__linux__)
+    const char* main_font_candidates[] = {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+    };
+    const char* mono_font_candidates[] = {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"
+    };
+    const char* cjk_fonts[] = {
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
+    };
+#else
+    const char* main_font_candidates[] = { "/System/Library/Fonts/Supplemental/Arial.ttf" };
+    const char* mono_font_candidates[] = { "/System/Library/Fonts/Supplemental/Courier New.ttf" };
     const char* cjk_fonts[] = {
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
         "/System/Library/Fonts/STHeiti Light.ttc"
     };
+#endif
     const char* cjk_font_path = nullptr;
     for (const char* path : cjk_fonts) {
-        if (access(path, F_OK) == 0) {
+        if (std::filesystem::exists(path)) {
             cjk_font_path = path;
             break;
         }
+    }
+    const char* main_font_path = nullptr;
+    for (const char* path : main_font_candidates) {
+        if (std::filesystem::exists(path)) { main_font_path = path; break; }
+    }
+    const char* mono_font_path = nullptr;
+    for (const char* path : mono_font_candidates) {
+        if (std::filesystem::exists(path)) { mono_font_path = path; break; }
     }
 
     ImFontConfig merge_cfg;
     merge_cfg.MergeMode = true;
     merge_cfg.PixelSnapH = true;
 
-    ImFont* font = io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Supplemental/Arial.ttf", 16.0f);
+    ImFont* font = main_font_path ? io.Fonts->AddFontFromFileTTF(main_font_path, 16.0f) : nullptr;
     if (font == nullptr) {
         font = io.Fonts->AddFontDefault();
     }
-    
-    mono_font = io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Supplemental/Courier New.ttf", 15.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
-    if (mono_font != nullptr && cjk_font_path != nullptr) {
+
+    mono_font = mono_font_path ? io.Fonts->AddFontFromFileTTF(mono_font_path, 15.0f, nullptr, io.Fonts->GetGlyphRangesJapanese()) : nullptr;
+    if (mono_font == nullptr) {
+        mono_font = io.Fonts->AddFontDefault();
+    }
+    if (cjk_font_path != nullptr) {
         io.Fonts->AddFontFromFileTTF(cjk_font_path, 15.0f, &merge_cfg, io.Fonts->GetGlyphRangesJapanese());
     }
 
@@ -369,7 +427,20 @@ int main() {
 
         int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
-        
+
+#if defined(_WIN32)
+        {
+            static int last_region_w = -1, last_region_h = -1;
+            if (display_w != last_region_w || display_h != last_region_h) {
+                HWND hwnd = glfwGetWin32Window(window);
+                HRGN region = CreateRoundRectRgn(0, 0, display_w, display_h, 16, 16);
+                SetWindowRgn(hwnd, region, TRUE); // ownership of region transfers to the window
+                last_region_w = display_w;
+                last_region_h = display_h;
+            }
+        }
+#endif
+
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y));
         ImGui::Begin("StarmapWorkspace", nullptr,
@@ -829,7 +900,7 @@ int main() {
 
         ImGui::Render();
         glViewport(0, 0, display_w, display_h);
-        glClearColor(0.07f, 0.09f, 0.15f, 1.0f);
+        glClearColor(0.07f, 0.09f, 0.15f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
