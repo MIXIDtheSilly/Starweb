@@ -1,5 +1,5 @@
-### <p style="font-size:32px">StarWeb</p>
-### <p style="font-size:20px">StarWeb is a custom web ecosystem built from scratch in C++.</p>
+# <p style="font-size:32px">StarWeb</p>
+## <p style="font-size:20px">StarWeb is a custom web ecosystem built from scratch in C++.</p>
 
 ### <p style="font-size:20px">StarWeb consists of 2 (important) elements: 
 - STWP (StarWeb Transfer Protocol) — A protocol similar in structure to HTTP but built entirely from scratch. URL format `moon://host:port/path` for fetching static files.
