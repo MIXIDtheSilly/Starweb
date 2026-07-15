@@ -24,10 +24,20 @@ target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 
 set(YOGA_DIR ${SRC}/thirdparty/yoga)
 file(GLOB_RECURSE YOGA_SRCS ${YOGA_DIR}/yoga/*.cpp)
+if(NOT YOGA_SRCS)
+    message(FATAL_ERROR
+        "No Yoga sources found under ${YOGA_DIR}/yoga.\n"
+        "The submodule is probably not checked out. Run:\n"
+        "  git submodule update --init --recursive")
+endif()
 add_library(yoga STATIC ${YOGA_SRCS})
 target_include_directories(yoga PUBLIC ${YOGA_DIR})
 target_compile_features(yoga PRIVATE cxx_std_20)
-target_compile_options(yoga PUBLIC -include ${SRC}/thirdparty/yoga_compat.hpp)
+if(MSVC)
+    target_compile_options(yoga PUBLIC /FI${SRC}/thirdparty/yoga_compat.hpp)
+else()
+    target_compile_options(yoga PUBLIC -include ${SRC}/thirdparty/yoga_compat.hpp)
+endif()
 
 set(LUA_DIR ${SRC}/thirdparty/lua)
 file(GLOB LUA_SRCS ${LUA_DIR}/*.c)
