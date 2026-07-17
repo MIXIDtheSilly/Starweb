@@ -39,7 +39,7 @@ namespace Theme {
     constexpr ImVec4 btn_active_highlight    = ImVec4(0.70f, 0.55f, 0.90f, 0.35f);
     
     constexpr ImVec4 spinner                 = ImVec4(0.75f, 0.60f, 0.95f, 1.00f);
-    constexpr ImVec4 omnibox_bg              = ImVec4(0.15f, 0.15f, 0.15f, 1.00f);
+    constexpr ImVec4 omnibox_bg              = ImVec4(0.11f, 0.11f, 0.11f, 1.00f);
 
     #define IM_COL32_THEME(r,g,b,a) (((ImU32)(a)<<24)|((ImU32)(b)<<16)|((ImU32)(g)<<8)|((ImU32)(r)))
     

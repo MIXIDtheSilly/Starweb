@@ -129,13 +129,21 @@ load, and video/audio play back silently with no error.
 
 ## Running the binaries
 
-Start the server, then the browser (or client), each in its own terminal — the
-server needs to be running for the other two to fetch anything:
+**Generate the TLS certificates first** — the browser opens `star://` by default,
+so without them it has nothing to load. Then start the server and the browser (or
+client), each in its own terminal:
 
 ```sh
-./stwp_server      # terminal 1
-./stwp_browser      # terminal 2, or ./stwp_client moon://localhost:8090/<path>
+./tools/make_certs.sh.  # once: local root CA + localhost cert, written to certs/
+./stwp_server.          # terminal 1: moon:// on 8090, star:// on 8490
+./stwp_browser.         # terminal 2, or ./stwp_client star://localhost/<path>
 ```
+
+`certs/` is git-ignored, so a fresh clone needs this step once. Skipping it leaves
+the server serving plaintext `moon://` on 8090 only (it logs the reason and
+disables `star://`), and the browser's default page fails to load until you either
+run the script or navigate to a `moon://` URL. See `PROTOCOL.md` for the scheme
+and TLS details.
 
 **Run both from the project root**, not from inside `build/`. `stwp_server`
 resolves content paths relative to its current working directory (`www/` +
@@ -149,5 +157,8 @@ report `File not found` for everything. This applies on every platform.
 - **Networking** is fully portable via `src/common/net.hpp`, a thin socket
   compatibility layer (POSIX sockets on macOS/Linux, Winsock2 on Windows). Use
   `net::socket_t` / `net::kInvalidSocket` rather than raw `int` / `-1`.
+- **Transports** go through `src/common/conn.hpp`: `PlainConn` for `moon://`,
+  `TlsConn` (`src/common/tls.hpp`) for `star://`. STWP message code reads and
+  writes a `Conn` and does not care which is underneath.
 - To compile-check the FFmpeg backend on a Mac (which otherwise builds the
   AVFoundation path), define `STWP_FORCE_FFMPEG` and provide the FFmpeg headers.

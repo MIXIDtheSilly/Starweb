@@ -5,6 +5,7 @@
 #include <cstdint>
 #include "imgui.h"
 #include "../common/net.hpp"
+#include "../common/tls_info.hpp"
 
 struct CssStyle {
     ImVec4 color = ImVec4(1, 1, 1, 1);
@@ -110,6 +111,10 @@ struct FetchResult {
     std::unordered_map<std::string, std::string> headers;
     std::string body;
     std::string error_message;
+    // star:// only. tls_error gets an interstitial, not the generic error page.
+    bool is_secure = false;
+    bool tls_error = false;
+    TlsInfo tls;
     DomNode dom;
     std::unordered_map<std::string, CssStyle> css_classes;
     std::unordered_map<std::string, std::string> fetched_images;
@@ -125,8 +130,8 @@ struct TextureInfo {
 
 struct Tab {
     int id = 0;
-    std::string current_url = "moon://localhost/index.html";
-    char url_input[512] = "moon://localhost/index.html";
+    std::string current_url = "star://localhost/index.html";
+    char url_input[512] = "star://localhost/index.html";
     std::string status_text = "Idle";
     bool is_fetching = false;
     

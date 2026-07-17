@@ -15,3 +15,4 @@ void DrawSpinner(ImVec2 center, float radius, float thickness, const ImVec4& col
 void DrawBackArrowIcon(ImVec2 center, ImU32 color, float thickness = 2.0f);
 void DrawForwardArrowIcon(ImVec2 center, ImU32 color, float thickness = 2.0f);
 void DrawReloadIcon(ImVec2 center, float radius, ImU32 color, float thickness = 2.0f);
+void DrawLockIcon(ImVec2 center, ImU32 color, bool closed, float size = 16.0f);

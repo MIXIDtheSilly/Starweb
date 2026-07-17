@@ -2,11 +2,37 @@
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
 
 namespace {
 
 // ALPN wire form: one length-prefixed protocol, "stwp/1.0".
 const unsigned char kAlpn[] = {8, 's', 't', 'w', 'p', '/', '1', '.', '0'};
+
+// Every fetch opens its own connection, so without this a page's subresources
+// each pay a full handshake.
+class SessionCache {
+public:
+    SSL_SESSION* get(const std::string& key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = sessions_.find(key);
+        if (it == sessions_.end()) return nullptr;
+        SSL_SESSION_up_ref(it->second);
+        return it->second;
+    }
+    void put(const std::string& key, SSL_SESSION* session) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        SSL_SESSION*& slot = sessions_[key];
+        if (slot) SSL_SESSION_free(slot);
+        slot = session;
+    }
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, SSL_SESSION*> sessions_;
+};
+
+SessionCache g_sessions;
 
 std::string ssl_err() {
     unsigned long e = ERR_get_error();
@@ -23,6 +49,24 @@ int alpn_select_cb(SSL*, const unsigned char** out, unsigned char* outlen,
         return SSL_TLSEXT_ERR_ALERT_FATAL;
     }
     return SSL_TLSEXT_ERR_OK;
+}
+
+bool would_block() {
+#if defined(_WIN32)
+    int e = WSAGetLastError();
+    return e == WSAETIMEDOUT || e == WSAEWOULDBLOCK;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+}
+
+// The select callback only fires when the peer offers ALPN, so a peer offering
+// none negotiates none and must be caught after the handshake.
+bool negotiated_stwp(SSL* ssl) {
+    const unsigned char* proto = nullptr;
+    unsigned int len = 0;
+    SSL_get0_alpn_selected(ssl, &proto, &len);
+    return proto && len == 8 && std::memcmp(proto, "stwp/1.0", 8) == 0;
 }
 
 bool looks_like_ip(const std::string& h) {
@@ -123,6 +167,11 @@ std::unique_ptr<TlsConn> TlsConn::accept(TlsContext& ctx, net::socket_t fd,
         SSL_free(ssl);
         return nullptr;
     }
+    if (!negotiated_stwp(ssl)) {
+        err = "client did not negotiate ALPN stwp/1.0";
+        SSL_free(ssl);
+        return nullptr;
+    }
     auto conn = std::unique_ptr<TlsConn>(new TlsConn(ssl, fd));
     conn->capture_info();
     return conn;
@@ -130,10 +179,18 @@ std::unique_ptr<TlsConn> TlsConn::accept(TlsContext& ctx, net::socket_t fd,
 
 std::unique_ptr<TlsConn> TlsConn::connect(TlsContext& ctx, net::socket_t fd,
                                           const std::string& hostname,
+                                          const std::string& session_key,
                                           std::string& err) {
     SSL* ssl = SSL_new(ctx.raw());
     if (!ssl) { err = "SSL_new: " + ssl_err(); return nullptr; }
     SSL_set_fd(ssl, (int)fd);
+
+    if (!session_key.empty()) {
+        if (SSL_SESSION* cached = g_sessions.get(session_key)) {
+            SSL_set_session(ssl, cached);  // up-refs internally
+            SSL_SESSION_free(cached);
+        }
+    }
 
     X509_VERIFY_PARAM* vp = SSL_get0_param(ssl);
     X509_VERIFY_PARAM_set_hostflags(vp, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
@@ -151,7 +208,13 @@ std::unique_ptr<TlsConn> TlsConn::connect(TlsContext& ctx, net::socket_t fd,
         SSL_free(ssl);
         return nullptr;
     }
+    if (!negotiated_stwp(ssl)) {
+        err = "server did not negotiate ALPN stwp/1.0";
+        SSL_free(ssl);
+        return nullptr;
+    }
     auto conn = std::unique_ptr<TlsConn>(new TlsConn(ssl, fd));
+    conn->session_key_ = session_key;
     conn->capture_info();
     return conn;
 }
@@ -165,6 +228,7 @@ void TlsConn::capture_info() {
     SSL_get0_alpn_selected(ssl_, &proto, &plen);
     if (proto && plen) info_.alpn.assign((const char*)proto, plen);
 
+    info_.resumed = (SSL_session_reused(ssl_) == 1);
     info_.verify_result = SSL_get_verify_result(ssl_);
     X509* cert = SSL_get1_peer_certificate(ssl_);
     if (cert) {
@@ -184,10 +248,12 @@ net::ssize_t_ TlsConn::read(void* buf, size_t len) {
     if (n > 0) return n;
     int e = SSL_get_error(ssl_, n);
     if (e == SSL_ERROR_ZERO_RETURN) return 0;  // clean TLS close_notify
-    // A server that drops TCP without close_notify surfaces as SYSCALL with no
-    // error queued; treat that as end-of-stream since STWP bodies are length-
-    // delimited and the parser decides completeness.
-    if (e == SSL_ERROR_SYSCALL && ERR_peek_error() == 0) return 0;
+    if (e == SSL_ERROR_SYSCALL) {
+        // A timeout lands here with an empty error queue too, so it must be ruled
+        // out before treating the empty queue as end-of-stream.
+        if (would_block()) return -1;
+        if (ERR_peek_error() == 0) return 0;  // peer closed without close_notify
+    }
     return -1;
 }
 
@@ -199,6 +265,17 @@ net::ssize_t_ TlsConn::write(const void* buf, size_t len) {
 
 void TlsConn::close() {
     if (ssl_) {
+        // TLS 1.3 sends tickets after the handshake, so collecting the session
+        // any earlier than this caches nothing.
+        if (!session_key_.empty()) {
+            if (SSL_SESSION* session = SSL_get1_session(ssl_)) {
+                if (SSL_SESSION_is_resumable(session)) {
+                    g_sessions.put(session_key_, session);
+                } else {
+                    SSL_SESSION_free(session);
+                }
+            }
+        }
         SSL_shutdown(ssl_);
         SSL_free(ssl_);
         ssl_ = nullptr;

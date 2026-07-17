@@ -56,6 +56,11 @@
 
 static std::unordered_map<int, std::unique_ptr<ScriptEngine>> g_script_engines;
 
+// Drained once per frame. Page scripts run while fetch_mutex is held and
+// start_async_fetch takes that same lock, so navigating straight from the
+// callback deadlocks the main thread.
+static std::vector<std::pair<int, std::string>> g_pending_navs;
+
 static void run_page_scripts(Tab& tab) {
     int tid = tab.id;
     auto& eng = g_script_engines[tid];
@@ -76,11 +81,19 @@ static void run_page_scripts(Tab& tab) {
         Tab* t = find_tab_by_id(tid);
         if (!t) return;
         std::string url = resolve_url(t->current_url, raw);
-        if (url.rfind("moon://", 0) != 0) {
+        const bool to_moon = url.rfind("moon://", 0) == 0;
+        const bool to_star = url.rfind("star://", 0) == 0;
+        if (!to_moon && !to_star) {
             std::cerr << "[lua " << tid << "] blocked navigation to " << url << "\n";
             return;
         }
-        start_async_fetch(tid, url);
+        // Stricter than the web: no script-driven downgrade. Typing the moon://
+        // URL by hand still works.
+        if (to_moon && t->current_url.rfind("star://", 0) == 0) {
+            std::cerr << "[lua " << tid << "] blocked downgrade navigation to " << url << "\n";
+            return;
+        }
+        g_pending_navs.emplace_back(tid, url);
     });
     eng->bind_inline_handlers();
     for (const PageScript& script : tab.active_page.scripts) {
@@ -429,13 +442,27 @@ int main() {
                         run_page_scripts(tab);
                     } else {
                         tab.status_text = "Error: " + tab.active_page.error_message;
-                        std::string error_html = "<h1>Error loading page</h1><p>" + tab.active_page.error_message + "</p>";
+                        std::string error_html;
+                        if (tab.active_page.tls_error) {
+                            auto p = parse_url(tab.current_url);
+                            std::string host = p ? p->host : tab.current_url;
+                            error_html =
+                                "<h1 style=\"color: #e57373;\">Your connection is not private</h1>"
+                                "<p>StarWeb cannot verify that this server is <b>" + host + "</b>, "
+                                "so the page was not loaded and no data was sent.</p>"
+                                "<p><code>" + tab.active_page.error_message + "</code></p>"
+                                "<p>The certificate may be self-signed, expired, issued for a "
+                                "different host, or signed by a CA StarWeb does not trust.</p>";
+                            tab.title = "Privacy error";
+                        } else {
+                            error_html = "<h1>Error loading page</h1><p>" + tab.active_page.error_message + "</p>";
+                            tab.title = "Error Loading";
+                        }
                         std::string temp_css = "";
                         std::vector<PageScript> temp_scripts;
                         tab.page_dom = parse_html_to_dom(error_html, temp_css, temp_scripts);
                         g_script_engines.erase(tab.id);
                         tab.css_classes.clear();
-                        tab.title = "Error Loading";
                         tab.alert_text = "";
                     }
                     
@@ -450,6 +477,12 @@ int main() {
 
         for (auto& [id, eng] : g_script_engines)
             if (eng) { eng->poll_timers(); eng->run_raf(); }
+
+        if (!g_pending_navs.empty()) {
+            auto navs = std::move(g_pending_navs);
+            g_pending_navs.clear();
+            for (const auto& [tid, url] : navs) start_async_fetch(tid, url);
+        }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -964,11 +997,51 @@ int main() {
             }
         }
         
+        ImGui::SameLine();
+
+        const FetchResult& page = active_tab.active_page;
+        const bool secure = page.is_secure && page.tls.verified;
+        if (ImGui::Button("##lock", ImVec2(btn_size, btn_size))) {
+            ImGui::OpenPopup("cert_info");
+        }
+        ImVec2 lock_center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
+                                    (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
+        DrawLockIcon(lock_center, secure ? IM_COL32(120, 220, 140, 255)
+                                         : IM_COL32(229, 115, 115, 255), secure);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(secure ? "Connection is secure (TLS 1.3)"
+                                     : "Not secure - sent in plaintext");
+        }
+
         ImGui::PopStyleVar();
         ImGui::PopStyleColor(3);
-        
+
+        if (ImGui::BeginPopup("cert_info")) {
+            if (secure) {
+                ImGui::TextColored(ImVec4(0.47f, 0.86f, 0.55f, 1.0f), "Connection is secure");
+                ImGui::Separator();
+                ImGui::Text("%s, %s", page.tls.version.c_str(), page.tls.cipher.c_str());
+                if (!page.tls.alpn.empty()) ImGui::Text("Protocol: %s", page.tls.alpn.c_str());
+                ImGui::Spacing();
+                ImGui::TextDisabled("Certificate");
+                ImGui::Text("Subject: %s", page.tls.peer_subject.c_str());
+                ImGui::Text("Issuer:  %s", page.tls.peer_issuer.c_str());
+                ImGui::Text("Expires: %s", page.tls.not_after.c_str());
+            } else {
+                ImGui::TextColored(ImVec4(0.90f, 0.45f, 0.45f, 1.0f), "Not secure");
+                ImGui::Separator();
+                // An auto-sizing popup has no width to wrap against, so without an
+                // explicit position the text collapses to one word a line.
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 300.0f);
+                ImGui::TextWrapped("This page was loaded over moon://, which sends everything "
+                                   "in plaintext. Use star:// for an encrypted connection.");
+                ImGui::PopTextWrapPos();
+            }
+            ImGui::EndPopup();
+        }
+
         ImGui::SameLine();
-        
+
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
         ImGui::PushStyleColor(ImGuiCol_FrameBg, Theme::omnibox_bg);
         

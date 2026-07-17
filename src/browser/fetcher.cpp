@@ -5,12 +5,50 @@
 #include "../common/stwp_msg.hpp"
 #include "../common/net.hpp"
 #include "../common/conn.hpp"
+#include "../common/tls.hpp"
 #include <thread>
 #include <memory>
+#include <mutex>
+#include <cstdlib>
 #include <cstring>
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+
+namespace {
+
+// One SSL_CTX for the whole browser; it's refcounted and thread-safe, and each
+// fetch makes its own SSL from it.
+std::once_flag tls_ctx_once;
+std::unique_ptr<TlsContext> g_client_tls;
+std::string g_client_tls_err;
+
+TlsContext* client_tls_ctx(std::string& err) {
+    std::call_once(tls_ctx_once, []() {
+        const char* env = std::getenv("STARWEB_CA");
+        std::string ca = env ? env : "certs/starweb_root.pem";
+        g_client_tls = TlsContext::make_client(ca, g_client_tls_err);
+    });
+    if (!g_client_tls) err = g_client_tls_err;
+    return g_client_tls.get();
+}
+
+int default_port_for(const std::string& scheme) {
+    return scheme == "star" ? 8490 : 8090;
+}
+
+std::string port_suffix(const std::string& scheme, int port) {
+    return port == default_port_for(scheme) ? "" : ":" + std::to_string(port);
+}
+
+// Plaintext content inside a page shown as secure.
+bool is_mixed_content(bool page_secure, const std::string& sub_url) {
+    if (!page_secure) return false;
+    auto p = parse_url(sub_url);
+    return p && p->scheme == "moon";
+}
+
+} // namespace
 
 std::string resolve_url(const std::string& base_url, const std::string& relative_url) {
     if (relative_url.empty()) return base_url;
@@ -21,16 +59,7 @@ std::string resolve_url(const std::string& base_url, const std::string& relative
             std::string host = opt_parsed->host;
             int port = opt_parsed->port;
             std::string path = opt_parsed->path;
-            
-            std::string port_part = "";
-            if (scheme == "moon" && port != 8090) {
-                port_part = ":" + std::to_string(port);
-            } else if (scheme == "star" && port != 8490) {
-                port_part = ":" + std::to_string(port);
-            } else if (scheme != "moon" && scheme != "star") {
-                port_part = ":" + std::to_string(port);
-            }
-            return scheme + "://" + host + port_part + path;
+            return scheme + "://" + format_host(host) + port_suffix(scheme, port) + path;
         }
         return relative_url;
     }
@@ -55,16 +84,7 @@ std::string resolve_url(const std::string& base_url, const std::string& relative
         }
     }
     
-    std::string port_part = "";
-    if (scheme == "moon" && port != 8090) {
-        port_part = ":" + std::to_string(port);
-    } else if (scheme == "star" && port != 8490) {
-        port_part = ":" + std::to_string(port);
-    } else if (scheme != "moon" && scheme != "star") {
-        port_part = ":" + std::to_string(port);
-    }
-    
-    return scheme + "://" + host + port_part + path;
+    return scheme + "://" + format_host(host) + port_suffix(scheme, port) + path;
 }
 
 std::string find_title_in_dom(const DomNode& node) {
@@ -125,13 +145,14 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
     }
 
     auto parsed = *opt_parsed;
-    if (parsed.scheme != "moon") {
-        result.error_message = "Only 'moon://' scheme is supported.";
+    if (parsed.scheme != "moon" && parsed.scheme != "star") {
+        result.error_message = "Unsupported scheme: " + parsed.scheme + "://";
         return result;
     }
+    const bool use_tls = (parsed.scheme == "star");
 
     struct addrinfo hints{}, *res_info;
-    hints.ai_family = AF_INET; // server only binds an AF_INET listening socket
+    hints.ai_family = AF_UNSPEC; // IPv4 or IPv6; the loop below tries each result
     hints.ai_socktype = SOCK_STREAM;
 
     std::string port_str = std::to_string(parsed.port);
@@ -191,12 +212,41 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
         return result;
     }
 
-    std::unique_ptr<Conn> conn = std::make_unique<PlainConn>(socket_fd);
+    std::unique_ptr<Conn> conn;
+    if (use_tls) {
+        std::string err;
+        TlsContext* ctx = client_tls_ctx(err);
+        if (ctx) {
+            auto tconn = TlsConn::connect(*ctx, socket_fd, parsed.host,
+                                          parsed.host + ":" + port_str, err);
+            if (tconn) {
+                result.is_secure = true;
+                result.tls = tconn->info();
+                conn = std::move(tconn);
+            }
+        }
+        if (!conn) {
+            result.error_message = err;
+            result.tls_error = true;
+            {
+                std::lock_guard<std::mutex> lock(fetch_mutex);
+                Tab* tab = find_tab_by_id(tab_id);
+                if (tab && is_main_resource && tab->active_socket_fd == socket_fd) {
+                    tab->active_socket_fd = net::kInvalidSocket;
+                }
+            }
+            net::close(socket_fd);
+            return result;
+        }
+    } else {
+        conn = std::make_unique<PlainConn>(socket_fd);
+    }
 
     StwpRequest req;
     req.method = "GET";
     req.path = parsed.path;
-    req.headers["Host"] = parsed.host + (parsed.port == 8090 ? "" : ":" + port_str);
+    req.headers["Host"] = format_host(parsed.host) +
+        (parsed.port == default_port_for(parsed.scheme) ? "" : ":" + port_str);
     req.headers["User-Agent"] = "Starmap/1.0";
     req.headers["Connection"] = "close";
 
@@ -267,16 +317,7 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
         std::string host = opt_url->host;
         int port = opt_url->port;
         std::string path = opt_url->path;
-        
-        std::string port_part = "";
-        if (scheme == "moon" && port != 8090) {
-            port_part = ":" + std::to_string(port);
-        } else if (scheme == "star" && port != 8490) {
-            port_part = ":" + std::to_string(port);
-        } else if (scheme != "moon" && scheme != "star") {
-            port_part = ":" + std::to_string(port);
-        }
-        final_url = scheme + "://" + host + port_part + path;
+        final_url = scheme + "://" + format_host(host) + port_suffix(scheme, port) + path;
     }
 
     std::lock_guard<std::mutex> lock(fetch_mutex);
@@ -391,26 +432,35 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                 res.dom.children.push_back(audio_node);
                 res.fetched_media[final_url] = res.body;
             } else if (is_html) {
+                const bool page_secure = res.is_secure;
                 std::string css_content = "";
                 res.dom = parse_html_to_dom(res.body, css_content, res.scripts);
-                
+
                 std::vector<std::string> stylesheet_hrefs;
                 find_stylesheets_in_dom(res.dom, stylesheet_hrefs);
-                
+
                 for (const auto& href : stylesheet_hrefs) {
                     std::string sheet_url = resolve_url(final_url, href);
+                    if (is_mixed_content(page_secure, sheet_url)) {
+                        std::cerr << "[mixed-content] blocked stylesheet " << sheet_url << "\n";
+                        continue;
+                    }
                     FetchResult sheet_res = perform_fetch(tab_id, sheet_url, false);
                     if (sheet_res.success) {
                         css_content += "\n" + sheet_res.body;
                     }
                 }
-                
+
                 parse_css(css_content, res.css_classes);
-                
+
                 std::vector<std::string> img_srcs;
                 find_images_in_dom(res.dom, img_srcs);
                 for (const auto& src : img_srcs) {
                     std::string img_url = resolve_url(final_url, src);
+                    if (is_mixed_content(page_secure, img_url)) {
+                        std::cerr << "[mixed-content] blocked image " << img_url << "\n";
+                        continue;
+                    }
                     FetchResult img_res = perform_fetch(tab_id, img_url, false);
                     if (img_res.success) {
                         res.fetched_images[img_url] = img_res.body;
@@ -421,19 +471,26 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                 find_media_in_dom(res.dom, media_srcs);
                 for (const auto& src : media_srcs) {
                     std::string media_url = resolve_url(final_url, src);
+                    if (is_mixed_content(page_secure, media_url)) {
+                        std::cerr << "[mixed-content] blocked media " << media_url << "\n";
+                        continue;
+                    }
                     FetchResult media_res = perform_fetch(tab_id, media_url, false);
                     if (media_res.success) {
                         res.fetched_media[media_url] = media_res.body;
                     }
                 }
 
-                // External scripts. Resolved against the page URL and fetched in place,
-                // so the engine still sees one list in document order. perform_fetch
-                // rejects any scheme but moon://, which keeps a page from pulling code
-                // off an arbitrary host.
+                // Fetched in place so the engine still sees one list in document
+                // order. perform_fetch's scheme gate is what stops a page pulling
+                // code off an arbitrary host.
                 for (PageScript& script : res.scripts) {
                     if (script.src.empty()) continue;
                     script.src = resolve_url(final_url, script.src);
+                    if (is_mixed_content(page_secure, script.src)) {
+                        std::cerr << "[mixed-content] blocked script " << script.src << "\n";
+                        continue;
+                    }
                     FetchResult script_res = perform_fetch(tab_id, script.src, false);
                     if (script_res.success && script_res.status_code == 200) {
                         script.source = std::move(script_res.body);

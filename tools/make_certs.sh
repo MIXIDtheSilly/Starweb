@@ -23,6 +23,20 @@ LEAF_CSR=$CERTS/localhost.csr
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1
 
+# Keeps the CA inside StarWeb: it cannot issue for a public name or address, so
+# installing this root can't expose the real web even if the key leaks.
+NAME_CONSTRAINTS="critical\
+,permitted;DNS:localhost\
+,permitted;DNS:.local\
+,permitted;DNS:.star\
+,permitted;IP:127.0.0.0/255.0.0.0\
+,permitted;IP:10.0.0.0/255.0.0.0\
+,permitted;IP:172.16.0.0/255.240.0.0\
+,permitted;IP:192.168.0.0/255.255.0.0\
+,permitted;IP:0:0:0:0:0:0:0:1/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff\
+,permitted;IP:fc00:0:0:0:0:0:0:0/fe00:0:0:0:0:0:0:0\
+,permitted;IP:fe80:0:0:0:0:0:0:0/ffc0:0:0:0:0:0:0:0"
+
 if [ "$FORCE" = 1 ] || [ ! -f "$ROOT_KEY" ] || [ ! -f "$ROOT_CRT" ]; then
     echo "Generating StarWeb root CA..."
     openssl ecparam -name prime256v1 -genkey -noout -out "$ROOT_KEY"
@@ -31,9 +45,14 @@ if [ "$FORCE" = 1 ] || [ ! -f "$ROOT_KEY" ] || [ ! -f "$ROOT_CRT" ]; then
         -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
         -addext "keyUsage=critical,keyCertSign,cRLSign" \
         -addext "subjectKeyIdentifier=hash" \
+        -addext "nameConstraints=$NAME_CONSTRAINTS" \
         -out "$ROOT_CRT"
 else
     echo "Reusing existing root CA ($ROOT_CRT). Pass --force to regenerate it."
+    if ! openssl x509 -in "$ROOT_CRT" -noout -ext nameConstraints 2>/dev/null | grep -q Permitted; then
+        echo "  WARNING: this root has no name constraints — it can sign for any name."
+        echo "           Re-run with --force to replace it with a constrained root."
+    fi
 fi
 
 echo "Generating localhost server certificate..."

@@ -58,22 +58,48 @@ inline std::optional<ParsedURL> parse_url(std::string_view url) {
         return std::nullopt;
     }
 
-    // Parse host and optional port
-    auto colon_pos = host_port.find(':');
-    if (colon_pos == std::string_view::npos) {
-        parsed.host = std::string(host_port);
-    } else {
-        parsed.host = std::string(host_port.substr(0, colon_pos));
-        std::string port_str(host_port.substr(colon_pos + 1));
-        if (port_str.empty()) {
+    // An IPv6 literal is bracketed ("[::1]:8490") so its colons aren't taken for
+    // the port separator. host is stored bare.
+    std::string_view port_part;
+    if (host_port.front() == '[') {
+        auto close_pos = host_port.find(']');
+        if (close_pos == std::string_view::npos || close_pos == 1) {
             return std::nullopt;
         }
-        try {
-            parsed.port = std::stoi(port_str);
-        } catch (...) {
-            return std::nullopt;
+        parsed.host = std::string(host_port.substr(1, close_pos - 1));
+        std::string_view rest_after = host_port.substr(close_pos + 1);
+        if (!rest_after.empty()) {
+            if (rest_after.front() != ':') return std::nullopt;
+            port_part = rest_after.substr(1);
+        }
+    } else {
+        auto colon_pos = host_port.find(':');
+        if (colon_pos == std::string_view::npos) {
+            parsed.host = std::string(host_port);
+        } else {
+            parsed.host = std::string(host_port.substr(0, colon_pos));
+            port_part = host_port.substr(colon_pos + 1);
         }
     }
 
+    if (!port_part.empty()) {
+        try {
+            parsed.port = std::stoi(std::string(port_part));
+        } catch (...) {
+            return std::nullopt;
+        }
+    } else if (host_port.find(':') != std::string_view::npos && host_port.front() != '[') {
+        return std::nullopt;  // trailing "host:" with no port
+    }
+
+    if (parsed.host.empty()) {
+        return std::nullopt;
+    }
+
     return parsed;
+}
+
+// Re-bracket an IPv6 literal when rebuilding a URL or Host header.
+inline std::string format_host(const std::string& host) {
+    return host.find(':') != std::string::npos ? "[" + host + "]" : host;
 }

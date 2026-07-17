@@ -16,6 +16,9 @@ CXXFLAGS = -std=c++20 -Wall -Wextra -O3 -pthread
 IMGUI_DIR = src/thirdparty/imgui
 IMGUI_INC = -I$(IMGUI_DIR) -I$(IMGUI_DIR)/backends
 
+COMMON_HDRS = $(wildcard src/common/*.hpp)
+BROWSER_HDRS = $(wildcard src/browser/*.hpp)
+
 LUA_DIR = src/thirdparty/lua
 LUA_INC = -I$(LUA_DIR)
 LUA_SRCS = $(wildcard $(LUA_DIR)/*.c)
@@ -79,13 +82,13 @@ $(OBJ_DIR)/lua/%.o: $(LUA_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -Wall -c $< -o $@
 
-stwp_server: src/server/server.cpp src/common/tls.cpp src/common/tls.hpp src/common/conn.hpp src/common/stwp_msg.hpp src/common/net.hpp
+stwp_server: src/server/server.cpp src/common/tls.cpp $(COMMON_HDRS)
 	$(CXX) $(CXXFLAGS) $(SSL_CFLAGS) src/server/server.cpp src/common/tls.cpp $(SSL_LIBS) -o stwp_server
 
-stwp_client: src/client/client.cpp src/common/tls.cpp src/common/tls.hpp src/common/conn.hpp src/common/url_parser.hpp src/common/stwp_msg.hpp src/common/net.hpp
+stwp_client: src/client/client.cpp src/common/tls.cpp $(COMMON_HDRS)
 	$(CXX) $(CXXFLAGS) $(SSL_CFLAGS) src/client/client.cpp src/common/tls.cpp $(SSL_LIBS) -o stwp_client
 
-stwp_browser: src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/renderer.cpp src/browser/layout.cpp src/browser/script.cpp src/common/tls.cpp $(MEDIA_SRCS) $(IMGUI_OBJS) $(YOGA_OBJS) $(LUA_OBJS) src/common/tls.hpp src/common/conn.hpp src/common/url_parser.hpp src/common/stwp_msg.hpp src/common/net.hpp
+stwp_browser: src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/renderer.cpp src/browser/layout.cpp src/browser/script.cpp src/common/tls.cpp $(MEDIA_SRCS) $(IMGUI_OBJS) $(YOGA_OBJS) $(LUA_OBJS) $(COMMON_HDRS) $(BROWSER_HDRS)
 	$(CXX) $(CXXFLAGS) $(MEDIA_FLAGS) $(MEDIA_CFLAGS) $(GLFW_CFLAGS) $(SSL_CFLAGS) $(IMGUI_INC) $(YOGA_INC) $(LUA_INC) \
 		src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/renderer.cpp src/browser/layout.cpp src/browser/script.cpp src/common/tls.cpp $(MEDIA_SRCS) $(IMGUI_OBJS) $(YOGA_OBJS) $(LUA_OBJS) \
 		$(GLFW_LIBS) $(GL_LIBS) $(MEDIA_LIBS) $(SSL_LIBS) -o stwp_browser

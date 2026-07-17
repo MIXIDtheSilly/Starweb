@@ -51,7 +51,7 @@ std::string get_content_type(const std::string& path) {
     return "application/octet-stream";
 }
 
-void handle_client(std::unique_ptr<Conn> conn) {
+void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
     std::string buffer;
     char temp_buf[4096];
     StwpRequest req;
@@ -86,13 +86,22 @@ void handle_client(std::unique_ptr<Conn> conn) {
         return;
     }
 
-    std::cout << "[Server] Request: " << req.method << " " << req.path << std::endl;
+    std::cout << "[Server] [" << transport << "] Request: " << req.method << " " << req.path
+              << " " << req.version << std::endl;
 
     StwpResponse res;
     res.headers["Server"] = "StarWeb/1.0";
     res.headers["Connection"] = "close";
 
-    if (req.method != "GET") {
+    // An HTTP/1.1 request line parses fine here, so without this an HTTP client
+    // would be served content.
+    if (req.version != "STWP/1.0") {
+        res.status_code = 505;
+        res.status_text = "Version Not Supported";
+        res.body = "This server speaks STWP/1.0 only.";
+        res.headers["Content-Length"] = std::to_string(res.body.size());
+        res.headers["Content-Type"] = "text/plain";
+            } else if (req.method != "GET") {
         res.status_code = 405;
         res.status_text = "Method Not Allowed";
         res.body = "Only GET method is supported.";
@@ -131,8 +140,28 @@ void handle_client(std::unique_ptr<Conn> conn) {
     write_all(*conn, res_str.data(), res_str.size());
 }
 
+// An IPv6 socket with V6ONLY off also serves IPv4 peers as v4-mapped addresses.
+// Falls back to IPv4 where that is refused or IPv6 is unavailable.
 net::socket_t make_listener(int port) {
-    net::socket_t fd = socket(AF_INET, SOCK_STREAM, 0);
+    net::socket_t fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (net::is_valid(fd)) {
+        net::enable_reuseaddr(fd);
+        int v6only = 0;
+        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&v6only, sizeof(v6only));
+
+        sockaddr_in6 address6{};
+        address6.sin6_family = AF_INET6;
+        address6.sin6_addr = in6addr_any;
+        address6.sin6_port = htons(port);
+
+        if (bind(fd, (struct sockaddr*)&address6, sizeof(address6)) == 0 &&
+            listen(fd, 10) == 0) {
+            return fd;
+                }
+        net::close(fd);
+        }
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
     if (!net::is_valid(fd)) return net::kInvalidSocket;
     net::enable_reuseaddr(fd);
 
@@ -152,10 +181,11 @@ net::socket_t make_listener(int port) {
     return fd;
 }
 
-// One connection: on the TLS listener, do the handshake here (in the worker
-// thread, so a slow client can't stall the accept loop) before serving.
+// The handshake runs here, in the worker thread, so a slow client can't stall
+// the accept loop.
 void serve_conn(net::socket_t fd, TlsContext* tls) {
     std::unique_ptr<Conn> conn;
+    const char* transport = "moon/plain";
     if (tls) {
         net::set_recv_timeout(fd, 5);
         std::string err;
@@ -165,16 +195,17 @@ void serve_conn(net::socket_t fd, TlsContext* tls) {
             net::close(fd);
             return;
         }
+        transport = tconn->info().resumed ? "star/TLS resumed" : "star/TLS full";
         conn = std::move(tconn);
     } else {
         conn = std::make_unique<PlainConn>(fd);
     }
-    handle_client(std::move(conn));
+    handle_client(std::move(conn), transport);
 }
 
 void accept_loop(net::socket_t listener, TlsContext* tls) {
     while (true) {
-        sockaddr_in client_address{};
+        sockaddr_storage client_address{};  // fits an IPv4 or IPv6 peer
         socklen_t addr_len = sizeof(client_address);
         net::socket_t client_fd = accept(listener, (struct sockaddr*)&client_address, &addr_len);
         if (!net::is_valid(client_fd)) {

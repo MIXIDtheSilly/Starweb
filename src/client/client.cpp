@@ -1,6 +1,10 @@
 #include <iostream>
 #include <string>
+#include <memory>
+#include <cstdlib>
 #include "../common/net.hpp"
+#include "../common/conn.hpp"
+#include "../common/tls.hpp"
 #include "../common/url_parser.hpp"
 #include "../common/stwp_msg.hpp"
 
@@ -8,7 +12,7 @@ int main(int argc, char* argv[]) {
     net::Startup net_startup;
 
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <moon://url>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <moon://url | star://url>" << std::endl;
         return 1;
     }
 
@@ -20,16 +24,17 @@ int main(int argc, char* argv[]) {
     }
 
     auto parsed = *opt_parsed;
-    if (parsed.scheme != "moon") {
-        std::cerr << "Error: Only 'moon://' scheme is supported for now" << std::endl;
+    if (parsed.scheme != "moon" && parsed.scheme != "star") {
+        std::cerr << "Error: Unsupported scheme: " << parsed.scheme << "://" << std::endl;
         return 1;
     }
+    const bool use_tls = (parsed.scheme == "star");
 
     std::cout << "[Client] Connecting to host: " << parsed.host << ", port: " << parsed.port << "..." << std::endl;
 
     // Set up hints for address resolution
     struct addrinfo hints{}, *res_info;
-    hints.ai_family = AF_INET; // server only binds an AF_INET listening socket
+    hints.ai_family = AF_UNSPEC; // IPv4 or IPv6; the loop below tries each result
     hints.ai_socktype = SOCK_STREAM;
 
     std::string port_str = std::to_string(parsed.port);
@@ -58,39 +63,71 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "[Client] Socket connected successfully. Sending GET request for: " << parsed.path << std::endl;
+    std::cout << "[Client] Socket connected successfully." << std::endl;
+
+    std::unique_ptr<TlsContext> tls_ctx;  // must outlive conn
+    std::unique_ptr<Conn> conn;
+    if (use_tls) {
+        const char* env = std::getenv("STARWEB_CA");
+        std::string ca = env ? env : "certs/starweb_root.pem";
+        std::string err;
+        tls_ctx = TlsContext::make_client(ca, err);
+        if (!tls_ctx) {
+            std::cerr << "Error: " << err << std::endl;
+            net::close(socket_fd);
+            return 1;
+        }
+        // No session key: the CLI makes a single connection and exits, so there is
+        // nothing for a cache to be reused by.
+        auto tconn = TlsConn::connect(*tls_ctx, socket_fd, parsed.host, "", err);
+        if (!tconn) {
+            std::cerr << "Error: " << err << std::endl;
+            net::close(socket_fd);
+            return 1;
+        }
+        const TlsInfo& t = tconn->info();
+        std::cout << "[Client] TLS: " << t.version << ", " << t.cipher
+                  << ", ALPN " << (t.alpn.empty() ? "(none)" : t.alpn) << std::endl;
+        std::cout << "[Client] Cert: " << t.peer_subject << std::endl;
+        std::cout << "[Client] Issuer: " << t.peer_issuer << std::endl;
+        std::cout << "[Client] Expires: " << t.not_after << std::endl;
+        conn = std::move(tconn);
+    } else {
+        conn = std::make_unique<PlainConn>(socket_fd);
+    }
+
+    std::cout << "[Client] Sending GET request for: " << parsed.path << std::endl;
 
     // Construct STWP Request
     StwpRequest req;
     req.method = "GET";
     req.path = parsed.path;
-    req.headers["Host"] = parsed.host + (parsed.port == 8090 ? "" : ":" + port_str);
+    req.headers["Host"] = format_host(parsed.host) +
+        (parsed.port == (use_tls ? 8490 : 8090) ? "" : ":" + port_str);
     req.headers["User-Agent"] = "StarClient/1.0";
     req.headers["Connection"] = "close";
 
     std::string serialized_req = req.serialize();
-    if (send(socket_fd, serialized_req.data(), serialized_req.size(), 0) < 0) {
+    if (!write_all(*conn, serialized_req.data(), serialized_req.size())) {
         std::cerr << "Error: Failed to send data to server." << std::endl;
-        net::close(socket_fd);
         return 1;
     }
 
-    // Read full response until socket closes
+    // Read full response until the connection closes
     std::string raw_response;
     char recv_buf[4096];
     while (true) {
-        net::ssize_t_ bytes_received = recv(socket_fd, recv_buf, sizeof(recv_buf), 0);
+        net::ssize_t_ bytes_received = conn->read(recv_buf, sizeof(recv_buf));
         if (bytes_received < 0) {
             std::cerr << "Error: Socket read failure." << std::endl;
-            net::close(socket_fd);
             return 1;
         }
         if (bytes_received == 0) {
-            break; // Server closed connection
+            break;
         }
         raw_response.append(recv_buf, bytes_received);
     }
-    net::close(socket_fd);
+    conn.reset();
 
     // Parse the received STWP Response
     StwpResponse res_msg;

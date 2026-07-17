@@ -1959,6 +1959,27 @@ void DrawForwardArrowIcon(ImVec2 center, ImU32 color, float thickness) {
     draw_list->PathStroke(color, 0, thickness);
 }
 
+// Lucide "lock" / "lock-open", in their 24x24 viewBox coordinates.
+void DrawLockIcon(ImVec2 center, ImU32 color, bool closed, float size) {
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    const float PI = 3.14159265f;
+    const float s = size / 24.0f;
+    const float thickness = 2.0f * s;
+
+    // viewBox point -> screen, box centred on `center`.
+    auto P = [&](float x, float y) {
+        return ImVec2(center.x + (x - 12.0f) * s, center.y + (y - 12.0f) * s);
+    };
+
+    draw_list->AddRect(P(3, 11), P(21, 22), color, 2.0f * s, 0, thickness);
+
+    draw_list->PathClear();
+    draw_list->PathLineTo(P(7, 11));
+    draw_list->PathArcTo(P(12, 7), 5.0f * s, PI, closed ? 2.0f * PI : 1.94f * PI, 20);
+    if (closed) draw_list->PathLineTo(P(17, 11));
+    draw_list->PathStroke(color, 0, thickness);
+}
+
 void DrawReloadIcon(ImVec2 center, float radius, ImU32 color, float thickness) {
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     const float PI = 3.14159265f;
