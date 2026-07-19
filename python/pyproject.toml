@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "starweb"
+version = "0.1.0"
+description = "STWP client and server for StarWeb (moon:// and star://)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "../LICENSE" }
+dependencies = []
+
+[project.scripts]
+starweb = "starweb.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["starweb"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

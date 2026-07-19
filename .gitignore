@@ -39,3 +39,7 @@ Thumbs.db
 
 # certs
 /certs
+
+# python
+/python/tests/__pycache__
+/python/starweb/__pycache__
