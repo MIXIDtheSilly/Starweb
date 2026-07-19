@@ -43,3 +43,6 @@ Thumbs.db
 # python
 /python/tests/__pycache__
 /python/starweb/__pycache__
+/python/.pytest_cache
+/python/dist
+/python/*.egg-info

@@ -4,18 +4,42 @@ build-backend = "hatchling.build"
 
 [project]
 name = "starweb"
-version = "0.1.0"
+dynamic = ["version"]
 description = "STWP client and server for StarWeb (moon:// and star://)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "../LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "MIXIDtheSilly", email = "mixidmb@gmail.com" }]
+keywords = ["stwp", "starweb", "moon", "star", "protocol", "client", "server"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/MIXIDtheSilly/StarWeb"
+Repository = "https://github.com/MIXIDtheSilly/StarWeb"
+Issues = "https://github.com/MIXIDtheSilly/StarWeb/issues"
 
 [project.scripts]
 starweb = "starweb.cli:main"
 
+[tool.hatch.version]
+path = "starweb/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["starweb"]
+
+[tool.hatch.build.targets.sdist]
+include = ["starweb", "tests", "examples", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

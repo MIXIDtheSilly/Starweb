@@ -6,7 +6,7 @@ from .message import VERSION, Request, Response, parse_request, parse_response
 from .server import App, Server
 from .url import ParsedURL, format_host, parse_url
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "App", "Server", "Session", "TLSInfo",
