@@ -136,7 +136,7 @@ void find_media_in_dom(const DomNode& node, std::vector<std::string>& srcs) {
     }
 }
 
-FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_resource) {
+FetchResult perform_request(const std::string& url_str, const RequestOptions& opt) {
     FetchResult result;
     auto opt_parsed = parse_url(url_str);
     if (!opt_parsed) {
@@ -168,40 +168,21 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
         socket_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (!net::is_valid(socket_fd)) continue;
 
-        {
-            std::lock_guard<std::mutex> lock(fetch_mutex);
-            Tab* tab = find_tab_by_id(tab_id);
-            if (!tab) {
-                net::close(socket_fd);
-                freeaddrinfo(res_info);
-                result.error_message = "Tab closed";
-                return result;
-            }
-            if (is_main_resource && url_str != tab->current_url) {
-                net::close(socket_fd);
-                freeaddrinfo(res_info);
-                result.error_message = "Cancelled";
-                return result;
-            }
-            if (is_main_resource) {
-                tab->active_socket_fd = socket_fd;
-            }
+        if (opt.on_socket && !opt.on_socket(socket_fd)) {
+            net::close(socket_fd);
+            freeaddrinfo(res_info);
+            result.error_message = "Cancelled";
+            return result;
         }
 
-        net::set_recv_timeout(socket_fd, 4);
-        net::set_send_timeout(socket_fd, 4);
+        net::set_recv_timeout(socket_fd, opt.timeout_secs);
+        net::set_send_timeout(socket_fd, opt.timeout_secs);
 
         if (connect(socket_fd, rp->ai_addr, rp->ai_addrlen) != -1) {
             break;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(fetch_mutex);
-            Tab* tab = find_tab_by_id(tab_id);
-            if (tab && is_main_resource && tab->active_socket_fd == socket_fd) {
-                tab->active_socket_fd = net::kInvalidSocket;
-            }
-        }
+        if (opt.on_socket_done) opt.on_socket_done(socket_fd);
         net::close(socket_fd);
     }
 
@@ -228,13 +209,7 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
         if (!conn) {
             result.error_message = err;
             result.tls_error = true;
-            {
-                std::lock_guard<std::mutex> lock(fetch_mutex);
-                Tab* tab = find_tab_by_id(tab_id);
-                if (tab && is_main_resource && tab->active_socket_fd == socket_fd) {
-                    tab->active_socket_fd = net::kInvalidSocket;
-                }
-            }
+            if (opt.on_socket_done) opt.on_socket_done(socket_fd);
             net::close(socket_fd);
             return result;
         }
@@ -243,28 +218,28 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
     }
 
     StwpRequest req;
-    req.method = "GET";
+    req.method = opt.method;
     req.path = parsed.path;
+    for (const auto& [name, value] : opt.headers) req.headers[name] = value;
     req.headers["Host"] = format_host(parsed.host) +
         (parsed.port == default_port_for(parsed.scheme) ? "" : ":" + port_str);
     req.headers["User-Agent"] = "Starmap/1.0";
     req.headers["Connection"] = "close";
+    if (!opt.body.empty()) {
+        req.body = opt.body;
+        req.headers["Content-Length"] = std::to_string(opt.body.size());
+    }
 
     std::string serialized_req = req.serialize();
     if (!write_all(*conn, serialized_req.data(), serialized_req.size())) {
         result.error_message = "Failed to send request.";
-        {
-            std::lock_guard<std::mutex> lock(fetch_mutex);
-            Tab* tab = find_tab_by_id(tab_id);
-            if (tab && is_main_resource && tab->active_socket_fd == socket_fd) {
-                tab->active_socket_fd = net::kInvalidSocket;
-            }
-        }
+        if (opt.on_socket_done) opt.on_socket_done(socket_fd);
         return result;
     }
 
     std::string raw_response;
     char recv_buf[4096];
+    bool too_large = false;
     while (true) {
         net::ssize_t_ bytes_received = conn->read(recv_buf, sizeof(recv_buf));
         if (bytes_received < 0) {
@@ -274,18 +249,20 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
         if (bytes_received == 0) {
             break;
         }
+        if (raw_response.size() + (size_t)bytes_received > opt.max_response_bytes) {
+            too_large = true;
+            break;
+        }
         raw_response.append(recv_buf, bytes_received);
     }
 
-    {
-        std::lock_guard<std::mutex> lock(fetch_mutex);
-        Tab* tab = find_tab_by_id(tab_id);
-        if (tab && is_main_resource && tab->active_socket_fd == socket_fd) {
-            tab->active_socket_fd = net::kInvalidSocket;
-        }
-    }
+    if (opt.on_socket_done) opt.on_socket_done(socket_fd);
     conn.reset();
 
+    if (too_large) {
+        result.error_message = "Response exceeds size limit.";
+        return result;
+    }
     if (result.error_message == "Socket read failure.") {
         return result;
     }
@@ -302,6 +279,32 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
     result.status_text = res_msg.status_text;
     result.headers = res_msg.headers;
     result.body = res_msg.body;
+    return result;
+}
+
+FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_resource) {
+    RequestOptions opt;
+    opt.on_socket = [tab_id, &url_str, is_main_resource](net::socket_t fd) {
+        std::lock_guard<std::mutex> lock(fetch_mutex);
+        Tab* tab = find_tab_by_id(tab_id);
+        if (!tab) return false;
+        if (is_main_resource && url_str != tab->current_url) return false;
+        if (is_main_resource) tab->active_socket_fd = fd;
+        return true;
+    };
+    opt.on_socket_done = [tab_id, is_main_resource](net::socket_t fd) {
+        if (!is_main_resource) return;
+        std::lock_guard<std::mutex> lock(fetch_mutex);
+        Tab* tab = find_tab_by_id(tab_id);
+        if (tab && tab->active_socket_fd == fd) tab->active_socket_fd = net::kInvalidSocket;
+    };
+
+    FetchResult result = perform_request(url_str, opt);
+    if (!result.success && result.error_message == "Cancelled") {
+        // Distinguishes a closed tab from a superseded navigation for the caller.
+        std::lock_guard<std::mutex> lock(fetch_mutex);
+        if (!find_tab_by_id(tab_id)) result.error_message = "Tab closed";
+    }
     return result;
 }
 

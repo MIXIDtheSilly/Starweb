@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>StarWeb fetch Demo</title>
+</head>
+
+<body>
+    <h1 style="color:#a97bff">fetch</h1>
+    <p style="color:#cccccc">Page scripts can call the STWP API served alongside this page.</p>
+
+    <button id="get">GET /api/time</button>
+    <button id="post">POST /api/echo</button>
+    <button id="cross">Cross-origin (blocked)</button>
+    <button id="bad">404 route</button>
+
+    <h2 id="out">ready</h2>
+
+    <script>
+        local out = document.getElementById("out")
+
+        local function show(text, color)
+            out.textContent = text
+            out.style.color = color or "#cccccc"
+        end
+
+        document.getElementById("get"):addEventListener("click", function()
+            show("loading...")
+            fetch("/api/time", function(err, res)
+                if err then return show(err, "#f87171") end
+                local t = res:json()
+                show("unix = " .. tostring(t.unix), "#4ade80")
+            end)
+        end)
+
+        document.getElementById("post"):addEventListener("click", function()
+            fetch("/api/echo", { method = "POST", json = { hi = "there", n = 42 } },
+                function(err, res)
+                    if err then return show(err, "#f87171") end
+                    show("echoed " .. res.body, "#4ade80")
+                end)
+        end)
+
+        -- No Access-Control-Allow-Origin from that host, so the body never arrives.
+        document.getElementById("cross"):addEventListener("click", function()
+            fetch("moon://127.0.0.1:8090/api/time", function(err, res)
+                if err then return show(err, "#f87171") end
+                show("unexpectedly allowed: " .. res.body, "#f87171")
+            end)
+        end)
+
+        document.getElementById("bad"):addEventListener("click", function()
+            fetch("/api/nope", function(err, res)
+                if err then return show(err, "#f87171") end
+                show("status " .. res.status .. " ok=" .. tostring(res.ok), "#fbbf24")
+            end)
+        end)
+
+        console.log("json roundtrip:", json.encode(json.decode('{"a":[1,2,{"b":null}]}')))
+    </script>
+</body>
+
+</html>

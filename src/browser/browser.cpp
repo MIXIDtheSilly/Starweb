@@ -73,6 +73,9 @@ static void run_page_scripts(Tab& tab) {
         Tab* t = find_tab_by_id(tid);
         return t ? &t->page_dom : nullptr;
     });
+    // Fetch completions land on a worker thread; without this the loop would sit in
+    // glfwWaitEventsTimeout until the next heartbeat before running the callback.
+    eng->set_wake([]() { glfwPostEmptyEvent(); });
     eng->set_url_provider([tid]() -> std::string {
         Tab* t = find_tab_by_id(tid);
         return t ? t->current_url : std::string();
@@ -222,6 +225,7 @@ bool LoadTextureFromMemory(const unsigned char* image_data, int image_size, unsi
 int main() {
     net::Startup net_startup;
     std::filesystem::create_directories("cache");
+    prune_media_cache(256ull * 1024 * 1024);
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW" << std::endl;
         return 1;
@@ -476,7 +480,7 @@ int main() {
         dispatch_page_keys(window);
 
         for (auto& [id, eng] : g_script_engines)
-            if (eng) { eng->poll_timers(); eng->run_raf(); }
+            if (eng) { eng->poll_fetches(); eng->poll_timers(); eng->run_raf(); }
 
         if (!g_pending_navs.empty()) {
             auto navs = std::move(g_pending_navs);

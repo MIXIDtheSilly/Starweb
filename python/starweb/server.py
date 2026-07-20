@@ -20,6 +20,7 @@ _CHUNK = 4096
 class Route:
     segments: list[str]
     methods: dict[str, object]
+    cors: str | None = None
 
     def match(self, path: str) -> dict[str, str] | None:
         parts = path.split("?")[0].split("#")[0].strip("/").split("/")
@@ -66,11 +67,15 @@ def _error(code: int, text: str, message: str) -> Response:
 
 
 class App:
-    def __init__(self):
+    def __init__(self, cors: str | None = None):
         self._routes: list[Route] = []
         self._static: list[tuple[str, str]] = []
+        self._cors = cors
 
-    def route(self, path: str, methods: list[str] | None = None):
+    def route(self, path: str, methods: list[str] | None = None,
+              cors: str | None = None):
+        """cors names the origin allowed to read this route from a page script
+        ("*" for any). Without it a cross-origin fetch is refused by the browser."""
         segments = path.strip("/").split("/")
 
         def decorator(fn):
@@ -78,9 +83,12 @@ class App:
                 if existing.segments == segments:
                     for m in (methods or ["GET"]):
                         existing.methods[m.upper()] = fn
+                    if cors is not None:
+                        existing.cors = cors
                     return fn
             self._routes.append(
-                Route(segments, {m.upper(): fn for m in (methods or ["GET"])})
+                Route(segments, {m.upper(): fn for m in (methods or ["GET"])},
+                      cors if cors is not None else self._cors)
             )
             return fn
 
@@ -109,10 +117,13 @@ class App:
                 res.headers["Allow"] = ", ".join(sorted(route.methods))
                 return res
             try:
-                return _coerce(handler(req, **params))
+                res = _coerce(handler(req, **params))
             except Exception:
                 traceback.print_exc()
                 return _error(500, "Internal Server Error", "Handler failed.")
+            if route.cors and "Access-Control-Allow-Origin" not in res.headers:
+                res.headers["Access-Control-Allow-Origin"] = route.cors
+            return res
 
         for prefix, root in self._static:
             if path.startswith(prefix or "/"):

@@ -5,12 +5,17 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <vector>
 
 struct lua_State;
 struct lua_Debug;
+struct FetchInbox;
+
+class ScriptEngine;
+ScriptEngine* engine_from_lua(lua_State* L);
 
 // Per-tab sandboxed Lua 5.4 interpreter for untrusted page scripts.
 class ScriptEngine {
@@ -20,6 +25,8 @@ public:
     using DomProvider = std::function<DomNode*()>;
     using NavSink = std::function<void(const std::string&)>;
     using UrlProvider = std::function<std::string()>;
+    // Called from a fetch worker thread to pull the render loop out of its idle wait.
+    using WakeSink = std::function<void()>;
 
     struct MemState {
         std::size_t used = 0;
@@ -59,6 +66,10 @@ public:
     void clear_timer(int id);
     void poll_timers();
 
+    void set_wake(WakeSink w);
+    const std::shared_ptr<FetchInbox>& fetch_inbox() const { return fetch_inbox_; }
+    void poll_fetches();
+
     struct CanvasState {
         ImVec4 fill = ImVec4(0, 0, 0, 1);
         ImVec4 stroke = ImVec4(0, 0, 0, 1);
@@ -87,6 +98,12 @@ public:
     bool ok() const { return L_ != nullptr; }
 
 private:
+    // Calls one registry-ref'd handler with args pushed by `push_args`. Both the
+    // pushing and the call happen inside a single pcall, because pushing allocates
+    // and an error raised outside one would hit Lua's panic handler and abort.
+    void call_handler(int ref, int nargs, const std::function<void(lua_State*)>& push_args,
+                      const char* tag);
+
     static int  p_install(lua_State* L);
     static int  l_print(lua_State* L);
     static int  l_alert(lua_State* L);
@@ -114,6 +131,8 @@ private:
     std::vector<Timer> timers_;
     int next_timer_id_ = 1;
     static constexpr size_t kMaxTimers = 256;
+
+    std::shared_ptr<FetchInbox> fetch_inbox_;
 
     std::unordered_map<uint64_t, std::vector<CanvasOp>> canvas_ops_;
     std::unordered_map<uint64_t, CanvasState> canvas_state_;

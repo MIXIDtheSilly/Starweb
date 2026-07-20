@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>StarWeb Speed Test</title>
+</head>
+
+<body>
+    <h1 style="color:#a97bff">speed test</h1>
+    <p style="color:#cccccc">
+        Measures STWP round-trip latency and throughput against the origin serving this page.
+        Timing comes from requestAnimationFrame, so treat single samples as approximate.
+    </p>
+
+    <button id="run">Run test</button>
+
+    <h2 id="status" style="color:#cccccc">ready</h2>
+
+    <p style="color:#888888">latency &mdash; 6 x test.txt</p>
+    <h3 id="lat" style="color:#666666">-</h3>
+
+    <p style="color:#888888">download &mdash; 6 x 4 MiB blob (24 MiB), falls back to isaac.mov on a static origin</p>
+    <h3 id="dl" style="color:#666666">-</h3>
+
+    <p style="color:#888888">upload &mdash; 8 x 1 MiB POST to /api/echo (round-trip: the body is echoed back)</p>
+    <h3 id="ul" style="color:#666666">-</h3>
+
+    <script>
+        local SMALL      = "/test.txt"
+        local ECHO       = "/api/echo"
+
+        -- 4 MiB a round, comfortably under the 8 MiB kMaxResponse ceiling. Served
+        -- by the example API; a plain static mount falls back to the largest file
+        -- actually on disk.
+        local DL_BYTES   = 4 * 1024 * 1024
+        local BLOB       = "/api/blob/" .. DL_BYTES
+        local FALLBACK   = "/isaac.mov"
+
+        local LAT_ROUNDS = 6
+        local DL_ROUNDS  = 6            -- 24 MiB total
+        local UL_ROUNDS  = 8
+        local UL_BYTES   = 1024 * 1024  -- exactly kMaxRequestBody, the hard cap
+        local CONC       = 4            -- kMaxInflight is 6; leave headroom
+
+        local status = document.getElementById("status")
+        local lat    = document.getElementById("lat")
+        local dl     = document.getElementById("dl")
+        local ul     = document.getElementById("ul")
+
+        -- The script sandbox exposes no os/Date, so the only clock is the
+        -- millisecond stamp handed to requestAnimationFrame. Keep a frame loop
+        -- running for the duration of a test and read the last stamp; the main
+        -- loop never sleeps while a frame is pending, so the value is at most
+        -- one iteration stale.
+        local clock, ticking = 0, false
+
+        local function tick(ts)
+            clock = ts
+            if ticking then requestAnimationFrame(tick) end
+        end
+
+        local function clock_start()
+            if ticking then return end
+            ticking = true
+            requestAnimationFrame(tick)
+        end
+
+        local function clock_stop() ticking = false end
+        local function now() return clock end
+
+        local function mbps(bytes, ms)
+            if ms <= 0 then return "-" end
+            return string.format("%.1f Mbps", (bytes * 8) / (ms * 1000))
+        end
+
+        local function mib(bytes)
+            return string.format("%.1f MiB", bytes / 1048576)
+        end
+
+        local function bar(done, total)
+            return string.rep("#", done) .. string.rep(".", total - done)
+        end
+
+        local function set(el, text, color)
+            el.textContent = text
+            el.style.color = color or "#cccccc"
+        end
+
+        local running = false
+
+        -- Bail out of the whole run: later stages are never scheduled because each
+        -- one only starts from the previous stage's completion callback.
+        local function abort(el, msg)
+            set(el, msg, "#f87171")
+            set(status, "stopped", "#f87171")
+            clock_stop()
+            running = false
+        end
+
+        -- 1. Latency: smallest file on the origin, one request at a time, so each
+        --    sample is a full serial round trip rather than a queued one.
+        local function run_latency(done)
+            local samples = {}
+
+            local function step(i)
+                if i > LAT_ROUNDS then
+                    local sum, best = 0, samples[1]
+                    for _, v in ipairs(samples) do
+                        sum = sum + v
+                        if v < best then best = v end
+                    end
+                    set(lat, string.format("min %.1f ms / avg %.1f ms",
+                        best, sum / #samples), "#4ade80")
+                    return done()
+                end
+
+                local t0 = now()
+                fetch(SMALL, function(err, res)
+                    if not running then return end
+                    if err then return abort(lat, err) end
+                    if not res.ok then
+                        return abort(lat, SMALL .. " -> status " .. res.status)
+                    end
+                    samples[#samples + 1] = now() - t0
+                    set(lat, bar(i, LAT_ROUNDS), "#fbbf24")
+                    step(i + 1)
+                end)
+            end
+
+            set(status, "measuring latency...", "#fbbf24")
+            step(1)
+        end
+
+        -- 2. Download: pull the payload repeatedly with a small pool. Nothing in the
+        --    fetch path caches responses, so every round really crosses the socket.
+        local function pool_download(url, done)
+            local total, launched, finished = 0, 0, 0
+            local t0 = now()
+
+            local function launch()
+                if launched >= DL_ROUNDS then return end
+                launched = launched + 1
+
+                -- Default timeout on purpose: timeout_secs becomes SO_RCVTIMEO, an
+                -- idle timeout per recv, not a deadline for the whole transfer. A
+                -- slow-but-steady stream never trips it, so the test measures under
+                -- the same regime a real page load gets.
+                fetch(url, function(err, res)
+                    -- A sibling in the pool may have already aborted the run.
+                    if not running then return end
+                    if err then return abort(dl, err) end
+                    if not res.ok then
+                        return abort(dl, url .. " -> status " .. res.status)
+                    end
+
+                    finished = finished + 1
+                    total = total + #res.body
+
+                    if finished >= DL_ROUNDS then
+                        local ms = now() - t0
+                        set(dl, string.format("%s in %.0f ms = %s",
+                            mib(total), ms, mbps(total, ms)), "#4ade80")
+                        return done()
+                    end
+
+                    set(dl, bar(finished, DL_ROUNDS), "#fbbf24")
+                    launch()
+                end)
+            end
+
+            for _ = 1, CONC do launch() end
+        end
+
+        -- Probe the blob route with a token request before committing to it, so a
+        -- static-only origin degrades to isaac.mov instead of failing the stage.
+        local function run_download(done)
+            set(status, "measuring download...", "#fbbf24")
+
+            fetch("/api/blob/16", function(err, res)
+                if not running then return end
+                if err or not res.ok then
+                    set(status, "measuring download (static fallback)...", "#fbbf24")
+                    return pool_download(FALLBACK, done)
+                end
+                pool_download(BLOB, done)
+            end)
+        end
+
+        -- 3. Upload: /api/echo returns the body verbatim, so this figure covers a
+        --    full round trip in both directions, not upstream alone.
+        local function run_upload(done)
+            local chunk = "StarWeb-speed-test-payload-0123456789abcdef"
+            local body = string.rep(chunk, math.ceil(UL_BYTES / #chunk)):sub(1, UL_BYTES)
+
+            local total, launched, finished = 0, 0, 0
+            local t0 = now()
+
+            local function launch()
+                if launched >= UL_ROUNDS then return end
+                launched = launched + 1
+
+                fetch(ECHO, { method = "POST", body = body }, function(err, res)
+                    if not running then return end
+                    if err then return abort(ul, err) end
+                    if not res.ok then
+                        set(ul, "unavailable (status " .. res.status ..
+                            ") - needs the example API server, not a plain static mount",
+                            "#fbbf24")
+                        return done()
+                    end
+
+                    finished = finished + 1
+                    total = total + #body
+
+                    if finished >= UL_ROUNDS then
+                        local ms = now() - t0
+                        set(ul, string.format("%s in %.0f ms = %s",
+                            mib(total), ms, mbps(total, ms)), "#4ade80")
+                        return done()
+                    end
+
+                    set(ul, bar(finished, UL_ROUNDS), "#fbbf24")
+                    launch()
+                end)
+            end
+
+            set(status, "measuring upload...", "#fbbf24")
+            for _ = 1, math.min(CONC, UL_ROUNDS) do launch() end
+        end
+
+        document.getElementById("run"):addEventListener("click", function()
+            if running then return end
+            running = true
+            clock_start()
+
+            set(lat, "-", "#666666")
+            set(dl, "-", "#666666")
+            set(ul, "-", "#666666")
+
+            run_latency(function()
+                run_download(function()
+                    run_upload(function()
+                        set(status, "done", "#4ade80")
+                        clock_stop()
+                        running = false
+                    end)
+                end)
+            end)
+        end)
+    </script>
+</body>
+
+</html>

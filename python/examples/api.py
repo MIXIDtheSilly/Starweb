@@ -35,6 +35,30 @@ def greet(req, name):
     return {"hello": name, "loud": req.query.get("loud") == "1"}
 
 
+# Built once at import so a request costs a slice, not a fill: the speed test
+# wants to measure the socket, not how fast Python can make bytes. Varied enough
+# that a compressing transport can't trivially collapse it.
+_BLOB = (bytes(range(256)) * 4096)          # 1 MiB
+_BLOB = _BLOB * 8                           # 8 MiB, the fetch response ceiling
+
+
+@app.route("/api/blob/<size>")
+def blob(req, size):
+    try:
+        n = int(size)
+    except ValueError:
+        return Response(400, body=b"size must be an integer")
+    n = max(0, min(n, len(_BLOB)))
+    return Response(200, body=_BLOB[:n],
+                    headers={"Content-Type": "application/octet-stream"})
+
+
+# Readable from a page on any origin; without cors= a cross-origin fetch is refused.
+@app.route("/api/public", cors="*")
+def public(req):
+    return {"open": True, "origin": req.headers.get("origin", "")}
+
+
 # Routes win over static, so /api/* still reaches the handlers above.
 if WWW.is_dir():
     app.mount_static("/", str(WWW))
