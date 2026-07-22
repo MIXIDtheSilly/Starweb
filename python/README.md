@@ -55,6 +55,21 @@ if __name__ == "__main__":
 Routes take precedence over mounted static files, so `/api/*` still reaches the
 handlers above.
 
+## Media and range requests
+
+Mounted static files answer `Range` requests, so a browser can stream video
+instead of downloading it whole:
+
+```sh
+starweb get moon://localhost:8090/video.mp4 -H "Range: bytes=0-65535"
+```
+
+Responses advertise `Accept-Ranges: bytes` and answer `206` with a
+`Content-Range`; `bytes=-N` reads a trailing moov atom, and a `Range` that
+cannot be satisfied gets `416`. File bodies are sent straight from disk in 64 KB
+chunks, so serving a 350 MB video costs a couple of MB of memory rather than
+three copies of the file.
+
 ## CLI
 
 ```sh

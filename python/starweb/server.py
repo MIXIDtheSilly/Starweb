@@ -14,6 +14,7 @@ from .url import DEFAULT_PORTS, format_host
 SERVER = "starweb-py/0.1"
 RECV_TIMEOUT = 5.0
 _CHUNK = 4096
+_FILE_CHUNK = 64 * 1024
 
 
 @dataclass
@@ -130,7 +131,8 @@ class App:
                 if req.method != "GET":
                     return _error(405, "Method Not Allowed",
                                   "Only GET method is supported.")
-                return static.serve_file(root, path[len(prefix):] or "/")
+                return static.serve_file(root, path[len(prefix):] or "/",
+                                         req.headers.get("range"))
 
         return _error(404, "Not Found", "Not found.")
 
@@ -277,11 +279,15 @@ class Server:
                            f"{req.version} -> {res.status_code}")
 
             res.headers.setdefault("Server", SERVER)
-            res.headers["Content-Length"] = str(len(res.body))
+            res.headers["Content-Length"] = str(res.content_length)
             res.headers["Connection"] = "close"
             try:
+                # serialize() emits only the head when the body is file-backed.
                 conn.sendall(res.serialize())
+                if res.file is not None:
+                    for chunk in res.file.chunks(_FILE_CHUNK):
+                        conn.sendall(chunk)
             except OSError:
-                pass
+                pass  # peer went away mid-transfer
         finally:
             tls.close_gracefully(conn)

@@ -88,9 +88,9 @@ stwp_server: src/server/server.cpp src/common/tls.cpp $(COMMON_HDRS)
 stwp_client: src/client/client.cpp src/common/tls.cpp $(COMMON_HDRS)
 	$(CXX) $(CXXFLAGS) $(SSL_CFLAGS) src/client/client.cpp src/common/tls.cpp $(SSL_LIBS) -o stwp_client
 
-stwp_browser: src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/renderer.cpp src/browser/layout.cpp src/browser/script.cpp src/browser/script_fetch.cpp src/common/tls.cpp $(MEDIA_SRCS) $(IMGUI_OBJS) $(YOGA_OBJS) $(LUA_OBJS) $(COMMON_HDRS) $(BROWSER_HDRS)
+stwp_browser: src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/media_source.cpp src/browser/renderer.cpp src/browser/layout.cpp src/browser/script.cpp src/browser/script_fetch.cpp src/common/tls.cpp $(MEDIA_SRCS) $(IMGUI_OBJS) $(YOGA_OBJS) $(LUA_OBJS) $(COMMON_HDRS) $(BROWSER_HDRS)
 	$(CXX) $(CXXFLAGS) $(MEDIA_FLAGS) $(MEDIA_CFLAGS) $(GLFW_CFLAGS) $(SSL_CFLAGS) $(IMGUI_INC) $(YOGA_INC) $(LUA_INC) \
-		src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/renderer.cpp src/browser/layout.cpp src/browser/script.cpp src/browser/script_fetch.cpp src/common/tls.cpp $(MEDIA_SRCS) $(IMGUI_OBJS) $(YOGA_OBJS) $(LUA_OBJS) \
+		src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/media_source.cpp src/browser/renderer.cpp src/browser/layout.cpp src/browser/script.cpp src/browser/script_fetch.cpp src/common/tls.cpp $(MEDIA_SRCS) $(IMGUI_OBJS) $(YOGA_OBJS) $(LUA_OBJS) \
 		$(GLFW_LIBS) $(GL_LIBS) $(MEDIA_LIBS) $(SSL_LIBS) -o stwp_browser
 
 clean:

@@ -407,13 +407,6 @@ int main() {
                     tab.active_players.clear();
 
                     if (tab.active_page.success) {
-                        for (const auto& [url, bytes] : tab.active_page.fetched_media) {
-                            std::string cache_path = get_cache_filepath(url);
-                            std::ofstream outfile(cache_path, std::ios::binary);
-                            if (outfile) {
-                                outfile.write(bytes.data(), bytes.size());
-                            }
-                        }
                         // Load new textures on the main thread
                         for (const auto& [url, bytes] : tab.active_page.fetched_images) {
                             TextureInfo tex;

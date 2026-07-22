@@ -3,6 +3,9 @@
 #include <cctype>
 #include <filesystem>
 #include <system_error>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 std::vector<Tab> tabs;
 int active_tab_idx = 0;
@@ -48,6 +51,23 @@ std::string get_cache_filepath(const std::string& url) {
     return ss.str();
 }
 
+// Blocks actually allocated, not the logical length. A streamed entry is a sparse
+// file as long as the whole video but holding only the watched part, so file_size
+// would charge it the full length and evict everything else to no purpose.
+static std::uintmax_t allocated_bytes(const std::filesystem::path& p,
+                                      std::uintmax_t fallback) {
+#ifdef _WIN32
+    // No st_blocks here; the logical size overstates a partial entry, which only
+    // makes eviction more eager than it needs to be.
+    (void)p;
+    return fallback;
+#else
+    struct stat st;
+    if (::stat(p.c_str(), &st) != 0) return fallback;
+    return (std::uintmax_t)st.st_blocks * 512u;
+#endif
+}
+
 // Nothing else deletes from cache/, so without this it grows for the life of the
 // install. Called once at startup, before any VideoPlayer opens a file: pruning
 // mid-session could pull a file out from under a player still reading it.
@@ -68,10 +88,18 @@ void prune_media_cache(std::uintmax_t max_bytes) {
 
     for (fs::directory_iterator it("cache", ec), end; !ec && it != end; it.increment(ec)) {
         if (!it->is_regular_file(ec)) continue;
-        if (it->path().filename().string().rfind("media_", 0) != 0) continue;
+        std::string name = it->path().filename().string();
+        if (name.rfind("media_", 0) != 0) continue;
+
+        // Sidecar indexes are tiny and meaningless on their own; they are evicted
+        // with the file they describe, below.
+        if (name.size() >= 7 && name.compare(name.size() - 7, 7, ".ranges") == 0) {
+            continue;
+        }
 
         auto size = it->file_size(ec);
         if (ec) { ec.clear(); continue; }
+        size = allocated_bytes(it->path(), size);
         auto mtime = it->last_write_time(ec);
         if (ec) { ec.clear(); continue; }
 
@@ -88,7 +116,14 @@ void prune_media_cache(std::uintmax_t max_bytes) {
 
     for (const auto& e : entries) {
         if (total <= max_bytes) break;
-        if (fs::remove(e.path, ec)) total -= e.size;
+        if (fs::remove(e.path, ec)) {
+            total -= e.size;
+            // A partial entry's index must go with it, or the next run trusts chunks
+            // that are no longer on disk.
+            fs::path sidecar = e.path;
+            sidecar += ".ranges";
+            fs::remove(sidecar, ec);
+        }
         ec.clear();  // a file we cannot remove is skipped, not fatal
     }
 }

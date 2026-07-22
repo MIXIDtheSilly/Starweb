@@ -118,7 +118,6 @@ struct FetchResult {
     DomNode dom;
     std::unordered_map<std::string, CssStyle> css_classes;
     std::unordered_map<std::string, std::string> fetched_images;
-    std::unordered_map<std::string, std::string> fetched_media;
     std::vector<PageScript> scripts;
 };
 

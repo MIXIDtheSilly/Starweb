@@ -2,6 +2,7 @@
 #include "parser.hpp"
 #include "fetcher.hpp"
 #include "globals.hpp"
+#include "media_source.hpp"
 #include "theme.hpp"
 #include "media_player.hpp"
 #include "layout.hpp"
@@ -510,8 +511,24 @@ void DrawFullscreenIcon(ImDrawList* draw_list, ImVec2 center, ImU32 color, float
 static const ImU32 kMediaIconColor   = IM_COL32(240, 240, 245, 255);
 static const ImU32 kMediaTrackColor  = IM_COL32(120, 120, 120, 200);
 static const ImU32 kMediaFillColor   = IM_COL32(255, 255, 255, 255);
+// Between the track and the played fill, so buffered reads as "ahead of where you
+// are" without competing with the playhead.
+static const ImU32 kMediaBufferColor = IM_COL32(200, 200, 205, 190);
+
+// A fully cached entry plays straight off disk; anything else streams. The sidecar's
+// absence is what means complete — testing existence alone hands the backend the
+// sparse file MediaSource allocates up front, which parses as undecodable.
+static VideoPlayer* make_media_player(int tab_id, const std::string& url, bool audio_only) {
+    std::string cache_path = get_cache_filepath(url);
+    if (std::filesystem::exists(cache_path) &&
+        !std::filesystem::exists(cache_path + ".ranges")) {
+        return new VideoPlayer(cache_path, audio_only);
+    }
+    return new VideoPlayer(tab_id, url, audio_only);
+}
 
 // Vertical volume popup shown above the speaker button; handles drag and click-away close.
+
 static void DrawVolumePopup(ImDrawList* draw_list, VideoPlayer* player, ImVec2 btn_min, ImVec2 btn_max,
                             ImGuiID open_id, const std::string& id_suffix) {
     float popup_w = 24.0f, popup_h = 80.0f, gap = 4.0f;
@@ -608,6 +625,18 @@ static void DrawMediaControlBar(ImDrawList* draw_list, VideoPlayer* player,
         float pct = duration > 0.0f ? (float)(current_time / duration) : 0.0f;
         float split_x = tl_x + pct * tl_w;
         draw_list->AddRectFilled(ImVec2(tl_x, cy - 1.5f), ImVec2(tl_x + tl_w, cy + 1.5f), kMediaTrackColor, 2.0f);
+
+        // What is held locally, under the played fill. With a bounded read-ahead the
+        // buffer is a window around the playhead rather than a run from the start, so
+        // each span is drawn where it actually sits.
+        for (auto [s, e] : player->buffered_spans(1.0 / (double)tl_w)) {
+            float bx0 = tl_x + (float)s * tl_w;
+            float bx1 = tl_x + (float)e * tl_w;
+            if (bx1 - bx0 < 1.0f) bx1 = bx0 + 1.0f;
+            draw_list->AddRectFilled(ImVec2(bx0, cy - 1.5f), ImVec2(bx1, cy + 1.5f),
+                                     kMediaBufferColor, 2.0f);
+        }
+
         if (pct > 0.0f) draw_list->AddRectFilled(ImVec2(tl_x, cy - 1.5f), ImVec2(split_x, cy + 1.5f), kMediaFillColor, 2.0f);
         draw_list->AddCircleFilled(ImVec2(split_x, cy), active ? 6.0f : 5.0f, kMediaFillColor);
     }
@@ -1757,13 +1786,11 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             absolute_src = resolve_url(tab.current_url, absolute_src);
         }
         
-        std::string cache_path = get_cache_filepath(absolute_src);
-        
         VideoPlayer* player = nullptr;
         auto player_it = tab.active_players.find(absolute_src);
         if (player_it == tab.active_players.end()) {
-            if (std::filesystem::exists(cache_path)) {
-                player = new VideoPlayer(cache_path, false);
+            player = make_media_player(tab.id, absolute_src, false);
+            if (player) {
                 if (node.loop) player->set_loop(true);
                 if (node.muted) player->set_muted(true);
                 if (node.autoplay) {
@@ -1775,9 +1802,32 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             player = player_it->second;
         }
 
-        float w = merged.width > 0.0f ? merged.width : 500.0f;
-        float h = merged.height > 0.0f ? merged.height : 375.0f;
-        
+        // Sized like <img> is from its texture: the video's own dimensions are the
+        // default, and a single specified axis derives the other from them, so the
+        // picture keeps its real aspect instead of sitting in a fixed box. The
+        // dimensions only exist once a frame has decoded, hence the 16:9 stand-in.
+        float nat_w = player ? (float)player->get_width() : 0.0f;
+        float nat_h = player ? (float)player->get_height() : 0.0f;
+        bool has_natural = nat_w > 0.0f && nat_h > 0.0f;
+
+        float w, h;
+        if (merged.width > 0.0f && merged.height > 0.0f) {
+            w = merged.width;
+            h = merged.height;
+        } else if (merged.width > 0.0f) {
+            w = merged.width;
+            h = has_natural ? w * (nat_h / nat_w) : w * 9.0f / 16.0f;
+        } else if (merged.height > 0.0f) {
+            h = merged.height;
+            w = has_natural ? h * (nat_w / nat_h) : h * 16.0f / 9.0f;
+        } else if (has_natural) {
+            w = nat_w;
+            h = nat_h;
+        } else {
+            w = 640.0f;
+            h = 360.0f;
+        }
+
         float avail_width = ImGui::GetContentRegionAvail().x - (parent_accumulated_right + merged.margin_right + merged.padding_right);
         if (avail_width < 0.0f) avail_width = 0.0f;
         if (w > avail_width && avail_width > 0.0f) {
@@ -1809,7 +1859,14 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                 ImVec2 video_max = ImVec2(video_pos.x + w, video_pos.y + h);
                 draw_list->AddRectFilled(video_pos, video_max, IM_COL32(10, 10, 12, 255));
                 ImVec2 center = ImVec2(video_pos.x + w * 0.5f, video_pos.y + h * 0.5f);
-                DrawSpinner(center, 20.0f, 3.0f, Theme::spinner);
+                if (player->has_error()) {
+                    const char* msg = "This video cannot be decoded";
+                    ImVec2 ts = ImGui::CalcTextSize(msg);
+                    draw_list->AddText(ImVec2(center.x - ts.x * 0.5f, center.y - ts.y * 0.5f),
+                                       IM_COL32(200, 200, 205, 255), msg);
+                } else {
+                    DrawSpinner(center, 20.0f, 3.0f, Theme::spinner);
+                }
                 ImGui::Dummy(ImVec2(w, h));
             }
             
@@ -1836,13 +1893,11 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             absolute_src = resolve_url(tab.current_url, absolute_src);
         }
         
-        std::string cache_path = get_cache_filepath(absolute_src);
-        
         VideoPlayer* player = nullptr;
         auto player_it = tab.active_players.find(absolute_src);
         if (player_it == tab.active_players.end()) {
-            if (std::filesystem::exists(cache_path)) {
-                player = new VideoPlayer(cache_path, true);
+            player = make_media_player(tab.id, absolute_src, true);
+            if (player) {
                 if (node.loop) player->set_loop(true);
                 if (node.muted) player->set_muted(true);
                 if (node.autoplay) {

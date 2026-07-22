@@ -46,3 +46,6 @@ cache/
 /python/.pytest_cache
 /python/dist
 /python/*.egg-info
+
+# www (i have to remove it becuase of copyrighted content)
+www/

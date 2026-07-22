@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 
 VERSION = "STWP/1.0"
 
@@ -86,17 +87,45 @@ class Request:
 
 
 @dataclass
+class FileBody:
+    """A body the server sends straight from disk instead of holding in memory.
+
+    A 350 MB video read into `body` costs about three times the file by the time
+    serialize() has made its own copy, which is enough to kill the process."""
+    path: Path
+    offset: int = 0
+    length: int = 0
+
+    def chunks(self, size: int = 64 * 1024):
+        with open(self.path, "rb") as fh:
+            fh.seek(self.offset)
+            remaining = self.length
+            while remaining > 0:
+                data = fh.read(min(size, remaining))
+                if not data:
+                    return
+                remaining -= len(data)
+                yield data
+
+
+@dataclass
 class Response:
     status_code: int = 200
     status_text: str = "OK"
     version: str = VERSION
     headers: dict[str, str] = field(default_factory=dict)
     body: bytes = b""
+    # Set instead of body to stream from disk; serialize() then emits only the head.
+    file: FileBody | None = field(default=None, compare=False, repr=False)
     tls: object | None = field(default=None, compare=False, repr=False)
 
     def serialize(self) -> bytes:
         return _serialize(f"{self.version} {self.status_code} {self.status_text}",
                           self.headers, self.body)
+
+    @property
+    def content_length(self) -> int:
+        return self.file.length if self.file is not None else len(self.body)
 
     @property
     def ok(self) -> bool:

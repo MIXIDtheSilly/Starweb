@@ -4,8 +4,10 @@
 #if !defined(__APPLE__) || defined(STWP_FORCE_FFMPEG)
 
 #include "media_player.hpp"
+#include "media_source.hpp"
 
 #include <atomic>
+#include <memory>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -56,12 +58,68 @@ struct DecodedVideoFrame {
     double pts = 0.0;  // seconds
 };
 
+// Adapts MediaSource to FFmpeg's byte-stream callbacks. The seek callback hints the
+// source where playback is headed so a seek does not wait behind the sequential fill.
+struct AvioSource {
+    MediaSource* src = nullptr;
+    int64_t pos = 0;
+};
+
+int avio_read_cb(void* opaque, uint8_t* buf, int size) {
+    auto* s = static_cast<AvioSource*>(opaque);
+    int64_t n = s->src->read_at(s->pos, buf, size);
+    if (n == 0) return AVERROR_EOF;
+    if (n < 0) return AVERROR(EIO);
+    s->pos += n;
+    return (int)n;
+}
+
+int64_t avio_seek_cb(void* opaque, int64_t offset, int whence) {
+    auto* s = static_cast<AvioSource*>(opaque);
+    if (whence == AVSEEK_SIZE) return s->src->size();
+
+    int64_t np;
+    switch (whence & ~AVSEEK_FORCE) {
+        case SEEK_SET: np = offset; break;
+        case SEEK_CUR: np = s->pos + offset; break;
+        case SEEK_END: np = s->src->size() + offset; break;
+        default: return AVERROR(EINVAL);
+    }
+    if (np < 0) return AVERROR(EINVAL);
+    s->pos = np;
+    s->src->hint_seek(np);
+    return np;
+}
+
 } // namespace
 
 struct FFVideoPlayer {
+    FFVideoPlayer(int tab_id, const std::string& url, bool audio_only)
+        : audio_only_(audio_only) {
+        source_ = std::make_unique<MediaSource>(tab_id, url);
+        source_->start();
+        // NOTE: blocks the UI thread for the probe plus the header avformat reads
+        // (~1s on a LAN). Moving this to the decode thread needs the texture created
+        // lazily in update(); the macOS backend avoids it via AVFoundation's queue.
+        if (!source_->wait_ready() || !open_streamed()) {
+            failed_ = true;
+            return;
+        }
+        finish_construction();
+    }
+
     explicit FFVideoPlayer(const std::string& path, bool audio_only)
         : audio_only_(audio_only) {
-        if (!open_input(path)) return;  // valid-but-empty; UI keeps showing a spinner
+        if (!open_input(path)) {
+            failed_ = true;
+            return;
+        }
+        finish_construction();
+    }
+
+    void finish_construction() {
+        // No decodable video track is an error, not a slow load.
+        if (!audio_only_ && video_stream_ < 0) failed_ = true;
         if (!audio_only_ && video_stream_ >= 0) {
             glGenTextures(1, &texture_);
             glBindTexture(GL_TEXTURE_2D, texture_);
@@ -78,6 +136,8 @@ struct FFVideoPlayer {
 
     ~FFVideoPlayer() {
         quit_.store(true);
+        // The decode thread may be parked in read_at; cancel first or the join hangs.
+        if (source_) source_->cancel();
         if (decode_thread_.joinable()) decode_thread_.join();
         if (audio_device_ready_) {
             ma_device_uninit(&audio_device_);
@@ -88,6 +148,11 @@ struct FFVideoPlayer {
         if (vdec_) avcodec_free_context(&vdec_);
         if (adec_) avcodec_free_context(&adec_);
         if (fmt_) avformat_close_input(&fmt_);
+        // AVFMT_FLAG_CUSTOM_IO means avformat_close_input leaves pb to us.
+        if (avio_ctx_) {
+            av_freep(&avio_ctx_->buffer);
+            avio_context_free(&avio_ctx_);
+        }
     }
 
     void play() {
@@ -177,14 +242,47 @@ struct FFVideoPlayer {
     float get_volume() const { return volume_.load(); }
     bool is_muted() const { return muted_.load(); }
     bool is_audio_only() const { return audio_only_; }
+    bool failed() const { return failed_; }
     bool is_looping() const { return loop_.load(); }
     unsigned int get_texture_id() const { return texture_; }
     int get_width() const { return width_; }
     int get_height() const { return height_; }
 
+    std::vector<std::pair<double, double>> buffered_spans(double min_gap) const {
+        if (!source_) return {{0.0, 1.0}};
+        return source_->buffered_spans(min_gap);
+    }
+
 private:
+    bool open_streamed() {
+        constexpr int kIoBuffer = 64 * 1024;
+        auto* buf = (unsigned char*)av_malloc(kIoBuffer);
+        if (!buf) return false;
+
+        avio_src_.src = source_.get();
+        avio_src_.pos = 0;
+        avio_ctx_ = avio_alloc_context(buf, kIoBuffer, 0, &avio_src_,
+                                       avio_read_cb, nullptr, avio_seek_cb);
+        if (!avio_ctx_) {
+            av_free(buf);
+            return false;
+        }
+
+        fmt_ = avformat_alloc_context();
+        if (!fmt_) return false;
+        fmt_->pb = avio_ctx_;
+        fmt_->flags |= AVFMT_FLAG_CUSTOM_IO;
+
+        if (avformat_open_input(&fmt_, nullptr, nullptr, nullptr) != 0) return false;
+        return finish_open();
+    }
+
     bool open_input(const std::string& path) {
         if (avformat_open_input(&fmt_, path.c_str(), nullptr, nullptr) != 0) return false;
+        return finish_open();
+    }
+
+    bool finish_open() {
         if (avformat_find_stream_info(fmt_, nullptr) < 0) return false;
 
         if (fmt_->duration != AV_NOPTS_VALUE) {
@@ -470,6 +568,11 @@ private:
     }
 
     bool audio_only_ = false;
+    bool failed_ = false;
+
+    std::unique_ptr<MediaSource> source_;  // null for local-file playback
+    AvioSource avio_src_;
+    AVIOContext* avio_ctx_ = nullptr;
 
     AVFormatContext* fmt_ = nullptr;
     AVCodecContext* vdec_ = nullptr;
@@ -523,6 +626,9 @@ static FFVideoPlayer* impl(void* p) { return static_cast<FFVideoPlayer*>(p); }
 VideoPlayer::VideoPlayer(const std::string& filepath, bool audio_only) {
     impl_ = new FFVideoPlayer(filepath, audio_only);
 }
+VideoPlayer::VideoPlayer(int tab_id, const std::string& url, bool audio_only) {
+    impl_ = new FFVideoPlayer(tab_id, url, audio_only);
+}
 VideoPlayer::~VideoPlayer() { delete impl(impl_); }
 
 void VideoPlayer::play() { impl(impl_)->play(); }
@@ -533,6 +639,10 @@ void VideoPlayer::set_volume(float vol) { impl(impl_)->set_volume(vol); }
 void VideoPlayer::set_muted(bool mute) { impl(impl_)->set_muted(mute); }
 void VideoPlayer::set_loop(bool lp) { impl(impl_)->set_loop(lp); }
 
+bool VideoPlayer::has_error() const { return impl(impl_)->failed(); }
+std::vector<std::pair<double, double>> VideoPlayer::buffered_spans(double min_gap) const {
+    return impl(impl_)->buffered_spans(min_gap);
+}
 bool VideoPlayer::is_playing() const { return impl(impl_)->is_playing(); }
 double VideoPlayer::get_current_time() const { return impl(impl_)->get_current_time(); }
 double VideoPlayer::get_duration() const { return impl(impl_)->get_duration(); }

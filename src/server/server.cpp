@@ -6,6 +6,9 @@
 #include <sstream>
 #include <filesystem>
 #include <cstring>
+#include <cstdint>
+#include <csignal>
+#include <algorithm>
 #include <memory>
 #include "../common/net.hpp"
 #include "../common/conn.hpp"
@@ -51,6 +54,43 @@ std::string get_content_type(const std::string& path) {
     return "application/octet-stream";
 }
 
+// Parses a single `bytes=a-b` range against a known file size. Multi-range is not
+// supported; returning false here means the caller answers 416, not a full 200.
+// Also handles the suffix form `bytes=-N`, which media players use to read a
+// trailing moov atom.
+bool parse_byte_range(const std::string& header, uintmax_t file_size,
+                      uintmax_t& start, uintmax_t& end) {
+    if (file_size == 0) return false;
+
+    const std::string prefix = "bytes=";
+    if (header.rfind(prefix, 0) != 0) return false;
+    std::string spec = trim(header.substr(prefix.size()));
+    if (spec.find(',') != std::string::npos) return false;
+
+    auto dash = spec.find('-');
+    if (dash == std::string::npos) return false;
+    std::string first = trim(spec.substr(0, dash));
+    std::string last = trim(spec.substr(dash + 1));
+    if (first.empty() && last.empty()) return false;
+
+    try {
+        if (first.empty()) {
+            uintmax_t n = std::stoull(last);
+            if (n == 0) return false;
+            start = n >= file_size ? 0 : file_size - n;
+            end = file_size - 1;
+        } else {
+            start = std::stoull(first);
+            end = last.empty() ? file_size - 1 : std::stoull(last);
+        }
+    } catch (...) {
+        return false;
+    }
+
+    if (end >= file_size) end = file_size - 1;
+    return start <= end && start < file_size;
+}
+
 void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
     std::string buffer;
     char temp_buf[4096];
@@ -93,6 +133,13 @@ void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
     res.headers["Server"] = "StarWeb/1.0";
     res.headers["Connection"] = "close";
 
+    // File bodies are sent straight from disk after the headers rather than being
+    // copied into res.body: building a 350 MB response in memory cost ~3x the file
+    // once serialize() had made its own copy.
+    std::ifstream file;
+    bool stream_body = false;
+    uintmax_t body_offset = 0, body_length = 0;
+
     // An HTTP/1.1 request line parses fine here, so without this an HTTP client
     // would be served content.
     if (req.version != "STWP/1.0") {
@@ -117,7 +164,7 @@ void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
             res.headers["Content-Type"] = "text/plain";
         } else {
             std::string file_path = "www" + safe_path;
-            std::ifstream file(file_path, std::ios::binary);
+            file.open(file_path, std::ios::binary);
             if (!file) {
                 res.status_code = 404;
                 res.status_text = "Not Found";
@@ -125,19 +172,62 @@ void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
                 res.headers["Content-Length"] = std::to_string(res.body.size());
                 res.headers["Content-Type"] = "text/plain";
             } else {
-                std::stringstream ss;
-                ss << file.rdbuf();
-                res.body = ss.str();
-                res.status_code = 200;
-                res.status_text = "OK";
-                res.headers["Content-Length"] = std::to_string(res.body.size());
+                file.seekg(0, std::ios::end);
+                uintmax_t file_size = (uintmax_t)file.tellg();
+
+                res.headers["Accept-Ranges"] = "bytes";
                 res.headers["Content-Type"] = get_content_type(safe_path);
+
+                auto range_it = req.headers.find("range");
+                uintmax_t start = 0, end = 0;
+                bool ranged = range_it != req.headers.end() &&
+                              parse_byte_range(range_it->second, file_size, start, end);
+
+                if (ranged) {
+                    res.status_code = 206;
+                    res.status_text = "Partial Content";
+                    res.headers["Content-Range"] =
+                        "bytes " + std::to_string(start) + "-" + std::to_string(end) +
+                        "/" + std::to_string(file_size);
+                    res.headers["Content-Length"] = std::to_string(end - start + 1);
+                    body_offset = start;
+                    body_length = end - start + 1;
+                    stream_body = true;
+                } else if (range_it != req.headers.end()) {
+                    res.status_code = 416;
+                    res.status_text = "Range Not Satisfiable";
+                    res.headers["Content-Range"] = "bytes */" + std::to_string(file_size);
+                    res.headers["Content-Type"] = "text/plain";
+                    res.body.clear();
+                    res.headers["Content-Length"] = "0";
+                } else {
+                    res.status_code = 200;
+                    res.status_text = "OK";
+                    res.headers["Content-Length"] = std::to_string(file_size);
+                    body_offset = 0;
+                    body_length = file_size;
+                    stream_body = true;
+                }
             }
         }
     }
 
+    // res.body is empty on the streaming path, so this serializes to just the head.
     std::string res_str = res.serialize();
-    write_all(*conn, res_str.data(), res_str.size());
+    if (!write_all(*conn, res_str.data(), res_str.size())) return;
+    if (!stream_body) return;
+
+    file.seekg((std::streamoff)body_offset);
+    std::vector<char> buf(64 * 1024);
+    uintmax_t remaining = body_length;
+    while (remaining > 0) {
+        std::streamsize take = (std::streamsize)std::min<uintmax_t>(buf.size(), remaining);
+        file.read(buf.data(), take);
+        std::streamsize got = file.gcount();
+        if (got <= 0) break;
+        if (!write_all(*conn, buf.data(), (size_t)got)) break;  // peer went away
+        remaining -= (uintmax_t)got;
+    }
 }
 
 // An IPv6 socket with V6ONLY off also serves IPv4 peers as v4-mapped addresses.
@@ -218,6 +308,12 @@ void accept_loop(net::socket_t listener, TlsContext* tls) {
 
 int main(int argc, char* argv[]) {
     net::Startup net_startup;
+
+#ifndef _WIN32
+    // Writing to a socket whose peer has gone would otherwise raise SIGPIPE, whose
+    // default action kills the server. write_all reports it as a failed send instead.
+    signal(SIGPIPE, SIG_IGN);
+#endif
 
     int port = 8090;
     int tls_port = 8490;

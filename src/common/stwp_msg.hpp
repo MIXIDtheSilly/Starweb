@@ -123,16 +123,9 @@ inline bool parse_request(const std::string& raw_data, size_t& bytes_consumed, S
     return true;
 }
 
-inline bool parse_response(const std::string& raw_data, size_t& bytes_consumed, StwpResponse& res) {
-    auto header_end = raw_data.find("\r\n\r\n");
-    if (header_end == std::string::npos) {
-        header_end = raw_data.find("\n\n");
-        if (header_end == std::string::npos) return false;
-    }
-
-    size_t header_len = (raw_data[header_end] == '\r') ? 4 : 2;
-    std::string_view headers_part = std::string_view(raw_data).substr(0, header_end);
-
+// Status line + headers only, for callers that stream the body rather than wait
+// for a complete message.
+inline bool parse_response_headers(std::string_view headers_part, StwpResponse& res) {
     std::vector<std::string_view> lines;
     size_t start = 0;
     while (true) {
@@ -170,19 +163,33 @@ inline bool parse_response(const std::string& raw_data, size_t& bytes_consumed, 
         res.status_text = trim(res_line.substr(second_space + 1));
     }
 
-    size_t content_length = 0;
     for (size_t i = 1; i < lines.size(); ++i) {
         auto line = lines[i];
         if (trim(line).empty()) continue;
         auto [name, value] = parse_header_line(line);
-        if (!name.empty()) {
-            res.headers[name] = value;
-            if (name == "content-length") {
-                try {
-                    content_length = std::stoull(value);
-                } catch (...) {}
-            }
-        }
+        if (!name.empty()) res.headers[name] = value;
+    }
+    return true;
+}
+
+inline bool parse_response(const std::string& raw_data, size_t& bytes_consumed, StwpResponse& res) {
+    auto header_end = raw_data.find("\r\n\r\n");
+    if (header_end == std::string::npos) {
+        header_end = raw_data.find("\n\n");
+        if (header_end == std::string::npos) return false;
+    }
+
+    size_t header_len = (raw_data[header_end] == '\r') ? 4 : 2;
+    if (!parse_response_headers(std::string_view(raw_data).substr(0, header_end), res)) {
+        return false;
+    }
+
+    size_t content_length = 0;
+    auto cl = res.headers.find("content-length");
+    if (cl != res.headers.end()) {
+        try {
+            content_length = std::stoull(cl->second);
+        } catch (...) {}
     }
 
     size_t total_required_len = header_end + header_len + content_length;

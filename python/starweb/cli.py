@@ -6,10 +6,26 @@ from . import Session, StarWebError
 from .server import App
 
 
+def _parse_headers(items: list[str] | None) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for item in items or []:
+        name, sep, value = item.partition(":")
+        if not sep or not name.strip():
+            raise ValueError(f"malformed header (want 'Name: value'): {item!r}")
+        headers[name.strip()] = value.strip()
+    return headers
+
+
 def _get(args) -> int:
     try:
+        headers = _parse_headers(args.header)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    try:
         with Session(cafile=args.ca, timeout=args.timeout) as s:
-            res = s.request(args.method, args.url)
+            res = s.request(args.method, args.url, headers=headers)
     except StarWebError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -53,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     g = sub.add_parser("get", help="fetch a moon:// or star:// URL")
     g.add_argument("url")
     g.add_argument("-X", "--method", default="GET")
+    g.add_argument("-H", "--header", action="append", metavar="'Name: value'",
+                   help="extra request header; repeatable")
     g.add_argument("-v", "--verbose", action="store_true")
     g.add_argument("--ca", default=None)
     g.add_argument("--timeout", type=float, default=10.0)

@@ -238,9 +238,99 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
     }
 
     std::string raw_response;
-    char recv_buf[4096];
+    char recv_buf[65536];
     bool too_large = false;
+
+    // Headers come first regardless: whether the body can be streamed past the
+    // caller depends on what the response turns out to be.
+    constexpr size_t kMaxHeaderBytes = 64u * 1024u;
+    size_t header_end = std::string::npos;
+    size_t sep_len = 0;
+    bool headers_done = false;
+
     while (true) {
+        if ((header_end = raw_response.find("\r\n\r\n")) != std::string::npos) {
+            sep_len = 4;
+            headers_done = true;
+            break;
+        }
+        if ((header_end = raw_response.find("\n\n")) != std::string::npos) {
+            sep_len = 2;
+            headers_done = true;
+            break;
+        }
+        if (raw_response.size() > kMaxHeaderBytes) {
+            too_large = true;
+            break;
+        }
+        net::ssize_t_ n = conn->read(recv_buf, sizeof(recv_buf));
+        if (n < 0) {
+            result.error_message = "Socket read failure.";
+            break;
+        }
+        if (n == 0) break;
+        raw_response.append(recv_buf, n);
+    }
+
+    StwpResponse head_msg;
+    const bool head_ok =
+        headers_done &&
+        parse_response_headers(std::string_view(raw_response).substr(0, header_end), head_msg);
+
+    BodySink sink = opt.on_body_chunk;
+    if (head_ok && !sink && opt.on_headers) {
+        sink = opt.on_headers(head_msg.status_code, head_msg.headers);
+    }
+
+    if (sink) {
+        size_t declared = 0;
+        auto cl = head_msg.headers.find("content-length");
+        if (cl != head_msg.headers.end()) {
+            try { declared = std::stoull(cl->second); } catch (...) {}
+        }
+
+        bool aborted = false;
+        size_t written = 0;
+        std::string prefix = raw_response.substr(header_end + sep_len);
+        if (!prefix.empty()) {
+            size_t take = declared ? std::min(prefix.size(), declared) : prefix.size();
+            if (!sink(prefix.data(), take)) aborted = true;
+            written += take;
+        }
+
+        while (!aborted && (declared == 0 || written < declared)) {
+            net::ssize_t_ n = conn->read(recv_buf, sizeof(recv_buf));
+            if (n < 0) {
+                result.error_message = "Socket read failure.";
+                aborted = true;
+                break;
+            }
+            if (n == 0) break;
+            size_t take = (size_t)n;
+            if (declared && written + take > declared) take = declared - written;
+            if (!sink(recv_buf, take)) {
+                aborted = true;
+                break;
+            }
+            written += take;
+        }
+
+        if (opt.on_socket_done) opt.on_socket_done(socket_fd);
+        conn.reset();
+
+        if (!aborted && (declared == 0 || written == declared)) {
+            result.success = true;
+            result.status_code = head_msg.status_code;
+            result.status_text = head_msg.status_text;
+            result.headers = head_msg.headers;
+        } else if (result.error_message.empty()) {
+            result.error_message = "Body transfer incomplete.";
+        }
+        return result;
+    }
+
+    // Buffered: pull in the rest of the message for parse_response below.
+    while (headers_done && !too_large && result.error_message.empty()) {
         net::ssize_t_ bytes_received = conn->read(recv_buf, sizeof(recv_buf));
         if (bytes_received < 0) {
             result.error_message = "Socket read failure.";
@@ -282,8 +372,25 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
     return result;
 }
 
-FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_resource) {
-    RequestOptions opt;
+// Mirrors the content-type/extension dispatch below, so the streaming decision and
+// the "this page is a video" decision cannot disagree.
+static bool looks_like_media(const std::string& content_type, const std::string& url) {
+    if (!content_type.empty() && content_type != "application/octet-stream") {
+        return content_type.rfind("video/", 0) == 0 || content_type.rfind("audio/", 0) == 0;
+    }
+    auto parsed = parse_url(url);
+    if (!parsed) return false;
+    auto dot = parsed->path.find_last_of('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = parsed->path.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return ext == ".mp4" || ext == ".mov" || ext == ".m4v" ||
+           ext == ".mp3" || ext == ".wav" || ext == ".aac" || ext == ".m4a";
+}
+
+FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_resource,
+                          RequestOptions opt) {
     opt.on_socket = [tab_id, &url_str, is_main_resource](net::socket_t fd) {
         std::lock_guard<std::mutex> lock(fetch_mutex);
         Tab* tab = find_tab_by_id(tab_id);
@@ -349,8 +456,42 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
     tab->url_input[sizeof(tab->url_input) - 1] = '\0';
 
     std::thread([tab_id, final_url]() {
-        FetchResult res = perform_fetch(tab_id, final_url, true);
-        
+        // Navigating straight at a video means the response is the whole file, so it
+        // goes to disk as it arrives rather than through memory. Only decidable once
+        // the headers name a content type.
+        // Navigating straight at a video: the headers are all that is needed to build
+        // the page, and the body is dropped so the player can stream it by range
+        // instead of the whole file arriving before anything renders.
+        std::string media_ct;
+        bool media_nav = false;
+
+        RequestOptions opt;
+        opt.on_headers = [&](int status,
+                             const std::unordered_map<std::string, std::string>& headers) -> BodySink {
+            if (status != 200) return {};
+            std::string ct;
+            auto it = headers.find("content-type");
+            if (it != headers.end()) {
+                ct = it->second;
+                std::transform(ct.begin(), ct.end(), ct.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+            }
+            if (!looks_like_media(ct, final_url)) return {};
+            media_ct = ct.empty() ? "video/mp4" : ct;
+            media_nav = true;
+            return [](const char*, std::size_t) { return false; };  // stop the transfer
+        };
+
+        FetchResult res = perform_fetch(tab_id, final_url, true, opt);
+
+        if (media_nav) {
+            res.success = true;
+            res.status_code = 200;
+            res.status_text = "OK";
+            res.error_message.clear();
+            res.headers["content-type"] = media_ct;
+        }
+
         if (res.success) {
             std::string content_type = "";
             auto it = res.headers.find("content-type");
@@ -414,12 +555,9 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                 video_node.src = final_url;
                 video_node.controls = true;
                 video_node.autoplay = true;
-                video_node.inline_style = "width: 700; height: 500;";
-                video_node.has_inline_style = true;
-                parse_css_properties(video_node.inline_style, video_node.parsed_inline_style);
-                
+                // No size: the renderer takes it from the video itself, the same way
+                // navigating straight at an image sizes from the image.
                 res.dom.children.push_back(video_node);
-                res.fetched_media[final_url] = res.body;
             } else if (is_audio) {
                 res.dom = DomNode();
                 res.dom.tag = "root";
@@ -433,7 +571,6 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                 parse_css_properties(audio_node.inline_style, audio_node.parsed_inline_style);
                 
                 res.dom.children.push_back(audio_node);
-                res.fetched_media[final_url] = res.body;
             } else if (is_html) {
                 const bool page_secure = res.is_secure;
                 std::string css_content = "";
@@ -470,17 +607,15 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                     }
                 }
 
+                // Media is not fetched here at all: the player streams it on demand.
+                // The scan still runs so a mixed-content load is reported rather than
+                // silently attempted later by the renderer.
                 std::vector<std::string> media_srcs;
                 find_media_in_dom(res.dom, media_srcs);
                 for (const auto& src : media_srcs) {
                     std::string media_url = resolve_url(final_url, src);
                     if (is_mixed_content(page_secure, media_url)) {
                         std::cerr << "[mixed-content] blocked media " << media_url << "\n";
-                        continue;
-                    }
-                    FetchResult media_res = perform_fetch(tab_id, media_url, false);
-                    if (media_res.success) {
-                        res.fetched_media[media_url] = media_res.body;
                     }
                 }
 

@@ -39,6 +39,29 @@ Header names are case-insensitive and lowercased on parse. Bodies are delimited 
 `Content-Length`. Every request currently uses `Connection: close`, so one
 connection carries exactly one request/response pair.
 
+## Range requests
+
+File responses advertise `Accept-Ranges: bytes`, and a request may ask for a slice:
+
+```
+GET /video.mp4 STWP/1.0
+Range: bytes=0-1048575
+```
+
+```
+STWP/1.0 206 Partial Content
+Content-Range: bytes 0-1048575/137404199
+Content-Length: 1048576
+```
+
+Three forms are accepted — `bytes=a-b`, `bytes=a-` (to EOF), and `bytes=-n` (the
+trailing *n* bytes, which is how a player finds an MP4's `moov` atom). An end past
+EOF is clamped. A range that cannot be satisfied — a start past EOF, a malformed
+spec, or a multi-range request, which is deliberately unsupported — is answered
+`416 Range Not Satisfiable` with `Content-Range: bytes */<size>`; the server never
+answers a range request with the wrong slice. A request with no `Range` header
+still gets the whole file as `200`.
+
 ## The `star://` connection
 
 Establishing a `star://` connection is two handshakes stacked:
