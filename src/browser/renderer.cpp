@@ -21,13 +21,18 @@
 std::string PlatformOpenFileDialog();
 #endif
 
+// Both field guards below fall back to these, so an <input> and a <select> that
+// specify no padding are the same height standing next to each other.
+static constexpr float kFieldPadX = 4.0f;
+static constexpr float kFieldPadY = 2.0f;
+
 InputStyleGuard::InputStyleGuard(const CssStyle& merged) {
     float rounding = merged.border_radius >= 0.0f ? merged.border_radius : 0.0f;
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, merged.border_width >= 0.0f ? merged.border_width : 1.0f);
-    
-    float pad_x = merged.padding_left > 0.0f ? merged.padding_left : ImGui::GetStyle().FramePadding.x;
-    float pad_y = merged.padding_top > 0.0f ? merged.padding_top : ImGui::GetStyle().FramePadding.y;
+
+    float pad_x = merged.padding_left > 0.0f ? merged.padding_left : kFieldPadX;
+    float pad_y = merged.padding_top > 0.0f ? merged.padding_top : kFieldPadY;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad_x, pad_y));
     
     ImVec4 frame_bg = merged.has_bg ? merged.bg_color : ImVec4(0.16f, 0.16f, 0.18f, 1.00f);
@@ -324,8 +329,8 @@ struct ChromeFieldGuard {
         float rounding = m.border_radius >= 0.0f ? m.border_radius : 2.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, m.border_width > 0.0f ? m.border_width : 1.0f);
-        float pad_x = m.padding_left > 0.0f ? m.padding_left : 4.0f;
-        float pad_y = m.padding_top  > 0.0f ? m.padding_top  : 2.0f;
+        float pad_x = m.padding_left > 0.0f ? m.padding_left : kFieldPadX;
+        float pad_y = m.padding_top  > 0.0f ? m.padding_top  : kFieldPadY;
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad_x, pad_y));
 
         ImVec4 bg = m.has_bg ? m.bg_color : ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -778,8 +783,13 @@ void render_flow_children(DomNode& parent, const CssStyle& merged, Tab& tab,
         }
 
         bool text_inline = is_text_inline_node(child);
+        // Inline by tag, unless the element asks to be a block. render_node's own
+        // is_inline_element already honours `display`, so deciding it from the tag
+        // alone here would lay a block-level widget out on the inline path and
+        // charge it the inter-item spacing below.
         bool complex_inline = (child.tag == "a" || child.tag == "span" || child.tag == "button" ||
-                               child.tag == "input" || child.tag == "select");
+                               child.tag == "input" || child.tag == "select") &&
+                              merge_node_style(child, merged, tab).display != "block";
         bool inl = text_inline || complex_inline;
 
         if (inl) {
@@ -830,6 +840,15 @@ CssStyle merge_node_style(const DomNode& node, const CssStyle& parent_style, Tab
     }
     if (node.has_inline_style) {
         apply_style(merged, node.parsed_inline_style);
+    }
+    // Fold vw/vh down to pixels here, so layout and painting only ever see the
+    // pixel fields. A zero viewport (before the first frame) leaves them unset.
+    if (merged.width_vw > -1.0f && page_viewport_w > 0.0f) {
+        merged.width = merged.width_vw * 0.01f * page_viewport_w;
+    }
+    if (merged.height_vh > -1.0f && page_viewport_h > 0.0f) {
+        merged.height = merged.height_vh * 0.01f * page_viewport_h;
+        tab.vp_fit_used = true;  // opt into the slack convergence, as canvas does
     }
     return merged;
 }
@@ -897,6 +916,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
     ImDrawListSplitter splitter;
     ImVec2 start_pos = ImGui::GetCursorScreenPos();
     ImVec2 content_start = start_pos;
+    float block_avail_w = -1.0f;
 
     float base_font_scale = merged.font_size;
     if (node.tag == "h1") base_font_scale *= 1.8f;
@@ -915,7 +935,16 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.margin_left);
         
         content_start = ImGui::GetCursorScreenPos();
-        
+
+        // A block-level box spans its container, as CSS has it. The group's
+        // extent measured after the children only covers the widest one, which
+        // would shrink a card down to its longest line of text — and leave two
+        // cards holding different content sitting at different widths.
+        if (!is_inline) {
+            block_avail_w = ImGui::GetContentRegionAvail().x
+                          - (parent_accumulated_right + merged.margin_right);
+        }
+
         if (!is_inline_flow && merged.padding_top > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.padding_top);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.padding_left);
         
@@ -1206,9 +1235,9 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
         float reserve_h = h;
         if (merged.height <= 0.0f) {
-            reserve_h = avail.y - tab.canvas_slack;
+            reserve_h = avail.y - tab.vp_slack;
             if (reserve_h < 1.0f) reserve_h = 1.0f;
-            tab.canvas_auto_used = true;
+            tab.vp_fit_used = true;
         }
 
         script_set_canvas_size(tab.id, node.node_id, w, h);
@@ -1950,6 +1979,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         max_p.y += merged.padding_bottom;
         
         if (merged.width > 0.0f) max_p.x = min_p.x + merged.width;
+        else if (block_avail_w > 0.0f) max_p.x = std::max(max_p.x, min_p.x + block_avail_w);
         if (merged.height > 0.0f) max_p.y = min_p.y + merged.height;
         
         splitter.SetCurrentChannel(draw_list, 0);

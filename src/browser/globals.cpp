@@ -3,8 +3,17 @@
 #include <cctype>
 #include <filesystem>
 #include <system_error>
+#include <vector>
 #ifndef _WIN32
 #include <sys/stat.h>
+#endif
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #endif
 
 std::vector<Tab> tabs;
@@ -17,6 +26,34 @@ int restored_w = 1024;
 int restored_h = 768;
 std::mutex fetch_mutex;
 ImFont* mono_font = nullptr;
+float page_viewport_w = 0.0f;
+float page_viewport_h = 0.0f;
+
+const std::filesystem::path& app_dir() {
+    namespace fs = std::filesystem;
+    static const fs::path dir = [] {
+        std::error_code ec;
+#if defined(__APPLE__)
+        uint32_t size = 0;
+        // A null buffer with size 0 is the documented way to ask for the length.
+        _NSGetExecutablePath(nullptr, &size);
+        std::vector<char> buf(size + 1, '\0');
+        if (_NSGetExecutablePath(buf.data(), &size) == 0) {
+            fs::path exe = fs::weakly_canonical(fs::path(buf.data()), ec);
+            if (!ec) return exe.parent_path();
+        }
+#elif defined(_WIN32)
+        wchar_t buf[MAX_PATH];
+        DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) return fs::path(buf).parent_path();
+#else
+        fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+        if (!ec) return exe.parent_path();
+#endif
+        return fs::current_path(ec);  // last resort: behave as before
+    }();
+    return dir;
+}
 
 Tab* find_tab_by_id(int tab_id) {
     for (auto& tab : tabs) {

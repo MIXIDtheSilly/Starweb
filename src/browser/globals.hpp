@@ -1,6 +1,7 @@
 #pragma once
 #include "types.hpp"
 #include <cstdint>
+#include <filesystem>
 #include <vector>
 #include <mutex>
 
@@ -14,6 +15,16 @@ extern int restored_w;
 extern int restored_h;
 extern std::mutex fetch_mutex;
 extern ImFont* mono_font;
+
+// Size of the page viewport for the frame being drawn, which is what `vw` and
+// `vh` resolve against. Set once per frame before the DOM is walked.
+extern float page_viewport_w;
+extern float page_viewport_h;
+
+// Directory holding the running executable. Bundled resources are looked up
+// relative to this rather than to the working directory, which is wherever the
+// user happened to launch from.
+const std::filesystem::path& app_dir();
 
 Tab* find_tab_by_id(int tab_id);
 std::string get_cache_filepath(const std::string& url);

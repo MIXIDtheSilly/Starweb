@@ -30,7 +30,12 @@ struct CssStyle {
     
     float width = -1.0f;
     float height = -1.0f;
-    
+    // Viewport-relative width/height, as a percentage. Kept apart from the pixel
+    // fields because the viewport is only known at render time; merge_node_style
+    // folds them into width/height so nothing downstream has to care.
+    float width_vw = -1.0f;
+    float height_vh = -1.0f;
+
     float border_width = 0.0f;
     ImVec4 border_color = ImVec4(0, 0, 0, 0);
     bool has_border_color = false;
@@ -153,7 +158,13 @@ struct Tab {
     std::unordered_map<std::string, TextureInfo> page_textures;
     std::unordered_map<std::string, class VideoPlayer*> active_players;
 
-    float canvas_slack = 0.0f;
-    bool  canvas_auto_used = false;
-    float canvas_last_vp_h = 0.0f;
+    // Viewport-fitting slack. An auto-height <canvas> or a `vh` length wants to
+    // fill the viewport exactly, but the element sits inside a chain of wrapper
+    // elements that each add item spacing after it, so filling it precisely
+    // still overflows by a handful of pixels. The overflow is measured after the
+    // frame and subtracted next time, converging in a frame or two. Reset when
+    // the viewport is resized.
+    float vp_slack = 0.0f;
+    bool  vp_fit_used = false;
+    float vp_last_h = 0.0f;
 };

@@ -21,13 +21,22 @@ LEAF_CRT=$CERTS/localhost.pem
 LEAF_CSR=$CERTS/localhost.csr
 
 FORCE=0
-[ "${1:-}" = "--force" ] && FORCE=1
+NEW_KEY=0
+for arg in "$@"; do
+    case "$arg" in
+        --force)   FORCE=1 ;;
+        --new-key) FORCE=1; NEW_KEY=1 ;;
+    esac
+done
 
 # Keeps the CA inside StarWeb: it cannot issue for a public name or address, so
 # installing this root can't expose the real web even if the key leaks.
+# .star stays permitted alongside .web so leaves issued before the zone rename
+# keep verifying against a re-signed root.
 NAME_CONSTRAINTS="critical\
 ,permitted;DNS:localhost\
 ,permitted;DNS:.local\
+,permitted;DNS:.web\
 ,permitted;DNS:.star\
 ,permitted;IP:127.0.0.0/255.0.0.0\
 ,permitted;IP:10.0.0.0/255.0.0.0\
@@ -38,8 +47,16 @@ NAME_CONSTRAINTS="critical\
 ,permitted;IP:fe80:0:0:0:0:0:0:0/ffc0:0:0:0:0:0:0:0"
 
 if [ "$FORCE" = 1 ] || [ ! -f "$ROOT_KEY" ] || [ ! -f "$ROOT_CRT" ]; then
-    echo "Generating StarWeb root CA..."
-    openssl ecparam -name prime256v1 -genkey -noout -out "$ROOT_KEY"
+    # Re-signing with the existing key keeps every already-issued leaf valid:
+    # same key and same subject means the old chains still verify, and only the
+    # constraints change. --new-key forces a clean break instead.
+    if [ "$NEW_KEY" = 1 ] || [ ! -f "$ROOT_KEY" ]; then
+        echo "Generating StarWeb root CA (new key)..."
+        openssl ecparam -name prime256v1 -genkey -noout -out "$ROOT_KEY"
+    else
+        echo "Re-signing StarWeb root CA (keeping existing key)..."
+        cp "$ROOT_CRT" "$ROOT_CRT.bak" 2>/dev/null || true
+    fi
     openssl req -x509 -new -key "$ROOT_KEY" -sha256 -days 3650 \
         -subj "/O=StarWeb/CN=StarWeb Root CA" \
         -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \

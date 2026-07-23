@@ -231,9 +231,21 @@ void parse_css_properties(const std::string& properties, CssStyle& style) {
         } else if (name == "margin-bottom") {
             try { style.margin_bottom = std::stof(val); } catch(...) {}
         } else if (name == "width") {
-            try { style.width = std::stof(val); } catch(...) {}
+            try {
+                size_t consumed = 0;
+                float num = std::stof(val, &consumed);
+                std::string unit = trim_spaces(std::string_view(val).substr(consumed));
+                if (unit == "vw") style.width_vw = num;
+                else              style.width = num;
+            } catch(...) {}
         } else if (name == "height") {
-            try { style.height = std::stof(val); } catch(...) {}
+            try {
+                size_t consumed = 0;
+                float num = std::stof(val, &consumed);
+                std::string unit = trim_spaces(std::string_view(val).substr(consumed));
+                if (unit == "vh") style.height_vh = num;
+                else              style.height = num;
+            } catch(...) {}
         } else if (name == "border-width") {
             try { style.border_width = std::stof(val); } catch(...) {}
         } else if (name == "border-color") {
@@ -290,7 +302,27 @@ void parse_css_properties(const std::string& properties, CssStyle& style) {
     }
 }
 
-void parse_css(const std::string& css_content, std::unordered_map<std::string, CssStyle>& styles) {
+// Rules are split on braces, so a surviving /* comment */ would be swallowed into
+// the next rule's selector and silently kill it. Strip them up front.
+static std::string strip_css_comments(const std::string& in) {
+    if (in.find("/*") == std::string::npos) return in;
+    std::string out;
+    out.reserve(in.size());
+    size_t i = 0;
+    while (i < in.size()) {
+        if (in[i] == '/' && i + 1 < in.size() && in[i + 1] == '*') {
+            size_t end = in.find("*/", i + 2);
+            if (end == std::string::npos) break;  // unterminated: drop the remainder
+            i = end + 2;
+        } else {
+            out += in[i++];
+        }
+    }
+    return out;
+}
+
+void parse_css(const std::string& raw_css, std::unordered_map<std::string, CssStyle>& styles) {
+    const std::string css_content = strip_css_comments(raw_css);
     size_t i = 0;
     size_t len = css_content.size();
     while (i < len) {
@@ -371,6 +403,12 @@ parse_attributes(const std::string& tag_inner, size_t attr_pos) {
             }
         }
 
+        // Decoded here rather than by each consumer, so nothing decodes twice:
+        // href="?a=1&amp;b=2" has to reach the network as "?a=1&b=2", and an
+        // alt or placeholder carrying &lt; has to render as '<'.
+        if (attr_val.find('&') != std::string::npos) {
+            attr_val = decode_entities(attr_val);
+        }
         attrs.emplace_back(std::move(attr_name), std::move(attr_val));
     }
     return attrs;
@@ -568,8 +606,11 @@ void apply_style(CssStyle& dest, const CssStyle& src) {
     if (src.margin_top > 0.0f) dest.margin_top = src.margin_top;
     if (src.margin_bottom > 0.0f) dest.margin_bottom = src.margin_bottom;
     
-    if (src.width > -1.0f) dest.width = src.width;
-    if (src.height > -1.0f) dest.height = src.height;
+    // A later rule's unit wins outright, so setting one form clears the other.
+    if (src.width > -1.0f) { dest.width = src.width; dest.width_vw = -1.0f; }
+    if (src.width_vw > -1.0f) { dest.width_vw = src.width_vw; dest.width = -1.0f; }
+    if (src.height > -1.0f) { dest.height = src.height; dest.height_vh = -1.0f; }
+    if (src.height_vh > -1.0f) { dest.height_vh = src.height_vh; dest.height = -1.0f; }
     if (src.border_width > 0.0f) dest.border_width = src.border_width;
     if (src.has_border_color) {
         dest.border_color = src.border_color;

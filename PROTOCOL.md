@@ -128,7 +128,7 @@ StarWeb is a separate web, and the boundary is enforced rather than assumed:
   never fires in that case, so the check happens after the handshake instead. The
   client enforces the same in reverse. A real browser cannot complete a TLS
   handshake with a StarWeb server.
-- **The root CA is name-constrained** to `localhost`, `.local`, `.star`, and
+- **The root CA is name-constrained** to `localhost`, `.local`, `.web`, `.star`, and
   private/loopback IP ranges. It is structurally unable to issue for a public name,
   so installing this root cannot expose the public web even if the CA key leaks.
   Verification of a `www.google.com` leaf signed by it fails with
@@ -138,8 +138,21 @@ StarWeb is a separate web, and the boundary is enforced rather than assumed:
 - **Pages cannot reach out.** `perform_fetch` accepts only `moon://` and `star://`,
   and page scripts cannot navigate to any other scheme.
 
-What is *not* isolated: **names**. Hosts resolve through the system resolver and
-therefore the public DNS, so the namespace is still ICANN's.
+- **Names are resolved by StarWeb's own DNS.** A host under `.web` is looked up
+  by asking StarDNS directly over UDP (`src/common/resolver.hpp`), never
+  `getaddrinfo`, so the namespace is not ICANN's and a `.web` lookup is not
+  leaked to a public resolver. There is deliberately no fallback: if StarDNS
+  cannot answer, the load fails rather than quietly asking the public DNS.
+  Everything else — `localhost`, IP literals, any other name — still goes to
+  the system resolver and behaves exactly as before.
+
+  ```sh
+  STARWEB_DNS=127.0.0.1:5354   # server to ask; "off" reverts to the system resolver
+  STARWEB_DNS_ZONE=star        # the zone routed to it
+  ```
+
+  The server is `dns/` in this repo, which also registers the names and
+  issues their certificates.
 
 ## Security policy
 
@@ -177,7 +190,7 @@ This produces a P-256 root CA (10 years) and a `localhost` leaf (825 days) with
 `SAN = DNS:localhost, IP:127.0.0.1, IP:::1` and `extendedKeyUsage=serverAuth`.
 
 The root is name-constrained (see *Isolation*, above), so any leaf must fall under
-`localhost`, `.local`, `.star`, or a private IP range — a leaf outside those is
+`localhost`, `.local`, `.web`, `.star`, or a private IP range — a leaf outside those is
 signed happily but fails verification with `permitted subtree violation`. Roots
 generated before constraints existed keep working; `--force` replaces them, and the
 script warns when it reuses an unconstrained one.

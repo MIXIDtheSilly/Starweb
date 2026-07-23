@@ -3,6 +3,7 @@
 #include <memory>
 #include <cstdlib>
 #include "../common/net.hpp"
+#include "../common/resolver.hpp"
 #include "../common/conn.hpp"
 #include "../common/tls.hpp"
 #include "../common/url_parser.hpp"
@@ -32,33 +33,34 @@ int main(int argc, char* argv[]) {
 
     std::cout << "[Client] Connecting to host: " << parsed.host << ", port: " << parsed.port << "..." << std::endl;
 
-    // Set up hints for address resolution
-    struct addrinfo hints{}, *res_info;
-    hints.ai_family = AF_UNSPEC; // IPv4 or IPv6; the loop below tries each result
-    hints.ai_socktype = SOCK_STREAM;
-
+    // .star names are answered by StarDNS; everything else by getaddrinfo.
     std::string port_str = std::to_string(parsed.port);
-    int status = getaddrinfo(parsed.host.c_str(), port_str.c_str(), &hints, &res_info);
-    if (status != 0) {
-        std::cerr << "Error: getaddrinfo failed: " << gai_strerror(status) << std::endl;
+    std::string resolve_err;
+    auto endpoints = stardns::resolve(parsed.host, (uint16_t)parsed.port, resolve_err);
+    if (endpoints.empty()) {
+        std::cerr << "Error: could not resolve " << parsed.host;
+        if (!resolve_err.empty()) std::cerr << ": " << resolve_err;
+        std::cerr << std::endl;
         return 1;
+    }
+    if (stardns::is_starweb_name(parsed.host)) {
+        std::cout << "[Client] " << parsed.host << " resolved by StarDNS." << std::endl;
     }
 
     net::socket_t socket_fd = net::kInvalidSocket;
-    struct addrinfo* rp;
-    for (rp = res_info; rp != nullptr; rp = rp->ai_next) {
-        socket_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+    bool connected = false;
+    for (const auto& ep : endpoints) {
+        socket_fd = socket(ep.family, SOCK_STREAM, 0);
         if (!net::is_valid(socket_fd)) continue;
 
-        if (connect(socket_fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            break; // Successfully connected
+        if (connect(socket_fd, (const sockaddr*)&ep.addr, ep.len) == 0) {
+            connected = true;
+            break;
         }
         net::close(socket_fd);
     }
 
-    freeaddrinfo(res_info);
-
-    if (rp == nullptr) {
+    if (!connected) {
         std::cerr << "Error: Could not connect to " << parsed.host << " on port " << parsed.port << std::endl;
         return 1;
     }

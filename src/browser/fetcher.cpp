@@ -4,6 +4,7 @@
 #include "../common/url_parser.hpp"
 #include "../common/stwp_msg.hpp"
 #include "../common/net.hpp"
+#include "../common/resolver.hpp"
 #include "../common/conn.hpp"
 #include "../common/tls.hpp"
 #include <thread>
@@ -13,6 +14,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <iostream>
 
 namespace {
@@ -23,10 +25,25 @@ std::once_flag tls_ctx_once;
 std::unique_ptr<TlsContext> g_client_tls;
 std::string g_client_tls_err;
 
+// The root CA has to be found wherever the browser was launched from: failing to
+// load it kills every star:// fetch for the life of the process, not just one.
+// Anchored on the executable, with the build-tree layout (binary at the repo
+// root, certs/ beside it) and a bare CWD lookup as fallbacks.
+std::string default_ca_path() {
+    namespace fs = std::filesystem;
+    const fs::path rel = fs::path("certs") / "starweb_root.pem";
+    for (const fs::path& base : {app_dir(), app_dir().parent_path(), fs::path(".")}) {
+        std::error_code ec;
+        fs::path candidate = base / rel;
+        if (fs::exists(candidate, ec) && !ec) return candidate.string();
+    }
+    return rel.string();  // nothing found; report the familiar path in the error
+}
+
 TlsContext* client_tls_ctx(std::string& err) {
     std::call_once(tls_ctx_once, []() {
         const char* env = std::getenv("STARWEB_CA");
-        std::string ca = env ? env : "certs/starweb_root.pem";
+        std::string ca = (env && *env) ? std::string(env) : default_ca_path();
         g_client_tls = TlsContext::make_client(ca, g_client_tls_err);
     });
     if (!g_client_tls) err = g_client_tls_err;
@@ -151,26 +168,25 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
     }
     const bool use_tls = (parsed.scheme == "star");
 
-    struct addrinfo hints{}, *res_info;
-    hints.ai_family = AF_UNSPEC; // IPv4 or IPv6; the loop below tries each result
-    hints.ai_socktype = SOCK_STREAM;
-
+    // .web names are answered by StarDNS; everything else by getaddrinfo.
     std::string port_str = std::to_string(parsed.port);
-    int status = getaddrinfo(parsed.host.c_str(), port_str.c_str(), &hints, &res_info);
-    if (status != 0) {
-        result.error_message = "Host resolution failed: " + std::string(gai_strerror(status));
+    std::string resolve_err;
+    auto endpoints = stardns::resolve(parsed.host, (uint16_t)parsed.port, resolve_err);
+    if (endpoints.empty()) {
+        result.error_message = "Host resolution failed: " +
+            (resolve_err.empty() ? std::string("no addresses for ") + parsed.host
+                                 : resolve_err);
         return result;
     }
 
     net::socket_t socket_fd = net::kInvalidSocket;
-    struct addrinfo* rp;
-    for (rp = res_info; rp != nullptr; rp = rp->ai_next) {
-        socket_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+    bool connected = false;
+    for (const auto& ep : endpoints) {
+        socket_fd = socket(ep.family, SOCK_STREAM, 0);
         if (!net::is_valid(socket_fd)) continue;
 
         if (opt.on_socket && !opt.on_socket(socket_fd)) {
             net::close(socket_fd);
-            freeaddrinfo(res_info);
             result.error_message = "Cancelled";
             return result;
         }
@@ -178,7 +194,8 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
         net::set_recv_timeout(socket_fd, opt.timeout_secs);
         net::set_send_timeout(socket_fd, opt.timeout_secs);
 
-        if (connect(socket_fd, rp->ai_addr, rp->ai_addrlen) != -1) {
+        if (connect(socket_fd, (const sockaddr*)&ep.addr, ep.len) != -1) {
+            connected = true;
             break;
         }
 
@@ -186,9 +203,7 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
         net::close(socket_fd);
     }
 
-    freeaddrinfo(res_info);
-
-    if (rp == nullptr) {
+    if (!connected) {
         result.error_message = "Connection failed to " + parsed.host + ":" + port_str;
         return result;
     }

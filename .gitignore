@@ -41,11 +41,14 @@ cache/
 /certs
 
 # python
-/python/tests/__pycache__
-/python/starweb/__pycache__
-/python/.pytest_cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
 /python/dist
 /python/*.egg-info
+
+# leaf certs the panel issues, and the private keys beside them
+issued/
 
 # www (i have to remove it becuase of copyrighted content)
 www/

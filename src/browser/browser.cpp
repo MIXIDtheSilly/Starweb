@@ -391,8 +391,8 @@ int main() {
                     tab.is_fetching = false;
                     tab.new_page_ready = false;
                     tab.reset_scroll_next_frame = true;
-                    tab.canvas_slack = 0.0f;
-                    tab.canvas_last_vp_h = 0.0f;
+                    tab.vp_slack = 0.0f;
+                    tab.vp_last_h = 0.0f;
                     
                     for (const auto& [url, tex] : tab.page_textures) {
                         if (tex.id != 0) {
@@ -439,6 +439,11 @@ int main() {
                         run_page_scripts(tab);
                     } else {
                         tab.status_text = "Error: " + tab.active_page.error_message;
+                        // Also on stderr: an interstitial says a load failed, but
+                        // not which URL or when, which is exactly what you need
+                        // when the same page keeps showing the same error.
+                        std::cerr << "[Load failed] " << tab.current_url << " -> "
+                                  << tab.active_page.error_message << "\n";
                         std::string error_html;
                         if (tab.active_page.tls_error) {
                             auto p = parse_url(tab.current_url);
@@ -1065,6 +1070,13 @@ int main() {
             active_tab.reset_scroll_next_frame = false;
         }
         
+        // The usable content box, not the window box, less the slack that the
+        // wrapper elements around a vh-sized box turned out to cost last frame.
+        ImVec2 vp_avail = ImGui::GetContentRegionAvail();
+        page_viewport_w = vp_avail.x;
+        page_viewport_h = vp_avail.y - active_tab.vp_slack;
+        if (page_viewport_h < 1.0f) page_viewport_h = 1.0f;
+
         auto body_it = active_tab.css_classes.find("body");
         ImDrawList* vp_draw_list = ImGui::GetWindowDrawList();
         ImVec2 min_p = ImGui::GetWindowPos();
@@ -1094,16 +1106,20 @@ int main() {
         render_node(active_tab.page_dom, default_style, default_inline_flow, active_tab);
 
         float vp_h = ImGui::GetWindowHeight();
-        if (vp_h != active_tab.canvas_last_vp_h) {
-            active_tab.canvas_slack = 0.0f;
-            active_tab.canvas_last_vp_h = vp_h;
-        } else if (active_tab.canvas_auto_used) {
+        if (vp_h != active_tab.vp_last_h) {
+            active_tab.vp_slack = 0.0f;
+            active_tab.vp_last_h = vp_h;
+        } else if (active_tab.vp_fit_used) {
             float grow = ImGui::GetScrollMaxY();
-            active_tab.canvas_slack += grow;
+            active_tab.vp_slack += grow;
+            // A page whose other content genuinely overflows would otherwise
+            // feed this forever and starve the vh box down to nothing.
+            float cap = vp_h * 0.5f;
+            if (active_tab.vp_slack > cap) active_tab.vp_slack = cap;
             // Slack converges over successive frames; keep drawing until it does.
             if (grow > 0.0f) settle_frames = kSettleFrames;
         }
-        active_tab.canvas_auto_used = false;
+        active_tab.vp_fit_used = false;
 
         ImGui::EndChild();
         ImGui::PopStyleColor(2);
