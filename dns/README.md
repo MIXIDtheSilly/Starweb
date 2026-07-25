@@ -105,6 +105,12 @@ printf 'nameserver 127.0.0.1\nport 5354\n' | sudo tee /etc/resolver/star
 
 ## The panel
 
+Three tabs behind one sidebar, all server-rendered pages: **Account home**
+(`/panel`) is a search field and shortcut columns, **Domains** (`/domains`)
+registers and lists them, and **Analytics** (`/analytics`) is a placeholder
+until the resolver keeps query counts. A domain's records and certificate are
+at `/domain/<name>`.
+
 Sign in with a username and password. An account may hold **three domains**,
 each a single label under `.web` — `mysite.web`, not `a.b.web`; deeper names
 are records inside a domain you own.

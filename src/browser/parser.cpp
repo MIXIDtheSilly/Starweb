@@ -184,6 +184,22 @@ void parse_background(std::string_view value, CssStyle& style) {
     }
 }
 
+static bool parse_length(const std::string& val, Length& out) {
+    try {
+        size_t consumed = 0;
+        float num = std::stof(val, &consumed);
+        std::string unit = trim_spaces(std::string_view(val).substr(consumed));
+        out = Length{};
+        if (unit == "vw")      out.vw = num;
+        else if (unit == "vh") out.vh = num;
+        else                   out.px = num;
+        out.set = true;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 void parse_css_properties(const std::string& properties, CssStyle& style) {
     std::stringstream ss(properties);
     std::string prop;
@@ -249,7 +265,7 @@ void parse_css_properties(const std::string& properties, CssStyle& style) {
                 else                   style.height = num;
             } catch(...) {}
         } else if (name == "border-width") {
-            try { style.border_width = std::stof(val); } catch(...) {}
+            try { style.border_width = std::stof(val); style.has_border_width = true; } catch(...) {}
         } else if (name == "border-color") {
             style.border_color = parse_color(val);
             style.has_border_color = true;
@@ -269,6 +285,16 @@ void parse_css_properties(const std::string& properties, CssStyle& style) {
             style.font_family = val;
         } else if (name == "display") {
             style.display = val;
+        } else if (name == "position") {
+            style.position = val;
+        } else if (name == "left") {
+            parse_length(val, style.pos_left);
+        } else if (name == "right") {
+            parse_length(val, style.pos_right);
+        } else if (name == "top") {
+            parse_length(val, style.pos_top);
+        } else if (name == "bottom") {
+            parse_length(val, style.pos_bottom);
         } else if (name == "flex-direction") {
             style.flex_direction = val;
         } else if (name == "justify-content") {
@@ -452,6 +478,14 @@ DomNode parse_html_to_dom(const std::string& html, std::string& css_content,
 
     while (i < len) {
         if (html[i] == '<') {
+            // A comment ends at "-->", not at the first '>', so it has to be
+            // consumed before the tag scanner sees anything inside it.
+            if (html.compare(i, 4, "<!--") == 0) {
+                size_t close = html.find("-->", i + 4);
+                i = (close == std::string::npos) ? len : close + 3;
+                continue;
+            }
+
             size_t tag_end = html.find('>', i);
             if (tag_end == std::string::npos) {
                 text_run += html[i];
@@ -617,7 +651,7 @@ void apply_style(CssStyle& dest, const CssStyle& src) {
     if (src.height > -1.0f)    { dest.height = src.height;       dest.height_vh = dest.height_vw = -1.0f; }
     if (src.height_vh > -1.0f) { dest.height_vh = src.height_vh; dest.height = dest.height_vw = -1.0f; }
     if (src.height_vw > -1.0f) { dest.height_vw = src.height_vw; dest.height = dest.height_vh = -1.0f; }
-    if (src.border_width > 0.0f) dest.border_width = src.border_width;
+    if (src.has_border_width) { dest.border_width = src.border_width; dest.has_border_width = true; }
     if (src.has_border_color) {
         dest.border_color = src.border_color;
         dest.has_border_color = true;
@@ -625,6 +659,12 @@ void apply_style(CssStyle& dest, const CssStyle& src) {
     if (src.font_size != 1.0f) dest.font_size = src.font_size;
     if (!src.font_family.empty()) dest.font_family = src.font_family;
     if (!src.display.empty()) dest.display = src.display;
+
+    if (!src.position.empty()) dest.position = src.position;
+    if (src.pos_left.set)   dest.pos_left = src.pos_left;
+    if (src.pos_right.set)  dest.pos_right = src.pos_right;
+    if (src.pos_top.set)    dest.pos_top = src.pos_top;
+    if (src.pos_bottom.set) dest.pos_bottom = src.pos_bottom;
 
     if (!src.flex_direction.empty()) dest.flex_direction = src.flex_direction;
     if (!src.justify_content.empty()) dest.justify_content = src.justify_content;

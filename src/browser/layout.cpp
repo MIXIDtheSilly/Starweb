@@ -110,8 +110,14 @@ static ImVec2 measure_intrinsic(const DomNode& node, const CssStyle& merged, flo
                       merged.height > 0.0f ? merged.height : ts.y + 12.0f);
     }
     if (tag == "input" || tag == "select") {
+        // A field is drawn from its own padding (see the field guards in
+        // renderer.cpp), not from the global frame padding, so GetFrameHeight()
+        // would hand the layout a shorter box than the one that gets painted and
+        // leave the field sitting low in a centred flex row.
+        float field_pad_y = merged.padding_top > 0.0f ? merged.padding_top : 2.0f;
+        float line = ImGui::GetFontSize() * merged.font_size;
         return ImVec2(merged.width > 0.0f ? merged.width : (tag == "select" ? 150.0f : 200.0f),
-                      merged.height > 0.0f ? merged.height : ImGui::GetFrameHeight());
+                      merged.height > 0.0f ? merged.height : line + field_pad_y * 2.0f);
     }
     if (tag == "textarea") {
         return ImVec2(merged.width > 0.0f ? merged.width : 300.0f,
@@ -216,12 +222,22 @@ void compute_flex_layout(DomNode& container,
     YGNodeStyleSetWidth(root, content_width);
     if (container_style.height > 0.0f) YGNodeStyleSetHeight(root, container_style.height);
 
+    // A positioned child still renders, at its own offset, but takes no part in
+    // the layout: -1 marks it as having no Yoga node to read a rect back from.
+    std::vector<int> yoga_index;
+
     uint32_t idx = 0;
     for (auto& child : container.children) {
         if (!is_renderable(child.tag)) continue;
         if (child.tag == "#text" && collapse_whitespace(child.text_content).empty()) continue;
 
         CssStyle cm = merge_node_style(child, container_style, tab);
+        if (is_positioned(cm)) {
+            out_children.push_back(&child);
+            yoga_index.push_back(-1);
+            continue;
+        }
+
         YGNodeRef c = YGNodeNewWithConfig(cfg);
 
         if (cm.margin_left > 0.0f)   YGNodeStyleSetMargin(c, YGEdgeLeft, cm.margin_left);
@@ -244,21 +260,23 @@ void compute_flex_layout(DomNode& container,
             YGNodeSetMeasureFunc(c, measure_cb);
         }
 
-        YGNodeInsertChild(root, c, idx++);
+        YGNodeInsertChild(root, c, idx);
         out_children.push_back(&child);
+        yoga_index.push_back((int)idx++);
     }
 
     YGNodeCalculateLayout(root, content_width, YGUndefined, YGDirectionLTR);
 
-    uint32_t n = YGNodeGetChildCount(root);
-    out_rects.reserve(n);
-    for (uint32_t i = 0; i < n; i++) {
-        YGNodeRef c = YGNodeGetChild(root, i);
+    out_rects.reserve(yoga_index.size());
+    for (int gi : yoga_index) {
         FlexRect r;
-        r.x = YGNodeLayoutGetLeft(c);
-        r.y = YGNodeLayoutGetTop(c);
-        r.w = YGNodeLayoutGetWidth(c);
-        r.h = YGNodeLayoutGetHeight(c);
+        if (gi >= 0) {
+            YGNodeRef c = YGNodeGetChild(root, (uint32_t)gi);
+            r.x = YGNodeLayoutGetLeft(c);
+            r.y = YGNodeLayoutGetTop(c);
+            r.w = YGNodeLayoutGetWidth(c);
+            r.h = YGNodeLayoutGetHeight(c);
+        }
         out_rects.push_back(r);
     }
     out_width  = YGNodeLayoutGetWidth(root);

@@ -27,6 +27,18 @@ ImFont* font_for_family(const std::string& family);
 extern float page_viewport_w;
 extern float page_viewport_h;
 
+// The same box before the vh slack is taken off it. A positioned element is out
+// of the flow, so it cannot be what pushed the page past its viewport, and it
+// measures against the real thing rather than the corrected height.
+extern float page_viewport_w_full;
+extern float page_viewport_h_full;
+
+// Where a positioned box measures its offsets from, both set alongside the sizes
+// above. The document origin is the top-left of the page content, so it scrolls
+// with it; the viewport origin is the top-left of the visible box and does not.
+extern ImVec2 page_document_origin;
+extern ImVec2 page_viewport_origin;
+
 // Directory holding the running executable. Bundled resources are looked up
 // relative to this rather than to the working directory, which is wherever the
 // user happened to launch from.
@@ -36,5 +48,6 @@ Tab* find_tab_by_id(int tab_id);
 std::string get_cache_filepath(const std::string& url);
 void prune_media_cache(std::uintmax_t max_bytes);
 void script_dispatch_click(int tab_id, uint64_t node_id);
+bool script_has_click_handler(int tab_id, uint64_t node_id);
 const std::vector<CanvasOp>* script_canvas_ops(int tab_id, uint64_t node_id);
 void script_set_canvas_size(int tab_id, uint64_t node_id, float w, float h);

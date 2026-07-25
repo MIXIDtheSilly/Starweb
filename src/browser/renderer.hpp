@@ -10,6 +10,10 @@ struct InputStyleGuard {
 // the tag rule, class rule, and inline style (in ascending precedence).
 CssStyle merge_node_style(const DomNode& node, const CssStyle& parent_style, Tab& tab);
 
+// True for `position: absolute` and `position: fixed`, both of which paint at
+// their own offset and take no part in the surrounding layout.
+bool is_positioned(const CssStyle& style);
+
 void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_flow, Tab& tab, int li_index = -1, float parent_accumulated_right = 0.0f);
 void DrawSpinner(ImVec2 center, float radius, float thickness, const ImVec4& color);
 void DrawBackArrowIcon(ImVec2 center, ImU32 color, float thickness = 2.0f);

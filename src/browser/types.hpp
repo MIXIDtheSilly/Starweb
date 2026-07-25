@@ -7,6 +7,19 @@
 #include "../common/net.hpp"
 #include "../common/tls_info.hpp"
 
+// A length that may be given in px, vw or vh. The viewport is only known at
+// render time, so the unit is kept until merge_node_style folds it to pixels.
+struct Length {
+    bool set = false;
+    float px = 0.0f;
+    float vw = 0.0f;
+    float vh = 0.0f;
+
+    float resolve(float vp_w, float vp_h) const {
+        return px + vw * 0.01f * vp_w + vh * 0.01f * vp_h;
+    }
+};
+
 struct CssStyle {
     ImVec4 color = ImVec4(1, 1, 1, 1);
     ImVec4 bg_color = ImVec4(0, 0, 0, 0);
@@ -39,13 +52,27 @@ struct CssStyle {
     float height_vh = -1.0f;
     float height_vw = -1.0f;
 
+    // Zero is a real value ("no border, please"), so the flag is what tells a
+    // form control's default skin apart from a page that asked for none.
     float border_width = 0.0f;
+    bool has_border_width = false;
     ImVec4 border_color = ImVec4(0, 0, 0, 0);
     bool has_border_color = false;
     
     float font_size = 1.0f;
     std::string font_family = "";
     std::string display = "";
+
+    // `absolute` or `fixed` takes the box out of the flow entirely: it paints at
+    // its own offset and leaves the cursor where it found it. There is no
+    // containing-block chain and no z-index, so the offsets are always against
+    // the page (absolute scrolls with it, fixed does not) and paint order is
+    // document order, which puts a decoration behind everything written after it.
+    std::string position = "";
+    Length pos_left;
+    Length pos_right;
+    Length pos_top;
+    Length pos_bottom;
 
     // flexbox; empty string / -1 means unset
     std::string flex_direction = "";
@@ -61,12 +88,14 @@ struct CssStyle {
 };
 
 struct CanvasOp {
-    enum Kind { FillRect, StrokeRect, Line, Circle, Text, PolyFill };
+    enum Kind { FillRect, StrokeRect, Line, Circle, Text, PolyFill, Polyline };
     Kind kind;
     float a = 0, b = 0, c = 0, d = 0;
     ImVec4 color = ImVec4(1, 1, 1, 1);
     float line_width = 1.0f;
     bool fill = false;
+    bool round_cap = false;
+    bool round_join = false;
     std::string text;
     std::vector<ImVec2> pts;
 };
@@ -96,8 +125,7 @@ struct DomNode {
     bool has_inline_style = false;
     CssStyle parsed_inline_style;
     std::vector<DomNode> children;
-    
-    // Media attributes
+
     bool autoplay = false;
     bool loop = false;
     bool controls = false;

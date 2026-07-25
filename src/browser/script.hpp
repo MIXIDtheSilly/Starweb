@@ -52,6 +52,9 @@ public:
     void bind_inline_handlers();
     void add_click_handler(uint64_t node_id, int ref) { click_handlers_[node_id].push_back(ref); }
     void dispatch_click(uint64_t node_id);
+    bool has_click_handler(uint64_t node_id) const {
+        return click_handlers_.find(node_id) != click_handlers_.end();
+    }
 
     void add_key_handler(bool down, int ref);
     void dispatch_key(bool down, const std::string& key);
@@ -74,6 +77,8 @@ public:
         ImVec4 fill = ImVec4(0, 0, 0, 1);
         ImVec4 stroke = ImVec4(0, 0, 0, 1);
         float line_width = 1.0f;
+        bool round_cap = false;
+        bool round_join = false;
         float w = 0, h = 0;
         std::vector<std::vector<ImVec2>> path;
     };

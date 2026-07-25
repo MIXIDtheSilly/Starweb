@@ -364,20 +364,23 @@ static int ctx_lineTo(lua_State* L) {
     return 0;
 }
 
+// A subpath is stroked as one polyline, not as a run of separate segments: the
+// renderer joins a polyline and gives it a single anti-aliased edge, where
+// segment-at-a-time drawing leaves a butt cap and a doubled fringe at every
+// joint, which reads as a lumpy curve.
 static int ctx_stroke(lua_State* L) {
     ScriptEngine* eng = engine_from_lua(L);
     if (!eng) return 0;
     uint64_t id = ctx_node(L);
     auto& st = eng->canvas_state(id);
     for (auto& sub : st.path) {
-        for (size_t i = 1; i < sub.size(); ++i) {
-            CanvasOp op;
-            op.kind = CanvasOp::Line;
-            op.a = sub[i - 1].x; op.b = sub[i - 1].y;
-            op.c = sub[i].x;     op.d = sub[i].y;
-            op.color = st.stroke; op.line_width = st.line_width;
-            canvas_push(eng, id, op);
-        }
+        if (sub.size() < 2) continue;
+        CanvasOp op;
+        op.kind = CanvasOp::Polyline;
+        op.pts = sub;
+        op.color = st.stroke; op.line_width = st.line_width;
+        op.round_cap = st.round_cap; op.round_join = st.round_join;
+        canvas_push(eng, id, op);
     }
     return 0;
 }
@@ -452,6 +455,8 @@ static int ctx_newindex(lua_State* L) {
     if      (std::strcmp(key, "fillStyle")   == 0) st.fill = parse_color(luaL_checkstring(L, 3));
     else if (std::strcmp(key, "strokeStyle") == 0) st.stroke = parse_color(luaL_checkstring(L, 3));
     else if (std::strcmp(key, "lineWidth")   == 0) st.line_width = (float)luaL_checknumber(L, 3);
+    else if (std::strcmp(key, "lineCap")     == 0) st.round_cap = std::strcmp(luaL_checkstring(L, 3), "round") == 0;
+    else if (std::strcmp(key, "lineJoin")    == 0) st.round_join = std::strcmp(luaL_checkstring(L, 3), "round") == 0;
     return 0;
 }
 

@@ -76,12 +76,25 @@ def test_panel_needs_a_session(fake_db):
     assert "Sign in" in res.text
 
 
-def test_panel_lists_domains(session):
+def test_home_lists_domains(session):
     post("/api/domain/add", {"token": session, "domain": "mysite"})
     res = get(f"/panel?t={session}")
     assert res.status_code == 200
     assert f"mysite.{ZONE}" in res.text
+    assert "What are we doing today?" in res.text
+
+
+def test_domains_tab_lists_domains(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/domains?t={session}")
+    assert res.status_code == 200
+    assert f"mysite.{ZONE}" in res.text
     assert f"0 of {config.MAX_DOMAINS} used" not in res.text
+
+
+def test_tabs_need_a_session(fake_db):
+    for path in ("/domains", "/analytics"):
+        assert get(path).status_code == 401
 
 
 def test_domain_limit_through_the_api(session):
@@ -141,16 +154,23 @@ def test_bad_json_body(fake_db):
 
 
 def test_every_link_on_a_page_leads_somewhere(session):
-    """Clicking anything the panel renders must not land on an error page."""
+    """Clicking anything the panel renders must not land on an error page.
+
+    Rows and sidebar tabs are clickable boxes rather than anchors, so their
+    destinations are Lua string literals passed to location.assign, and both
+    forms are collected here."""
     import re
     post("/api/domain/add", {"token": session, "domain": "mysite"})
     post("/api/record/add", {"token": session, "domain": "mysite",
                              "name": "@", "type": "A", "value": "10.0.0.1"})
-    for path in (f"/panel?t={session}", f"/domain/mysite.{ZONE}?t={session}"):
-        hrefs = re.findall(r'href="([^"]*)"', get(path).text)
-        assert hrefs
-        for href in hrefs:
-            assert get(href).status_code == 200, f"{href} (linked from {path})"
+    for path in (f"/panel?t={session}", f"/domains?t={session}",
+                 f"/analytics?t={session}", f"/domain/mysite.{ZONE}?t={session}"):
+        text = get(path).text
+        targets = (re.findall(r'href="([^"]*)"', text)
+                   + re.findall(r'link\("[^"]*", "([^"]*)"\)', text))
+        assert targets
+        for target in targets:
+            assert get(target).status_code == 200, f"{target} (linked from {path})"
 
 
 def test_cert_download_route(session, tmp_path, monkeypatch):

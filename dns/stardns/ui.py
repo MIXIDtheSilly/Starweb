@@ -43,9 +43,6 @@ BRAND = "Starweb DNS"
 # and `margin-right` is ignored, so a row of two half-width buttons only lands
 # flush by coincidence; the sign-in pair is full width and stacked instead.
 #
-# Kept free of /* comments */: the renderer splits rules on braces, so a comment
-# is swallowed into the next selector and silently kills that rule.
-#
 # `.stage` uses `justify-content: space-between` rather than `center` so the
 # two `.side` canvases sit flush against the viewport edges; since both are
 # the same width, `.auth` still lands centred between them. `align-items`
@@ -232,6 +229,116 @@ li { color: #d4d4dc; font-size: 14px; }
 .msg { color: #8b8b96; font-size: 14px; margin-top: 12; }
 .ok { color: #4ade80; font-size: 14px; }
 .bad { color: #f87171; font-size: 14px; }
+
+/* The signed-in shell. The sidebar, its hairline and the artwork are all out
+   of the flow, pinned to the viewport, so only the content column scrolls --
+   which also keeps `vh` off anything that has to grow with the page. Paint
+   order is document order, so the artwork is written first and the sidebar
+   last. The sidebar paints no background of its own: the page is already black
+   and the artwork is meant to run under it. */
+.art-bl { position: fixed; left: 0; bottom: 0; width: 300; height: 354; }
+.art-tr { position: fixed; right: 0; top: 0; width: 184; height: 204; }
+
+.nav {
+  position: fixed; left: 0; top: 0; bottom: 0;
+  width: 300;
+  padding-left: 24; padding-right: 24; padding-top: 26;
+}
+.navmark { width: 196; height: 71; margin-left: -4; margin-bottom: 16; }
+
+.rule { background: #17171c; position: fixed; left: 300; top: 0; bottom: 0; width: 1; }
+
+.qbox {
+  background: #000000;
+  border-width: 1; border-color: #7c5cff; border-radius: 8;
+  width: 252; height: 38; margin-bottom: 20;
+  padding-left: 12;
+  display: flex; flex-direction: row; align-items: center; gap: 10;
+}
+.qico { width: 15; height: 15; }
+.qfld {
+  background: #000000; color: #ffffff;
+  border-width: 0; font-size: 14px;
+  width: 200; padding-left: 0; padding-top: 4;
+}
+
+/* The current tab is the only row with a fill; the rest repeat the page colour
+   so both kinds of row measure and indent identically. */
+.navon {
+  background: #17171c; border-radius: 8;
+  width: 240; height: 40; margin-bottom: 4;
+  padding-left: 12;
+  display: flex; flex-direction: row; align-items: center; gap: 12;
+}
+.navoff {
+  background: #000000; border-radius: 8;
+  width: 240; height: 40; margin-bottom: 4;
+  padding-left: 12;
+  display: flex; flex-direction: row; align-items: center; gap: 12;
+}
+.navico { width: 18; height: 18; }
+.navtxt { color: #ffffff; font-family: Inter SemiBold; font-size: 15px; margin: 0; }
+.navmut { color: #b6b6c2; font-size: 15px; margin: 0; }
+
+.main {
+  display: flex; flex-direction: column; align-items: center;
+  margin-left: 301; margin-bottom: 40;
+}
+
+.topbar {
+  display: flex; flex-direction: row; justify-content: flex-end;
+  align-self: stretch;
+  padding-right: 30; padding-top: 18;
+}
+.avatar {
+  background: #14141a;
+  border-width: 1; border-color: #2f2f3a; border-radius: 22;
+  width: 44; height: 44;
+  display: flex; flex-direction: row; justify-content: center; align-items: center;
+}
+.avico { width: 24; height: 24; }
+
+.hub { display: flex; flex-direction: column; align-items: center; align-self: stretch; }
+.page { align-self: stretch; padding-left: 40; padding-right: 40; padding-top: 6; }
+
+.hero {
+  color: #ffffff; font-family: Inter SemiBold; font-size: 32px;
+  margin-top: 56; margin-bottom: 26;
+}
+
+.sbox {
+  background: #000000;
+  border-width: 1; border-color: #6b4ef0; border-radius: 10;
+  width: 52vw; height: 52; margin-bottom: 28;
+  padding-left: 18;
+  display: flex; flex-direction: row; align-items: center; gap: 12;
+}
+.sico { width: 19; height: 19; }
+.sfld {
+  background: #000000; color: #ffffff;
+  border-width: 0; font-size: 15px;
+  width: 46vw; padding-left: 0; padding-top: 7;
+}
+
+.hubcols {
+  width: 52vw;
+  display: flex; flex-direction: row; justify-content: space-between;
+}
+.hubcol { width: 15vw; display: flex; flex-direction: column; }
+
+.colhead { display: flex; flex-direction: row; align-items: center; gap: 6;
+           margin-bottom: 10; }
+.colttl { color: #8b8b96; font-size: 14px; margin: 0; }
+.colchev { width: 13; height: 13; }
+
+.lrow { display: flex; flex-direction: row; align-items: center; gap: 10;
+        height: 34; }
+.lico { width: 16; height: 16; }
+.lname { color: #ffffff; font-family: Inter SemiBold; font-size: 14px;
+         flex-grow: 1; margin: 0; }
+.lchev { width: 16; height: 16; }
+.hair { background: #1c1c22; height: 1; margin-bottom: 4; }
+.empty { color: #6f6f7c; font-size: 13px; margin-top: 2; }
 """
 
 MUTED = "#8b8b96"
@@ -343,6 +450,123 @@ end)
 """
 
 
+# The icon layer. Geometry comes from the lucide SVGs in assets/icons, flattened
+# to polylines by shapes.lua_icons(); this is only the drawing. `s` is pixels per
+# grid unit, so one table serves every size a page asks for, and `paint` draws
+# once the renderer has sized the canvas -- ops persist until cleared, so a
+# static icon costs nothing per frame. Round caps and joins are what lucide is
+# drawn with, and without them the corners come out as mitre spikes.
+ICONS = """
+local function stroke(ctx, s, p)
+    ctx:beginPath()
+    ctx:moveTo(p[1] * s, p[2] * s)
+    for i = 3, #p, 2 do ctx:lineTo(p[i] * s, p[i + 1] * s) end
+    ctx:stroke()
+end
+
+function paint(id, name, colour, weight)
+    local cv = document.getElementById(id)
+    local paths = ICON_PATHS[name]
+    if not cv or not paths then return end
+    local ctx = cv:getContext("2d")
+    local w, h = -1, -1
+
+    local function draw()
+        if cv.width ~= w or cv.height ~= h then
+            w, h = cv.width, cv.height
+            if w > 0 and h > 0 then
+                ctx:clearRect(0, 0, w, h)
+                ctx.strokeStyle = colour
+                ctx.lineWidth = weight
+                ctx.lineCap = "round"
+                ctx.lineJoin = "round"
+                for i = 1, #paths do stroke(ctx, w / 24, paths[i]) end
+            end
+        end
+        requestAnimationFrame(draw)
+    end
+    requestAnimationFrame(draw)
+end
+
+-- A whole row is the click target, so nothing inside it has to be an anchor.
+function link(id, url)
+    local el = document.getElementById(id)
+    if el then el:addEventListener("click", function() location.assign(url) end) end
+end
+"""
+
+# Both decorations are sized from their viewBox rather than from the path's own
+# extent, since the paths deliberately reach outside it. The canvases are a fixed
+# number of pixels, so the artwork keeps one size and hugs its corner however the
+# window is dragged, rather than growing with the viewport.
+SHELL_ART = """
+makeScene("art-bl", function(W, H)
+    local scale = W * 1.7
+    return { makeLine(LOOP_B, -0.06 * scale, 0.04 * scale, scale, 1.1, 1.3) }
+end)
+
+makeScene("art-tr", function(W, H)
+    return { makeLine(PFP_T, 0, 0, W, 2.4, 1.3) }
+end)
+"""
+
+# tab key, label, icon, path
+TABS = (
+    ("home", "Account home", "house", "/panel"),
+    ("domains", "Domains", "globe", "/domains"),
+    ("analytics", "Analytics", "chart-pie", "/analytics"),
+)
+
+
+def shell(active: str, token: str, content: str, art: bool = False) -> tuple[str, str]:
+    """The signed-in frame. Returns the markup and the script that goes with it;
+    a page appends its own icons and row links to the latter. The artwork is the
+    account home's alone -- behind a list of cards it is just noise."""
+    rows, script = [], []
+    for key, label, icon, path in TABS:
+        on = key == active
+        rows.append(f"""
+    <div class="{'navon' if on else 'navoff'}" id="nav-{key}">
+      <canvas class="navico" id="i-{key}"></canvas>
+      <p class="{'navtxt' if on else 'navmut'}">{esc(label)}</p>
+    </div>""")
+        script.append(f'paint("i-{key}", "{icon}", '
+                      f'"{"#ffffff" if on else "#b6b6c2"}", 1.55)')
+        script.append(f'link("nav-{key}", {lua_str(path + "?t=" + token)})')
+
+    decoration = ('<canvas class="art-bl" id="art-bl"></canvas>\n'
+                  '<canvas class="art-tr" id="art-tr"></canvas>') if art else ""
+    body = f"""
+{decoration}
+
+<div class="main">
+  <div class="topbar">
+    <div class="avatar" id="avatar">
+      <canvas class="avico" id="i-user"></canvas>
+    </div>
+  </div>
+{content}
+</div>
+
+<div class="rule"></div>
+
+<div class="nav">
+  <img class="navmark" src="/banner_trans.png">
+
+  <div class="qbox">
+    <canvas class="qico" id="i-quick"></canvas>
+    <input type="text" class="qfld" placeholder="Quick search...">
+  </div>
+{''.join(rows)}
+</div>"""
+
+    script.append('paint("i-quick", "search", "#6f6f7c", 1.45)')
+    script.append('paint("i-user", "user-round", "#8b8b96", 1.55)')
+    prelude = shapes.lua_icons() + ((shapes.lua_shapes() + ART) if art else "")
+    return body, (prelude + ICONS + "\n" + "\n".join(script)
+                  + ("\n" + SHELL_ART if art else ""))
+
+
 def login_page() -> str:
     # Markup mirrors www/index.html one for one: the two flanking canvases, a
     # banner, the two labelled fields and a single "Log In" button. The only
@@ -384,6 +608,78 @@ go:addEventListener("click", function()
 end)
 """
     return page(BRAND, body, script)
+
+
+def _hub_column(title: str, rows: str, key: str) -> str:
+    """One column of the account home: a heading with a chevron, then rows."""
+    return f"""
+      <div class="hubcol">
+        <div class="colhead" id="head-{key}">
+          <p class="colttl">{esc(title)}</p>
+          <canvas class="colchev" id="hc-{key}"></canvas>
+        </div>
+{rows}
+      </div>"""
+
+
+# The number of domains the home tab lists before it stops and defers to the
+# Domains tab. Five is what fits above the fold next to the artwork.
+HUB_ROWS = 5
+
+
+def home_page(username: str, token: str, domains: list[dict]) -> str:
+    listed = domains[:HUB_ROWS]
+
+    rows, script = [], []
+    for i, d in enumerate(listed, 1):
+        rows.append(f"""
+        <div class="lrow" id="row-{i}">
+          <canvas class="lico" id="rg-{i}"></canvas>
+          <p class="lname">{esc(d['name'])}</p>
+          <canvas class="lchev" id="rc-{i}"></canvas>
+        </div>
+        <div class="hair"></div>""")
+        script.append(f'paint("rg-{i}", "globe", "#8b8b96", 1.45)')
+        script.append(f'paint("rc-{i}", "chevron-right", "#6f6f7c", 1.45)')
+        target = f"/domain/{d['name']}?t={token}"
+        script.append(f'link("row-{i}", {lua_str(target)})')
+
+    if not listed:
+        rows.append('        <p class="empty">No domains yet. Register one from '
+                    'the Domains tab.</p>')
+
+    columns = [
+        _hub_column("Domains", "".join(rows), "dom"),
+        _hub_column("Analytics",
+                    '        <p class="empty">Nothing measured yet.</p>', "ana"),
+        _hub_column("Recent", '        <p class="empty">Nothing yet.</p>', "rec"),
+    ]
+    for key, path in (("dom", "/domains"), ("ana", "/analytics")):
+        script.append(f'paint("hc-{key}", "chevron-right", "#8b8b96", 1.5)')
+        script.append(f'link("head-{key}", {lua_str(path + "?t=" + token)})')
+    script.append('paint("hc-rec", "chevron-right", "#8b8b96", 1.5)')
+
+    # The search field is not wired to anything yet: a text field keeps the
+    # keyboard to itself while it has focus, so there is no Enter to act on, and
+    # the design has no button. The columns are the way through for now.
+    content = f"""
+    <div class="hub">
+      <p class="hero">What are we doing today?</p>
+
+      <div class="sbox">
+        <canvas class="sico" id="i-search"></canvas>
+        <input type="text" class="sfld" placeholder="Search">
+      </div>
+
+      <div class="hubcols">
+{''.join(columns)}
+      </div>
+    </div>"""
+
+    body, shell_script = shell("home", token, content, art=True)
+    script.append('paint("i-search", "search", "#8b8b96", 1.6)')
+    return page(f"{BRAND} - {esc(username)}", body,
+                shell_script + "\n" + "\n".join(script))
 
 
 def panel_page(username: str, token: str, domains: list[dict],
@@ -433,29 +729,29 @@ def panel_page(username: str, token: str, domains: list[dict],
   Letters, digits and hyphens.</p>
 </div>"""
 
-    right = (f'<p class="who">{esc(username)}</p>')
-    body = band(right, f"Signed in to the .{config.ZONE} registry") + f"""
-<div class="wrap">
+    content = f"""
+    <div class="page">
 
-<div class="tiles">
-  {tile(f"{used}/{config.MAX_DOMAINS}", "domains")}
-  {tile(total_records, plural(total_records, "record"))}
-  {tile(secured, plural(secured, "certificate"))}
-</div>
+    <div class="tiles">
+      {tile(f"{used}/{config.MAX_DOMAINS}", "domains")}
+      {tile(total_records, plural(total_records, "record"))}
+      {tile(secured, plural(secured, "certificate"))}
+    </div>
 
-<div class="row">
-  <button class="btn-sm" id="signout">Sign out</button>
-</div>
+    <div class="row">
+      <button class="btn-sm" id="signout">Sign out</button>
+    </div>
 
-<h3>YOUR DOMAINS</h3>
-{''.join(cards)}
-{add}
-<p class="msg" id="msg"></p>
+    <h3>YOUR DOMAINS</h3>
+    {''.join(cards)}
+    {add}
+    <p class="msg" id="msg"></p>
 
-</div>"""
+    </div>"""
+    body, shell_script = shell("domains", token, content)
 
     drops = "\n".join(f'bind({lua_str(d["name"])})' for d in domains)
-    script = f"""
+    script = shell_script + f"""
 local token = {lua_str(token)}
 local msg = document.getElementById("msg")
 
@@ -472,7 +768,7 @@ local function bind(name)
             if err then return say(err, "#f87171") end
             local data = res:json()
             if not res.ok then return say(data.error or "Failed.", "#f87171") end
-            location.assign("/panel?t=" .. token)
+            location.assign("/domains?t=" .. token)
         end)
     end)
 end
@@ -488,7 +784,7 @@ document.getElementById("add"):addEventListener("click", function()
         if err then return say(err, "#f87171") end
         local data = res:json()
         if not res.ok then return say(data.error or "Failed.", "#f87171") end
-        location.assign("/panel?t=" .. token)
+        location.assign("/domains?t=" .. token)
     end)
 end)
 
@@ -498,6 +794,20 @@ document.getElementById("signout"):addEventListener("click", function()
 end)
 """
     return page(f"{BRAND} - domains", body, script)
+
+
+def analytics_page(token: str) -> str:
+    content = """
+    <div class="page">
+    <h3>ANALYTICS</h3>
+    <div class="card">
+      <h2>Nothing measured yet</h2>
+      <p class="body">Query counts per domain land here once the resolver keeps
+      them. Records and certificates are on the Domains tab.</p>
+    </div>
+    </div>"""
+    body, script = shell("analytics", token, content)
+    return page(f"{BRAND} - analytics", body, script)
 
 
 def _record_rows(records: list[dict]) -> str:
@@ -561,7 +871,7 @@ enough to serve star:// to any StarWeb client on the network.</p>
 <div class="wrap">
 
 <div class="row">
-  <a href="/panel?t={esc(token)}">&lt; All domains</a>
+  <a href="/domains?t={esc(token)}">&lt; All domains</a>
 </div>
 
 <div class="tiles">

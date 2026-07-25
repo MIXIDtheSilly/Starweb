@@ -96,9 +96,11 @@ function makeCog(cx, cy, rad, spin, phase, gang)
 end
 
 -- Segments are bucketed by row so a cell only tests the few that can reach it.
-function makeLine(L, ox, oy, scale, phase)
+-- `weight` scales the stroke off the width the shape was drawn with, for a
+-- placement that wants the line heavier than the artwork specifies.
+function makeLine(L, ox, oy, scale, phase, weight)
     local n = #L.x
-    local half = L.half * scale
+    local half = L.half * scale * (weight or 1.0)
     local buckets = {}
 
     for i = 1, n - 1 do

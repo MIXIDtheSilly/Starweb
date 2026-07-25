@@ -29,6 +29,10 @@ std::mutex fetch_mutex;
 ImFont* mono_font = nullptr;
 float page_viewport_w = 0.0f;
 float page_viewport_h = 0.0f;
+float page_viewport_w_full = 0.0f;
+float page_viewport_h_full = 0.0f;
+ImVec2 page_document_origin = ImVec2(0.0f, 0.0f);
+ImVec2 page_viewport_origin = ImVec2(0.0f, 0.0f);
 
 static std::unordered_map<std::string, ImFont*> page_fonts;
 

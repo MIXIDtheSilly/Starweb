@@ -139,6 +139,15 @@ client), each in its own terminal:
 ./stwp_browser.         # terminal 2, or ./stwp_client star://localhost/<path>
 ```
 
+Two environment variables help when working on a page: `STARWEB_URL` opens
+somewhere other than the local index, and `STARWEB_SHOT=<path>` writes the
+framebuffer to a binary PPM once the page has settled and then quits, so a
+layout can be looked at without driving the window by hand.
+
+```sh
+STARWEB_URL=star://localhost/panel.html STARWEB_SHOT=/tmp/page.ppm ./stwp_browser
+```
+
 `certs/` is git-ignored, so a fresh clone needs this step once. Skipping it leaves
 the server serving plaintext `moon://` on 8090 only (it logs the reason and
 disables `star://`), and the browser's default page fails to load until you either

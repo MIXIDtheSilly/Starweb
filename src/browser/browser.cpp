@@ -115,6 +115,11 @@ void script_dispatch_click(int tab_id, uint64_t node_id) {
     if (it != g_script_engines.end() && it->second) it->second->dispatch_click(node_id);
 }
 
+bool script_has_click_handler(int tab_id, uint64_t node_id) {
+    auto it = g_script_engines.find(tab_id);
+    return it != g_script_engines.end() && it->second && it->second->has_click_handler(node_id);
+}
+
 
 static void dispatch_page_keys(GLFWwindow* window) {
     struct NamedKey { int key; const char* name; };
@@ -245,7 +250,17 @@ int main() {
 
     glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
-    GLFWwindow* window = glfwCreateWindow(1024, 768, "Starmap", nullptr, nullptr);
+    // STARWEB_SIZE=WxH opens at a given size, which is how a layout gets checked
+    // at more than one window shape without dragging the corner.
+    int win_w = 1024, win_h = 768;
+    if (const char* size = std::getenv("STARWEB_SIZE")) {
+        int w = 0, h = 0;
+        if (std::sscanf(size, "%dx%d", &w, &h) == 2 && w > 320 && h > 240) {
+            win_w = w;
+            win_h = h;
+        }
+    }
+    GLFWwindow* window = glfwCreateWindow(win_w, win_h, "Starmap", nullptr, nullptr);
     if (!window) {
         std::cerr << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -378,6 +393,16 @@ int main() {
 
     Tab initial_tab;
     initial_tab.id = next_tab_id++;
+    // Development hooks, both off unless the environment sets them: STARWEB_URL
+    // opens somewhere other than the local index, and STARWEB_SHOT writes the
+    // framebuffer to a file and quits once the page has settled, which is how a
+    // page gets looked at without a person driving the window.
+    if (const char* start_url = std::getenv("STARWEB_URL")) {
+        initial_tab.current_url = start_url;
+        std::snprintf(initial_tab.url_input, sizeof(initial_tab.url_input), "%s", start_url);
+    }
+    const char* shot_path = std::getenv("STARWEB_SHOT");
+    int shot_countdown = shot_path ? 240 : -1;
     tabs.push_back(initial_tab);
     active_tab_idx = 0;
     start_async_fetch(tabs[active_tab_idx].id, tabs[active_tab_idx].current_url);
@@ -419,7 +444,6 @@ int main() {
                     tab.active_players.clear();
 
                     if (tab.active_page.success) {
-                        // Load new textures on the main thread
                         for (const auto& [url, bytes] : tab.active_page.fetched_images) {
                             TextureInfo tex;
                             if (LoadTextureFromMemory(
@@ -655,7 +679,6 @@ int main() {
         ImVec2 bar_max = ImVec2(bar_min.x + window_avail_width, bar_min.y + tab_height);
         draw_list->AddRectFilled(bar_min, bar_max, Theme::bar_bg);
 
-        // Draw Custom macOS Traffic Lights
         ImVec2 tl_pos = cursor_pos;
         ImVec2 mouse_pos = ImGui::GetIO().MousePos;
         bool mouse_clicked = ImGui::IsMouseClicked(0);
@@ -1093,6 +1116,8 @@ int main() {
         page_viewport_w = vp_avail.x;
         page_viewport_h = vp_avail.y - active_tab.vp_slack;
         if (page_viewport_h < 1.0f) page_viewport_h = 1.0f;
+        page_viewport_w_full = vp_avail.x;
+        page_viewport_h_full = vp_avail.y > 1.0f ? vp_avail.y : 1.0f;
 
         auto body_it = active_tab.css_classes.find("body");
         ImDrawList* vp_draw_list = ImGui::GetWindowDrawList();
@@ -1115,6 +1140,26 @@ int main() {
         } else {
             vp_draw_list->AddRectFilled(min_p, max_p, Theme::viewport_bg, inner_radius, ImDrawFlags_RoundCornersBottom);
         }
+
+        // Vector art is drawn in logical pixels and scaled up to the framebuffer,
+        // which stretches the anti-aliasing fringe with it: a hairline stroke on a
+        // 2x display gets two device pixels of gradient on each side, which is
+        // what makes small icons look soft. Shrink the fringe by the same factor
+        // so it stays one device pixel whatever the display does.
+        const float fb_scale = ImGui::GetIO().DisplayFramebufferScale.y;
+        if (fb_scale > 1.0f) ImGui::GetWindowDrawList()->_FringeScale = 1.0f / fb_scale;
+
+        // Circles and rounded corners pick their segment count from an error
+        // budget in logical pixels, which the same scaling stretches into a
+        // visible flat side. Tessellate for the device instead; ImGui copies this
+        // to the draw data on the next NewFrame.
+        if (fb_scale > 1.0f) {
+            ImGui::GetStyle().CircleTessellationMaxError = 0.30f / fb_scale;
+        }
+
+        page_document_origin = ImGui::GetCursorScreenPos();
+        page_viewport_origin = ImVec2(page_document_origin.x + ImGui::GetScrollX(),
+                                      page_document_origin.y + ImGui::GetScrollY());
 
         CssStyle default_style;
         default_style.color = ImVec4(0.95f, 0.95f, 0.95f, 1.0f);
@@ -1184,6 +1229,25 @@ int main() {
         glClearColor(0.07f, 0.09f, 0.15f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        if (shot_countdown > 0) {
+            settle_frames = kSettleFrames;  // keep drawing rather than idling
+            shot_countdown--;
+        } else if (shot_countdown == 0) {
+            std::vector<unsigned char> px((size_t)display_w * display_h * 3);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, display_w, display_h, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+            if (FILE* f = std::fopen(shot_path, "wb")) {
+                std::fprintf(f, "P6\n%d %d\n255\n", display_w, display_h);
+                // GL reads bottom-up; PPM is top-down.
+                size_t stride = (size_t)display_w * 3;
+                for (int y = display_h - 1; y >= 0; --y) {
+                    std::fwrite(px.data() + (size_t)y * stride, 1, stride, f);
+                }
+                std::fclose(f);
+            }
+            break;
+        }
 
         glfwSwapBuffers(window);
     }

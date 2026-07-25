@@ -29,7 +29,7 @@ static constexpr float kFieldPadY = 2.0f;
 InputStyleGuard::InputStyleGuard(const CssStyle& merged) {
     float rounding = merged.border_radius >= 0.0f ? merged.border_radius : 0.0f;
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, merged.border_width >= 0.0f ? merged.border_width : 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, merged.has_border_width ? merged.border_width : 1.0f);
 
     float pad_x = merged.padding_left > 0.0f ? merged.padding_left : kFieldPadX;
     float pad_y = merged.padding_top > 0.0f ? merged.padding_top : kFieldPadY;
@@ -328,7 +328,7 @@ struct ChromeFieldGuard {
     ChromeFieldGuard(const CssStyle& m) {
         float rounding = m.border_radius >= 0.0f ? m.border_radius : 2.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, m.border_width > 0.0f ? m.border_width : 1.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, m.has_border_width ? m.border_width : 1.0f);
         float pad_x = m.padding_left > 0.0f ? m.padding_left : kFieldPadX;
         float pad_y = m.padding_top  > 0.0f ? m.padding_top  : kFieldPadY;
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad_x, pad_y));
@@ -392,6 +392,11 @@ static bool is_inline_text_tag(const std::string& tag) {
            tag == "del" || tag == "s" || tag == "strike" || tag == "ins" ||
            tag == "label" || tag == "cite" || tag == "q" || tag == "abbr" ||
            tag == "kbd" || tag == "samp" || tag == "var" || tag == "sub" || tag == "sup";
+}
+
+// Tags that draw an interactive widget and report their own presses.
+static bool is_widget_tag(const std::string& tag) {
+    return tag == "button" || tag == "input" || tag == "select" || tag == "textarea";
 }
 
 bool is_inline_element(const DomNode& node, const CssStyle& merged) {
@@ -844,21 +849,70 @@ CssStyle merge_node_style(const DomNode& node, const CssStyle& parent_style, Tab
     }
     // Fold vw/vh down to pixels here, so layout and painting only ever see the
     // pixel fields. A zero viewport (before the first frame) leaves them unset.
-    if (merged.width_vw > -1.0f && page_viewport_w > 0.0f) {
-        merged.width = merged.width_vw * 0.01f * page_viewport_w;
+    // An out-of-flow box measures against the untrimmed viewport: it is not in
+    // the flow, so it cannot be what pushed the page past the bottom, and the
+    // slack correction would shrink it for someone else's overflow.
+    const bool out_of_flow = is_positioned(merged);
+    const float vp_w = out_of_flow ? page_viewport_w_full : page_viewport_w;
+    const float vp_h = out_of_flow ? page_viewport_h_full : page_viewport_h;
+
+    if (merged.width_vw > -1.0f && vp_w > 0.0f) {
+        merged.width = merged.width_vw * 0.01f * vp_w;
     }
-    if (merged.width_vh > -1.0f && page_viewport_h > 0.0f) {
-        merged.width = merged.width_vh * 0.01f * page_viewport_h;
-        tab.vp_fit_used = true;  // opt into the slack convergence, as canvas does
+    if (merged.width_vh > -1.0f && vp_h > 0.0f) {
+        merged.width = merged.width_vh * 0.01f * vp_h;
+        if (!out_of_flow) tab.vp_fit_used = true;  // opt into the slack convergence
     }
-    if (merged.height_vh > -1.0f && page_viewport_h > 0.0f) {
-        merged.height = merged.height_vh * 0.01f * page_viewport_h;
-        tab.vp_fit_used = true;
+    if (merged.height_vh > -1.0f && vp_h > 0.0f) {
+        merged.height = merged.height_vh * 0.01f * vp_h;
+        if (!out_of_flow) tab.vp_fit_used = true;
     }
-    if (merged.height_vw > -1.0f && page_viewport_w > 0.0f) {
-        merged.height = merged.height_vw * 0.01f * page_viewport_w;
+    if (merged.height_vw > -1.0f && vp_w > 0.0f) {
+        merged.height = merged.height_vw * 0.01f * vp_w;
+    }
+
+    // Anchored to both edges of an axis and given no size on it: the gap between
+    // the offsets is the size, as CSS has it.
+    if (out_of_flow && merged.width <= 0.0f
+        && merged.pos_left.set && merged.pos_right.set) {
+        merged.width = vp_w - merged.pos_left.resolve(vp_w, vp_h)
+                            - merged.pos_right.resolve(vp_w, vp_h);
+    }
+    if (out_of_flow && merged.height <= 0.0f
+        && merged.pos_top.set && merged.pos_bottom.set) {
+        merged.height = vp_h - merged.pos_top.resolve(vp_w, vp_h)
+                             - merged.pos_bottom.resolve(vp_w, vp_h);
     }
     return merged;
+}
+
+bool is_positioned(const CssStyle& style) {
+    return style.position == "absolute" || style.position == "fixed";
+}
+
+// Top-left for a positioned box, in screen coordinates. `right` and `bottom`
+// measure from the far edge of the viewport, which needs the box's own size, so
+// an element sized only by its content can anchor to the left and top only.
+static ImVec2 positioned_origin(const CssStyle& style) {
+    const ImVec2& base = style.position == "fixed" ? page_viewport_origin
+                                                   : page_document_origin;
+    const float vp_w = page_viewport_w_full;
+    const float vp_h = page_viewport_h_full;
+
+    ImVec2 pos = base;
+    if (style.pos_left.set) {
+        pos.x += style.pos_left.resolve(vp_w, vp_h);
+    } else if (style.pos_right.set) {
+        float w = style.width > 0.0f ? style.width : 0.0f;
+        pos.x += vp_w - w - style.pos_right.resolve(vp_w, vp_h);
+    }
+    if (style.pos_top.set) {
+        pos.y += style.pos_top.resolve(vp_w, vp_h);
+    } else if (style.pos_bottom.set) {
+        float h = style.height > 0.0f ? style.height : 0.0f;
+        pos.y += vp_h - h - style.pos_bottom.resolve(vp_w, vp_h);
+    }
+    return pos;
 }
 
 // Positions a flex container's children at the rects Yoga computed, then reserves the
@@ -908,7 +962,17 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
     CssStyle merged = merge_node_style(node, parent_style, tab);
 
-    bool is_inline = is_inline_element(node, merged);
+    // Out of the flow: paint at the offset, then hand the cursor back untouched
+    // so the siblings lay out as though this node were not there.
+    const bool positioned = is_positioned(merged);
+    ImVec2 flow_cursor = ImGui::GetCursorScreenPos();
+    const bool flow_inline = is_inline_flow;
+    if (positioned) {
+        ImGui::SetCursorScreenPos(positioned_origin(merged));
+        is_inline_flow = false;
+    }
+
+    bool is_inline = !positioned && is_inline_element(node, merged);
     if (is_inline) {
         if (is_inline_flow) {
             ImGui::SameLine(0, 8.0f + merged.margin_left);
@@ -1169,7 +1233,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         
         float rounding = merged.border_radius >= 0.0f ? merged.border_radius : 0.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, merged.border_width >= 0.0f ? merged.border_width : 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, merged.has_border_width ? merged.border_width : 0.0f);
         
         ImGui::PushStyleColor(ImGuiCol_Border, merged.has_border_color ? merged.border_color : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
         
@@ -1290,6 +1354,44 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                         pts.reserve(op.pts.size());
                         for (const ImVec2& p : op.pts) pts.push_back(ImVec2(o.x + p.x, o.y + p.y));
                         dl->AddConvexPolyFilled(pts.data(), (int)pts.size(), col);
+                        break;
+                    }
+                    case CanvasOp::Polyline: {
+                        std::vector<ImVec2> pts;
+                        pts.reserve(op.pts.size());
+                        for (const ImVec2& p : op.pts) pts.push_back(ImVec2(o.x + p.x, o.y + p.y));
+                        // A path that ends where it started is closed, so the
+                        // seam gets a join like every other corner.
+                        const ImVec2& a = pts.front();
+                        const ImVec2& b = pts.back();
+                        bool closed = pts.size() > 2 && std::fabs(a.x - b.x) < 0.01f
+                                                     && std::fabs(a.y - b.y) < 0.01f;
+                        int n = (int)pts.size() - (closed ? 1 : 0);
+                        dl->AddPolyline(pts.data(), n, col,
+                                        closed ? ImDrawFlags_Closed : 0, op.line_width);
+
+                        // Round caps and joins are a disc at the point: at the
+                        // two ends, and at any corner that actually turns. A
+                        // sampled curve turns a degree at a time and needs
+                        // none of them, so the test keeps dense paths cheap.
+                        float r = op.line_width * 0.5f;
+                        if (r > 0.5f && (op.round_cap || op.round_join)) {
+                            if (op.round_cap && !closed) {
+                                dl->AddCircleFilled(pts.front(), r, col);
+                                dl->AddCircleFilled(pts.back(), r, col);
+                            }
+                            if (op.round_join) {
+                                for (int i = 1; i + 1 < n; ++i) {
+                                    ImVec2 u(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+                                    ImVec2 v(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+                                    float lu = std::sqrt(u.x * u.x + u.y * u.y);
+                                    float lv = std::sqrt(v.x * v.x + v.y * v.y);
+                                    if (lu < 1e-4f || lv < 1e-4f) continue;
+                                    float cosang = (u.x * v.x + u.y * v.y) / (lu * lv);
+                                    if (cosang < 0.985f) dl->AddCircleFilled(pts[i], r, col);
+                                }
+                            }
+                        }
                         break;
                     }
                 }
@@ -1984,17 +2086,29 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
     ImGui::EndGroup();
 
+    ImVec2 min_p = draw_bg ? content_start : start_pos;
+    ImVec2 max_p = ImGui::GetItemRectMax();
+
+    max_p.x += merged.padding_right;
+    max_p.y += merged.padding_bottom;
+
+    if (merged.width > 0.0f) max_p.x = min_p.x + merged.width;
+    else if (block_avail_w > 0.0f) max_p.x = std::max(max_p.x, min_p.x + block_avail_w);
+    if (merged.height > 0.0f) max_p.y = min_p.y + merged.height;
+
+    // Clicks on a box that registered a handler. <button> and the form widgets
+    // report their own presses; this is what lets a whole row or card be the
+    // target rather than just the run of text inside it.
+    if (!is_widget_tag(node.tag) && script_has_click_handler(tab.id, node.node_id)) {
+        if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(min_p, max_p)) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                script_dispatch_click(tab.id, node.node_id);
+            }
+        }
+    }
+
     if (draw_bg) {
-        ImVec2 min_p = content_start;
-        ImVec2 max_p = ImGui::GetItemRectMax();
-        
-        max_p.x += merged.padding_right;
-        max_p.y += merged.padding_bottom;
-        
-        if (merged.width > 0.0f) max_p.x = min_p.x + merged.width;
-        else if (block_avail_w > 0.0f) max_p.x = std::max(max_p.x, min_p.x + block_avail_w);
-        if (merged.height > 0.0f) max_p.y = min_p.y + merged.height;
-        
         splitter.SetCurrentChannel(draw_list, 0);
         
         float rounding = merged.border_radius;
@@ -2027,6 +2141,11 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
     if (base_font_scale != 1.0f) {
         ImGui::SetWindowFontScale(1.0f);
+    }
+
+    if (positioned) {
+        ImGui::SetCursorScreenPos(flow_cursor);
+        is_inline_flow = flow_inline;
     }
 }
 

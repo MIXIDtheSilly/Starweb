@@ -8,6 +8,7 @@ from .db import db
 from .errors import PanelError
 
 BANNER = (shapes.ASSETS / "banner.png").read_bytes()
+BANNER_TRANS = (shapes.ASSETS / "banner_trans.png").read_bytes()
 
 STATUS_TEXT = {
     200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
@@ -56,13 +57,33 @@ def banner(req):
                     headers={"Content-Type": "image/png"})
 
 
+@app.route("/banner_trans.png")
+def banner_trans(req):
+    return Response(200, body=BANNER_TRANS,
+                    headers={"Content-Type": "image/png"})
+
+
 @app.route("/")
 def index(req):
     return _html(ui.login_page())
 
 
+# The account home. Everything it lists is a shortcut into one of the tabs
+# below, so it does no counting of its own.
 @app.route("/panel")
 def panel(req):
+    token = req.query.get("t", "")
+    try:
+        username = auth.user_for(token)
+        domains = zones.list_domains(username)
+    except PanelError as e:
+        return _html(ui.error_page(e.message), e.status)
+
+    return _html(ui.home_page(username, token, domains))
+
+
+@app.route("/domains")
+def domains_view(req):
     token = req.query.get("t", "")
     try:
         username = auth.user_for(token)
@@ -74,6 +95,16 @@ def panel(req):
               for d in domains}
     certs = {d["name"]: ca.latest(d["name"]) is not None for d in domains}
     return _html(ui.panel_page(username, token, domains, counts, certs))
+
+
+@app.route("/analytics")
+def analytics_view(req):
+    token = req.query.get("t", "")
+    try:
+        auth.user_for(token)
+    except PanelError as e:
+        return _html(ui.error_page(e.message), e.status)
+    return _html(ui.analytics_page(token))
 
 
 # The domain sits in the path, not the query: the renderer does not decode HTML
