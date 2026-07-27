@@ -14,7 +14,7 @@ def fake_db(monkeypatch):
     fake = FakeDB()
     monkeypatch.setattr(db_module, "_db", fake)
     monkeypatch.setattr(db_module, "db", lambda: fake)
-    for module in ("auth", "zones", "ca", "resolver", "panel"):
+    for module in ("auth", "zones", "ca", "resolver", "panel", "analytics"):
         mod = __import__(f"stardns.{module}", fromlist=["db"])
         if hasattr(mod, "db"):
             monkeypatch.setattr(mod, "db", lambda: fake)

@@ -356,7 +356,8 @@ def icon_subpaths(name: str) -> list[list[tuple[float, float]]]:
     return out
 
 
-ICON_NAMES = ("house", "globe", "chart-pie", "chevron-right", "search", "user-round")
+ICON_NAMES = ("house", "globe", "chart-pie", "chevron-right", "chevron-left", "search",
+              "user-round", "shield-check", "shield-question-mark")
 
 
 @lru_cache(maxsize=1)

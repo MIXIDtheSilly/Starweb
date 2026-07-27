@@ -3,7 +3,7 @@ import json
 
 from starweb import App, Response
 
-from . import auth, ca, config, shapes, ui, zones
+from . import analytics, auth, ca, config, shapes, ui, zones
 from .db import db
 from .errors import PanelError
 
@@ -79,7 +79,9 @@ def panel(req):
     except PanelError as e:
         return _html(ui.error_page(e.message), e.status)
 
-    return _html(ui.home_page(username, token, domains))
+    series = analytics.daily_totals([d["name"] for d in domains])
+    labels = analytics.day_labels()
+    return _html(ui.home_page(username, token, domains, series, labels))
 
 
 @app.route("/domains")
@@ -94,17 +96,28 @@ def domains_view(req):
     counts = {d["name"]: db().records.count_documents({"domain": d["name"]})
               for d in domains}
     certs = {d["name"]: ca.latest(d["name"]) is not None for d in domains}
-    return _html(ui.panel_page(username, token, domains, counts, certs))
+    queries = {d["name"]: analytics.total_queries(d["name"], days=14) for d in domains}
+    series = {d["name"]: analytics.daily_counts(d["name"]) for d in domains}
+    return _html(ui.panel_page(username, token, domains, counts, certs, queries, series))
 
 
 @app.route("/analytics")
 def analytics_view(req):
     token = req.query.get("t", "")
     try:
-        auth.user_for(token)
+        username = auth.user_for(token)
+        domains = zones.list_domains(username)
     except PanelError as e:
         return _html(ui.error_page(e.message), e.status)
-    return _html(ui.analytics_page(token))
+
+    names = [d["name"] for d in domains]
+    series = analytics.daily_totals(names)
+    labels = analytics.day_labels()
+    per_domain = [{"name": name,
+                   "series": analytics.daily_counts(name),
+                   "total": analytics.total_queries(name, days=14)}
+                  for name in names]
+    return _html(ui.analytics_page(token, domains, series, labels, per_domain))
 
 
 # The domain sits in the path, not the query: the renderer does not decode HTML

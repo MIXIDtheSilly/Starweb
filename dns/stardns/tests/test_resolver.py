@@ -178,6 +178,19 @@ def test_records_die_with_their_domain(zone):
     assert ask(f"www.{zone}")["rcode"] == wire.NXDOMAIN
 
 
+def test_queries_are_counted_for_analytics(zone):
+    from stardns import analytics
+    ask(zone)
+    ask(f"www.{zone}")
+    assert analytics.total_queries(zone) == 2
+
+
+def test_queries_outside_any_zone_are_not_counted(fake_db):
+    from stardns import analytics
+    ask("nothing.web")
+    assert analytics.total_queries("nothing.web") == 0
+
+
 def test_big_txt_answer_truncates_over_udp(account):
     domain = zones.add_domain("tester", "example")["name"]
     for i in range(12):

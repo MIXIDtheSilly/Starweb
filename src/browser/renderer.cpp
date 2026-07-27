@@ -62,6 +62,23 @@ InputStyleGuard::~InputStyleGuard() {
     ImGui::PopStyleVar(3);
 }
 
+// A flex-grow child with no explicit width should fill its row's slot, like
+// an unstyled <div> already does via GetContentRegionAvail(). Widget
+// branches below only ever read their own CSS width though, so flex-grow
+// was a silent no-op on <input>/<select>/<textarea>. avail.x minus
+// parent_accumulated_right reconstructs that slot width, since
+// render_flex_container computed the reservation as avail.x - r.w one frame
+// earlier. Gated on flex_grow specifically so no existing unstyled
+// input/select changes size.
+static float widget_fill_width(const CssStyle& merged, float parent_accumulated_right, float fallback) {
+    if (merged.width > 0.0f) return merged.width;
+    if (merged.flex_grow > 0.0f) {
+        float avail = ImGui::GetContentRegionAvail().x - parent_accumulated_right;
+        if (avail > 0.0f) return avail;
+    }
+    return fallback;
+}
+
 // The surrounding UI is dark, but native <input> widgets in Chrome render with a
 // light "form control" skin, so these helpers reproduce that look and store widget
 // state back on the DomNode so it survives across frames.
@@ -1522,7 +1539,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             if (val < lo) val = lo;
             if (val > hi) val = hi;
 
-            float width = merged.width > 0.0f ? merged.width : 200.0f;
+            float width = widget_fill_width(merged, parent_accumulated_right, 200.0f);
             float rowH = ImGui::GetFontSize() + 8.0f;
             ImGui::PushID(input_label.c_str());
             ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -1583,7 +1600,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             char buf[64] = {0};
             std::strncpy(buf, node.value.c_str(), sizeof(buf) - 1);
 
-            float total = merged.width > 0.0f ? merged.width : 160.0f;
+            float total = widget_fill_width(merged, parent_accumulated_right, 160.0f);
             ImGui::PushItemWidth(total - 19.0f);
             {
                 ChromeFieldGuard style_guard(merged);
@@ -1811,7 +1828,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             char buf[1024] = {0};
             std::strncpy(buf, node.value.c_str(), sizeof(buf) - 1);
 
-            float width = merged.width > 0.0f ? merged.width : 200.0f;
+            float width = widget_fill_width(merged, parent_accumulated_right, 200.0f);
             ImGui::PushItemWidth(width);
 
             ImGuiInputTextFlags flags = 0;
@@ -1837,7 +1854,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         char buf[4096] = {0};
         std::strncpy(buf, node.value.c_str(), sizeof(buf) - 1);
         
-        float width = merged.width > 0.0f ? merged.width : 300.0f;
+        float width = widget_fill_width(merged, parent_accumulated_right, 300.0f);
         float height = merged.height > 0.0f ? merged.height : 100.0f;
         
         std::string label = "##" + (node.id.empty() ? std::to_string((uintptr_t)&node) : node.id);
@@ -1905,9 +1922,9 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             items.push_back(opt.c_str());
         }
         
-        float width = merged.width > 0.0f ? merged.width : 150.0f;
+        float width = widget_fill_width(merged, parent_accumulated_right, 150.0f);
         ImGui::PushItemWidth(width);
-        
+
         {
             InputStyleGuard style_guard(merged);
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.53f, 0.34f, 0.84f, 0.65f));

@@ -18,6 +18,8 @@ def _matches(doc: dict, query: dict) -> bool:
                 return False
             if "$ne" in want and got == want["$ne"]:
                 return False
+            if "$gte" in want and (got is None or got < want["$gte"]):
+                return False
         elif got != want:
             return False
     return True
@@ -77,12 +79,24 @@ class FakeCollection:
         self.docs = keep
         return type("R", (), {"deleted_count": removed})()
 
-    def update_one(self, query, update):
+    def _apply(self, doc, update):
+        for k, v in update.get("$set", {}).items():
+            doc[k] = v
+        for k, v in update.get("$inc", {}).items():
+            doc[k] = doc.get(k, 0) + v
+
+    def update_one(self, query, update, upsert=False):
         for d in self.docs:
             if _matches(d, query):
-                d.update(update.get("$set", {}))
-                return type("R", (), {"modified_count": 1})()
-        return type("R", (), {"modified_count": 0})()
+                self._apply(d, update)
+                return type("R", (), {"modified_count": 1, "upserted_id": None})()
+        if upsert:
+            doc = {k: v for k, v in query.items() if not isinstance(v, dict)}
+            self._apply(doc, update)
+            doc.setdefault("_id", ObjectId())
+            self.docs.append(doc)
+            return type("R", (), {"modified_count": 0, "upserted_id": doc["_id"]})()
+        return type("R", (), {"modified_count": 0, "upserted_id": None})()
 
 
 class FakeDB:

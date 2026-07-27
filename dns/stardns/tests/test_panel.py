@@ -192,6 +192,109 @@ def test_unknown_route(fake_db):
     assert get("/nothing-here").status_code == 404
 
 
+def test_home_shows_query_total(session):
+    from stardns import analytics
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    analytics.record_query(f"mysite.{ZONE}")
+    analytics.record_query(f"mysite.{ZONE}")
+    res = get(f"/panel?t={session}")
+    assert 'id="chart-home"' in res.text
+    assert "Queries across your domains" in res.text
+    assert ">2<" in res.text
+
+
+def test_domains_tab_shows_a_queries_tile(session):
+    from stardns import analytics
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    analytics.record_query(f"mysite.{ZONE}")
+    res = get(f"/domains?t={session}")
+    assert "queries (14d)" in res.text
+
+
+def test_domains_tab_has_no_separate_certificates_tile(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/domains?t={session}")
+    assert '<p class="tlab">certificate</p>' not in res.text
+    assert '<p class="tlab">certificates</p>' not in res.text
+
+
+def test_domains_tab_shows_certificate_status_as_icons_not_text(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/domains?t={session}")
+    assert "Certificate issued" not in res.text and "No certificate" not in res.text
+    assert "shield-question-mark" in res.text
+
+
+def test_domains_and_analytics_tabs_carry_the_shell_artwork(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    for path in (f"/domains?t={session}", f"/analytics?t={session}"):
+        text = get(path).text
+        assert 'id="art-bl"' in text and 'id="art-tr"' in text
+
+
+def test_domains_tab_has_no_giant_page_title(session):
+    res = get(f"/domains?t={session}")
+    assert "<h1>" not in res.text
+
+
+def test_analytics_tab_with_no_domains_is_still_an_empty_state(session):
+    res = get(f"/analytics?t={session}")
+    assert "No domains yet" in res.text
+
+
+def test_analytics_tab_shows_real_per_domain_breakdown(session):
+    from stardns import analytics
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    post("/api/domain/add", {"token": session, "domain": "other"})
+    analytics.record_query(f"mysite.{ZONE}")
+    analytics.record_query(f"mysite.{ZONE}")
+    analytics.record_query(f"other.{ZONE}")
+    res = get(f"/analytics?t={session}")
+    assert res.status_code == 200
+    assert f"mysite.{ZONE}" in res.text and f"other.{ZONE}" in res.text
+    assert f'<p class="tnum">mysite.{ZONE}</p>' in res.text
+    assert '<p class="tlab">busiest domain</p>' in res.text
+
+
+def test_domain_page_has_no_analytics_on_it(session):
+    from stardns import analytics
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    analytics.record_query(f"mysite.{ZONE}")
+    res = get(f"/domain/mysite.{ZONE}?t={session}")
+    assert 'id="chart-domain"' not in res.text
+    assert "queries (14d)" not in res.text
+
+
+def test_domain_page_records_tile_is_used_of_max(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    post("/api/record/add", {"token": session, "domain": "mysite",
+                             "name": "www", "type": "A", "value": "10.0.0.1"})
+    res = get(f"/domain/mysite.{ZONE}?t={session}")
+    assert f"1/{config.MAX_RECORDS}" in res.text
+    assert '<p class="tlab">slots left</p>' not in res.text
+
+
+def test_domain_page_back_link_is_an_icon_row_not_literal_arrow(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/domain/mysite.{ZONE}?t={session}")
+    assert "&lt;" not in res.text
+    assert "All domains" in res.text
+    assert '"chevron-left"' in res.text
+
+
+def test_domain_page_certificate_card_has_no_written_to_line(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/domain/mysite.{ZONE}?t={session}")
+    assert "Also written to" not in res.text
+    assert "shield-question-mark" in res.text
+
+
+def test_domain_page_add_record_card_has_purple_outline(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/domain/mysite.{ZONE}?t={session}")
+    assert 'class="addcard"' in res.text
+
+
 def test_html_is_escaped(session, fake_db):
     # A value is echoed into the records table, so it must not carry markup out.
     zones.add_domain("tester", "mysite")

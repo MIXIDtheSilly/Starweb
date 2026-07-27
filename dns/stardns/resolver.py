@@ -4,7 +4,7 @@ import struct
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from . import config, wire
+from . import analytics, config, wire
 from .db import db
 from .wire import RR
 
@@ -120,6 +120,7 @@ def answer(query: wire.Query) -> bytes:
         return wire.build_response(query, authority=[_soa(zone, TLD_SOA_SERIAL)],
                                    rcode=wire.NXDOMAIN, max_size=query.udp_size)
 
+    analytics.record_query(domain["name"])
     serial = domain.get("serial", TLD_SOA_SERIAL)
     answers, rcode = _resolve(domain["name"], qname, qtype, serial)
     authority = [] if answers else [_soa(domain["name"], serial)]

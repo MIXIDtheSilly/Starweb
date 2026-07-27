@@ -29,6 +29,7 @@ def _ensure_indexes(d) -> None:
     d.records.create_index([("domain", ASCENDING), ("name", ASCENDING),
                             ("type", ASCENDING)])
     d.certs.create_index([("domain", ASCENDING), ("issued_at", ASCENDING)])
+    d.stats.create_index([("domain", ASCENDING), ("day", ASCENDING)], unique=True)
 
 
 def ping() -> None:
