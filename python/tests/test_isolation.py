@@ -1,5 +1,5 @@
 """StarWeb's separation from the public web is enforced, not assumed. These
-tests are the enforcement — none of them should ever be skipped or relaxed."""
+tests are the enforcement; none of them should ever be skipped or relaxed."""
 
 import socket
 import ssl

@@ -99,7 +99,7 @@ def _encode_txt(value: str) -> bytes:
     raw = value.encode()
     out = bytearray()
     # A character-string caps at 255 bytes, so a longer value goes out as
-    # several strings in one record — which is what resolvers concatenate.
+    # several strings in one record, which is what resolvers concatenate.
     for i in range(0, max(len(raw), 1), 255):
         chunk = raw[i:i + 255]
         out.append(len(chunk))

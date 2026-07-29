@@ -391,7 +391,7 @@ bool MediaSource::fetch_chunks(int64_t first_chunk, int64_t count) {
             if (complete_through <= published_through) return true;  // no new chunk yet
 
             // Flush only when a boundary is crossed, so the reader that is about to be
-            // unblocked sees the bytes on the same fstream — not once per 16 KB body.
+            // unblocked sees the bytes on the same fstream, not once per 16 KB body.
             file_.flush();
             if (!file_) return false;
         }

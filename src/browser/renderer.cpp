@@ -543,7 +543,7 @@ static const ImU32 kMediaFillColor   = IM_COL32(255, 255, 255, 255);
 static const ImU32 kMediaBufferColor = IM_COL32(200, 200, 205, 190);
 
 // A fully cached entry plays straight off disk; anything else streams. The sidecar's
-// absence is what means complete — testing existence alone hands the backend the
+// absence is what means complete: testing existence alone hands the backend the
 // sparse file MediaSource allocates up front, which parses as undecodable.
 static VideoPlayer* make_media_player(int tab_id, const std::string& url, bool audio_only) {
     std::string cache_path = get_cache_filepath(url);
@@ -1032,7 +1032,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
         // A block-level box spans its container, as CSS has it. The group's
         // extent measured after the children only covers the widest one, which
-        // would shrink a card down to its longest line of text — and leave two
+        // would shrink a card down to its longest line of text, and leave two
         // cards holding different content sitting at different widths.
         if (!is_inline) {
             block_avail_w = ImGui::GetContentRegionAvail().x
@@ -1322,7 +1322,11 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         ImGui::PopStyleColor();
     } else if (node.tag == "canvas") {
         ImVec2 avail = ImGui::GetContentRegionAvail();
-        float w = merged.width  > 0.0f ? merged.width  : avail.x;
+        // Same right-edge reservation every other branch makes: without it a
+        // width-less canvas runs past its container's padding and drags the
+        // container's border out with it.
+        float right_offset = parent_accumulated_right + merged.margin_right + merged.padding_right;
+        float w = merged.width  > 0.0f ? merged.width  : (avail.x - right_offset);
         float h = merged.height > 0.0f ? merged.height : avail.y;
         if (w < 1.0f) w = 300.0f;
         if (h < 1.0f) h = 150.0f;
@@ -1338,6 +1342,21 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         ImVec2 o = ImGui::GetCursorScreenPos();
         ImGui::Dummy(ImVec2(w, reserve_h));
 
+        // Only the drawn box counts as hovered, not the taller strip a
+        // viewport-fitted canvas reserves below it.
+        float hover_x = -1.0f, hover_y = -1.0f;
+        if (ImGui::IsItemHovered()) {
+            ImVec2 mouse = ImGui::GetIO().MousePos;
+            if (mouse.y - o.y <= h) {
+                hover_x = mouse.x - o.x;
+                hover_y = mouse.y - o.y;
+            }
+        }
+        script_set_canvas_hover(tab.id, node.node_id, hover_x, hover_y);
+        // Whatever AddText below will pick up, handed to the script so
+        // measureText answers for the same font.
+        script_set_canvas_font(tab.id, node.node_id, ImGui::GetFont(), ImGui::GetFontSize());
+
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImVec2 br(o.x + w, o.y + h);
         dl->PushClipRect(o, br, true);
@@ -1349,12 +1368,13 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                 switch (op.kind) {
                     case CanvasOp::FillRect:
                         dl->AddRectFilled(ImVec2(o.x + op.a, o.y + op.b),
-                                          ImVec2(o.x + op.a + op.c, o.y + op.b + op.d), col);
+                                          ImVec2(o.x + op.a + op.c, o.y + op.b + op.d),
+                                          col, op.radius);
                         break;
                     case CanvasOp::StrokeRect:
                         dl->AddRect(ImVec2(o.x + op.a, o.y + op.b),
                                     ImVec2(o.x + op.a + op.c, o.y + op.b + op.d),
-                                    col, 0.0f, 0, op.line_width);
+                                    col, op.radius, 0, op.line_width);
                         break;
                     case CanvasOp::Line:
                         dl->AddLine(ImVec2(o.x + op.a, o.y + op.b),

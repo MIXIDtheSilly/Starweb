@@ -8,12 +8,12 @@ or linked as a system/vcpkg dependency.
 
 - **License**: GNU Lesser General Public License, version 2.1 or later (LGPL-2.1+).
 - **How it's used**: dynamically linked (`.dll` on Windows, `.so` on Linux) via
-  `avcodec`, `avdevice`, `avfilter`, `avformat`, `swresample`, `swscale` — FFmpeg's
+  `avcodec`, `avdevice`, `avfilter`, `avformat`, `swresample`, `swscale`: FFmpeg's
   default feature set. StarWeb does not enable the `gpl` or `nonfree` vcpkg/build
   features (no libx264, libx265, libvpx, libmp3lame, fdk-aac, etc.), so the build
   stays under LGPL rather than GPL, and contains no unredistributable components.
 - **Unmodified**: StarWeb uses stock upstream FFmpeg; no patches are applied.
-- **Source**: https://ffmpeg.org — obtain matching source via `vcpkg` (Windows) or
+- **Source**: https://ffmpeg.org; obtain matching source via `vcpkg` (Windows) or
   your distro's package source (Linux), or from the FFmpeg project directly.
 - **Compliance notes**: dynamic linking means the LGPL's relinking requirement is
   satisfied by construction (swap the `.dll`/`.so` for a compatible build and the
@@ -46,7 +46,7 @@ or linked as a system/vcpkg dependency.
 
 ## miniaudio
 
-- **License**: public domain (Unlicense) or MIT-0, dual-licensed — user's choice.
+- **License**: public domain (Unlicense) or MIT-0, dual-licensed; user's choice.
 - **How it's used**: vendored single-header library (`src/thirdparty/miniaudio.h`)
   for cross-platform audio output on the Windows/Linux FFmpeg media backend.
 - **Source**: https://miniaud.io

@@ -20,6 +20,8 @@ def _matches(doc: dict, query: dict) -> bool:
                 return False
             if "$gte" in want and (got is None or got < want["$gte"]):
                 return False
+            if "$lt" in want and (got is None or got >= want["$lt"]):
+                return False
         elif got != want:
             return False
     return True
@@ -92,6 +94,7 @@ class FakeCollection:
                 return type("R", (), {"modified_count": 1, "upserted_id": None})()
         if upsert:
             doc = {k: v for k, v in query.items() if not isinstance(v, dict)}
+            doc.update(update.get("$setOnInsert", {}))
             self._apply(doc, update)
             doc.setdefault("_id", ObjectId())
             self.docs.append(doc)

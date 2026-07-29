@@ -13,7 +13,7 @@ STWP_CLIENT = REPO / "stwp_client"
 
 def _cpp_server_running() -> bool:
     """The Python server now defaults to the same ports, so "something is
-    listening on 8090" no longer means the C++ implementation is there — these
+    listening on 8090" no longer means the C++ implementation is there; these
     tests would pass against Python and prove nothing. Check who answers."""
     try:
         res = starweb.get("moon://localhost/test.txt", timeout=1.0)

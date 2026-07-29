@@ -2,7 +2,7 @@
 """Start StarDNS from anywhere: python3 dns/run.py --log
 
 Equivalent to `python3 -m stardns` with dns/ on the path, which is all this
-does — the package is deliberately not at the checkout root.
+does; the package is deliberately not at the checkout root.
 """
 import sys
 from pathlib import Path

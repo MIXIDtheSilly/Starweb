@@ -30,6 +30,10 @@ def _ensure_indexes(d) -> None:
                             ("type", ASCENDING)])
     d.certs.create_index([("domain", ASCENDING), ("issued_at", ASCENDING)])
     d.stats.create_index([("domain", ASCENDING), ("day", ASCENDING)], unique=True)
+    d.stats_min.create_index([("domain", ASCENDING), ("minute", ASCENDING)],
+                             unique=True)
+    d.stats_min.create_index([("at", ASCENDING)],
+                             expireAfterSeconds=config.STATS_MINUTE_DAYS * 86400)
 
 
 def ping() -> None:

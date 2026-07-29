@@ -1,4 +1,4 @@
-# StarDNS
+# Nebula
 
 Names for StarWeb. An authoritative DNS server for the `.web` zone, a
 Cloudflare-shaped control panel to manage them, and a certificate authority that
@@ -9,7 +9,7 @@ Three parts, one process:
 | Part | What it is |
 |------|------------|
 | `stardns/resolver.py` | Authoritative DNS over UDP and TCP, answering out of MongoDB |
-| `stardns/panel.py` | STWP site — accounts, domains, records, certificates |
+| `stardns/panel.py` | STWP site: accounts, domains, records, certificates |
 | `stardns/ca.py` | Leaf certificates signed by `certs/starweb_root.pem` |
 
 The panel is served with the `starweb` package, so it speaks `moon://` and
@@ -34,7 +34,7 @@ dns/
     └── tests/
 ```
 
-The one thing it reaches outside for is `certs/` at the checkout root — the CA
+The one thing it reaches outside for is `certs/` at the checkout root: the CA
 it signs with, shared with the C++ side, which reads the same root.
 
 ## Running it
@@ -60,7 +60,7 @@ sudo python3 dns/run.py --dns-port 53
 
 7.0, not the current 8.x: this is macOS 12, and the 8.x binaries need macOS 13.
 And `--ignore-dependencies`, because `mongosh` is only a *recommended*
-dependency but drags in `node`, which has no bottle on macOS 12 — Homebrew
+dependency but drags in `node`, which has no bottle on macOS 12; Homebrew
 starts compiling LLVM from source to build it. The server tarball needs none of
 that, and pymongo is the client here anyway.
 
@@ -73,7 +73,7 @@ brew services start mongodb/brew/mongodb-community@7.0
 `brew services stop mongodb/brew/mongodb-community@7.0` stops it and unloads the
 login agent.
 
-Everything is overridable by flag or environment variable — see `config.py` for
+Everything is overridable by flag or environment variable; see `config.py` for
 the full list. `--no-dns` and `--no-panel` run one half on its own, which is how
 you'd put the resolver on one box and the panel on another against the same
 MongoDB.
@@ -81,7 +81,7 @@ MongoDB.
 ## Using the names
 
 `stwp_browser` and `stwp_client` resolve `.web` by asking this server
-themselves — no system configuration, no `sudo`. They default to
+themselves, no system configuration, no `sudo`. They default to
 `127.0.0.1:5354`; point them elsewhere with `STARWEB_DNS`:
 
 ```sh
@@ -94,7 +94,7 @@ Everything that isn't `.web` still goes to the system resolver, so
 process for the record's TTL, so a page's subresources cost one lookup between
 them.
 
-Other programs on the machine — `curl`, `ping`, Python — still know nothing
+Other programs on the machine (`curl`, `ping`, Python) still know nothing
 about `.web`. If you want them to, that is the resolver file, and it is the
 only thing needing root:
 
@@ -112,7 +112,7 @@ until the resolver keeps query counts. A domain's records and certificate are
 at `/domain/<name>`.
 
 Sign in with a username and password. An account may hold **three domains**,
-each a single label under `.web` — `mysite.web`, not `a.b.web`; deeper names
+each a single label under `.web`: `mysite.web`, not `a.b.web`; deeper names
 are records inside a domain you own.
 
 Records are `A`, `AAAA`, `CNAME` and `TXT`, with a TTL between 60 and 86400
@@ -161,7 +161,7 @@ Serve with it exactly like the localhost pair:
     --cert dns/issued/mysite.web.pem --key dns/issued/mysite.web.key
 ```
 
-Any StarWeb client trusting the root — which is all of them — accepts it. The
+Any StarWeb client trusting the root (which is all of them) accepts it. The
 root is name-constrained to `.web` (and `.star`, for names issued before the
 rename), so the panel structurally cannot issue for
 a public name; `ca.issue("www.google.com")` fails its own verify step, and there
@@ -175,7 +175,7 @@ offering a button that cannot work.
 
 **The session token is in the URL.** The renderer has no cookies and no local
 storage, and `display:none` is not honoured, so the panel cannot be one page
-with hidden views holding a token in memory across actions — it is server-
+with hidden views holding a token in memory across actions; it is server-
 rendered pages, and the token rides in `?t=`. That means it lands in history and
 in the omnibox. Fine for a private network, wrong for a public one; cookies in
 STWP would be the fix.
@@ -185,7 +185,7 @@ unknown user still pays the hash so the miss cannot be timed. Session tokens are
 32 random bytes, stored as a SHA-256 hash with a TTL index, so a database dump
 does not hand over live sessions.
 
-**Someone else's domain is 404, not 403** — the panel does not disclose that a
+**Someone else's domain is 404, not 403**: the panel does not disclose that a
 name is registered, or by whom, to a signed-in stranger.
 
 ## Tests

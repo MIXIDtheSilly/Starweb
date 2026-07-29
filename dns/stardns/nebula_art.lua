@@ -42,45 +42,66 @@ local function segDist2(px, py, x1, y1, x2, y2)
     return qx * qx + qy * qy
 end
 
+-- Most of what a cell's intensity depends on is geometry, and geometry does not
+-- move: where the cell sits in the cog, or how far it is from the nearest run of
+-- the line. Only the shine, and the cog's rotation, change between frames. So
+-- each shape answers twice: prep() once per canvas size, into a flat array, and
+-- lit() per frame off what prep left behind. That takes the square roots, the
+-- arctangents and the walk over every line segment out of the per-frame loop
+-- entirely, and the picture is the same one either way.
+
 -- Brightness ramps along a direction across the shape rather than out from its
 -- centre, which is what gives the artwork its lit-from-one-side look. The
 -- shine is a soft band riding that same axis, swept back and forth by sin.
-local function cogInten(px, py, s, t)
+local function cogPrep(px, py, s, c, i)
     local dx = px - s.cx
     local dy = py - s.cy
     local r2 = dx * dx + dy * dy
-    if r2 > s.rad2 then return 0 end
+    if r2 > s.rad2 then c[i] = -1; return end
+    c[i]     = math.sqrt(r2)
+    c[i + 1] = math.atan(dy, dx)
+    c[i + 2] = (dx * s.gdx + dy * s.gdy) / s.rad * 0.5 + 0.5
+end
 
-    local r = math.sqrt(r2)
-    local ang = (math.atan(dy, dx) + t * s.spin) % TAU
-    local edge = COG[math.floor(ang / TAU * COG_N) + 1] * s.rad
+local function cogLit(s, c, i)
+    local r = c[i]
+    if r < 0 then return 0 end
+
+    local ang = (c[i + 1] + s.rot) % TAU
+    local edge = COG[math.floor(ang * s.cogScale) + 1] * s.rad
     if r > edge then return 0 end
 
-    local g = (dx * s.gdx + dy * s.gdy) / s.rad * 0.5 + 0.5
-    local shine = 0.5 + 0.5 * math.sin(t * 0.00075 + s.phase)
-    local inten = 0.02 + 0.88 * g + 0.38 * falloff(g - shine, 6.0)
+    local g = c[i + 2]
+    local inten = 0.02 + 0.88 * g + 0.38 * falloff(g - s.shine, 6.0)
 
     local rim = (edge - r) / 20.0
     if rim < 1 then inten = inten * (0.15 + 0.85 * rim) end
     return inten
 end
 
-local function lineInten(px, py, s, t)
+local function linePrep(px, py, s, c, i)
     local list = s.buckets[math.floor(py / BUCKET)]
-    if not list then return 0 end
+    if not list then c[i] = -1; return end
 
     local best = 1e18
     local along = 0
-    for i = 1, #list do
-        local g = list[i]
+    for k = 1, #list do
+        local g = list[k]
         local d2 = segDist2(px, py, g[1], g[2], g[3], g[4])
         if d2 < best then best = d2; along = g[5] end
     end
-    if best > s.half2 then return 0 end
+    if best > s.half2 then c[i] = -1; return end
 
-    local u = math.sqrt(best) / s.half
-    local shine = 0.5 + 0.5 * math.sin(t * 0.0009 + s.phase)
-    local inten = 0.04 + 0.80 * along + 0.38 * falloff(along - shine, 7.0)
+    c[i]     = math.sqrt(best) / s.half
+    c[i + 1] = along
+end
+
+local function lineLit(s, c, i)
+    local u = c[i]
+    if u < 0 then return 0 end
+
+    local along = c[i + 1]
+    local inten = 0.04 + 0.80 * along + 0.38 * falloff(along - s.shine, 7.0)
 
     -- Thin the dots out across the stroke so the edges stay soft.
     local rim = (1.0 - u) * 3.0
@@ -90,8 +111,10 @@ end
 
 function makeCog(cx, cy, rad, spin, phase, gang)
     gang = gang or -2.2
-    return { f = cogInten, cx = cx, cy = cy, rad = rad, rad2 = rad * rad,
-             spin = spin, phase = phase,
+    return { prep = cogPrep, lit = cogLit, stride = 3,
+             cx = cx, cy = cy, rad = rad, rad2 = rad * rad,
+             spin = spin, phase = phase, rate = 0.00075,
+             cogScale = COG_N / TAU,
              gdx = math.cos(gang), gdy = math.sin(gang) }
 end
 
@@ -116,36 +139,59 @@ function makeLine(L, ox, oy, scale, phase, weight)
         end
     end
 
-    return { f = lineInten, buckets = buckets, half = half,
-             half2 = half * half, phase = phase }
+    return { prep = linePrep, lit = lineLit, stride = 2,
+             buckets = buckets, half = half,
+             half2 = half * half, phase = phase, rate = 0.0009 }
 end
 
 function makeScene(id, build)
     local cv = document.getElementById(id)
     local ctx = cv:getContext("2d")
-    local shapes, sw, sh = nil, 0, 0
+    local shapes, sw, sh, cols, rows = nil, 0, 0, 0, 0
 
     local function draw(t)
         local W, H = cv.width, cv.height
         if W < 1 or H < 1 then requestAnimationFrame(draw); return end
-        if W ~= sw or H ~= sh then shapes = build(W, H); sw, sh = W, H end
+
+        if W ~= sw or H ~= sh then
+            shapes = build(W, H)
+            sw, sh = W, H
+            cols = math.floor(W / CELL)
+            rows = math.floor(H / CELL)
+            for k = 1, #shapes do
+                local s = shapes[k]
+                local c, i = {}, 1
+                for gy = 0, rows do
+                    local py = gy * CELL + 3
+                    for gx = 0, cols do
+                        s.prep(gx * CELL + 3, py, s, c, i)
+                        i = i + s.stride
+                    end
+                end
+                s.cells = c
+            end
+        end
 
         ctx:clearRect(0, 0, W, H)
 
         local n = #shapes
         local shift = math.floor(t * 0.004)
-        local cols = math.floor(W / CELL)
-        local rows = math.floor(H / CELL)
+        -- The shine rides the whole shape at once, and the cog turns as a whole,
+        -- so both are one value a frame rather than one per cell.
+        for k = 1, n do
+            local s = shapes[k]
+            s.shine = 0.5 + 0.5 * math.sin(t * s.rate + s.phase)
+            s.rot = s.spin and t * s.spin or 0
+        end
 
+        local i = 1
         for gy = 0, rows do
-            local py = gy * CELL + 3
             local brow = (gy % 4) * 4
             for gx = 0, cols do
-                local px = gx * CELL + 3
                 local inten = 0
                 for k = 1, n do
                     local s = shapes[k]
-                    local v = s.f(px, py, s, t)
+                    local v = s.lit(s, s.cells, (i - 1) * s.stride + 1)
                     if v > inten then inten = v end
                 end
                 if inten > 0.04 then
@@ -157,6 +203,7 @@ function makeScene(id, build)
                         ctx:fillRect(gx * CELL, gy * CELL, DOT, DOT)
                     end
                 end
+                i = i + 1
             end
         end
 

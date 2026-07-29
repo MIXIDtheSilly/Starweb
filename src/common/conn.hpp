@@ -7,7 +7,7 @@
 struct Conn {
     virtual ~Conn() = default;
 
-    // Bytes moved, 0 on clean close, <0 on error — as recv/send.
+    // Bytes moved, 0 on clean close, <0 on error, as recv/send.
     virtual net::ssize_t_ read(void* buf, size_t len) = 0;
     virtual net::ssize_t_ write(const void* buf, size_t len) = 0;
 

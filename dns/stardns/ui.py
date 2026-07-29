@@ -3,20 +3,20 @@
 Written to what the StarWeb renderer supports, which shapes everything here:
 selectors are a bare tag or a single class name (no descendant or id
 selectors, and no element may carry two classes), `display:none` is not
-honoured — so views are separate pages rather than one page with hidden
-sections — and there is no cookie or local storage, so the session token
+honoured, so views are separate pages rather than one page with hidden
+sections, and there is no cookie or local storage, so the session token
 travels in the URL.
 
 Two more renderer facts drive the layout below. A `<table>` paints its cells
 with the table's own colour, so per-cell styling is impossible; record lists
 are therefore flex rows with fixed column widths, which also lets the type
 column carry a colour. And the main font is loaded with the default glyph
-range, so text stays inside ASCII and Latin-1 — no em dashes, arrows or
+range, so text stays inside ASCII and Latin-1: no em dashes, arrows or
 bullets.
 
 Links put the domain in the path and keep the token as the only query
-parameter. That started as a workaround — the renderer did not decode entities
-in attribute values, so `href="?a=1&amp;b=2"` arrived with `b` lost — and the
+parameter. That started as a workaround: the renderer did not decode entities
+in attribute values, so `href="?a=1&amp;b=2"` arrived with `b` lost, and the
 parser was fixed on 2026-07-22, but the shape is the nicer one, so it stayed.
 """
 
@@ -24,13 +24,12 @@ from pathlib import Path
 
 from . import analytics, config, shapes
 
-# The halftone renderer the login page runs per frame. Kept as Lua on disk
-# rather than a string in here so it stays readable and editable on its own.
+# Kept as a separate .lua file rather than a string here so it stays readable and editable.
 ART = (Path(__file__).resolve().parent / "nebula_art.lua").read_text()
 
 ACCENT = "#ba8cf5"
 
-BRAND = "Starweb DNS"
+BRAND = "Nebula"
 
 # Flat black everywhere (#000000), white body text, purple for links, headings
 # and primary buttons. Everything else is demarcated only by border colour
@@ -148,8 +147,6 @@ li { color: #d4d4dc; font-size: 14px; }
 .addrow { display: flex; flex-direction: row; align-items: center; flex-wrap: wrap;
           gap: 20; margin-top: 4; margin-bottom: 4; }
 
-/* Chevron icon instead of plain "&lt;" text, matching the chevron rows on
-   Home/Analytics. */
 .backrow { display: flex; flex-direction: row; align-items: center; gap: 6;
            margin-bottom: 16; }
 .backico { width: 14; height: 14; }
@@ -157,16 +154,12 @@ li { color: #d4d4dc; font-size: 14px; }
    intrinsic-height padding that isn't reflected in the glyph position. */
 .backlbl { color: #8b8b96; font-size: 13px; margin: 0; margin-top: 3; }
 
-/* Headings sit on the bare page background; only .crow rows and .addcard
-   carry a border. */
 .section { margin-bottom: 24; }
 
-/* One row per domain: icon, name, sparkline, cert icon. Hairline-separated
-   like the Home hub and Analytics list, not a bordered card per domain. */
+/* Hairline-separated like the Home hub and Analytics list, not a bordered card per domain. */
 .drow { display: flex; flex-direction: row; align-items: center; gap: 12;
         height: 44; }
-/* Single class since an element can't carry two: grows to fill the row
-   between the leading icon and trailing status icon. */
+/* Single class since an element can't carry two, so this one also carries flex-grow. */
 .dname { color: #ba8cf5; font-family: Inter SemiBold; font-size: 16px;
          margin: 0; flex-grow: 1; }
 .dico { width: 18; height: 18; }
@@ -183,8 +176,6 @@ li { color: #d4d4dc; font-size: 14px; }
 .k { color: #8b8b96; font-size: 13px; width: 96; margin: 0; }
 .v { color: #d4d4dc; font-size: 13px; flex-grow: 1; margin: 0; }
 
-/* Certificate card header: a status icon (shield-check / shield-question-mark)
-   standing in for the old "Certificate issued" / "No certificate" text. */
 .certhead { display: flex; flex-direction: row; align-items: center; gap: 10;
             margin-bottom: 14; }
 .certicon { width: 22; height: 22; }
@@ -283,7 +274,7 @@ li { color: #d4d4dc; font-size: 14px; }
 .bad { color: #f87171; font-size: 14px; }
 
 /* The signed-in shell. The sidebar, its hairline and the artwork are all out
-   of the flow, pinned to the viewport, so only the content column scrolls --
+   of the flow, pinned to the viewport, so only the content column scrolls,
    which also keeps `vh` off anything that has to grow with the page. Paint
    order is document order, so the artwork is written first and the sidebar
    last. The sidebar paints no background of its own: the page is already black
@@ -386,8 +377,10 @@ li { color: #d4d4dc; font-size: 14px; }
 .lrow { display: flex; flex-direction: row; align-items: center; gap: 10;
         height: 34; }
 .lico { width: 16; height: 16; }
+/* See .backlbl: a <p> measures taller than its glyphs, so centring the box in
+   the row leaves the text sitting above the icon beside it. */
 .lname { color: #ffffff; font-family: Inter SemiBold; font-size: 14px;
-         flex-grow: 1; margin: 0; }
+         flex-grow: 1; margin: 0; margin-top: 3; }
 .lchev { width: 16; height: 16; }
 .hair { background: #1c1c22; height: 1; margin-bottom: 4; }
 .empty { color: #6f6f7c; font-size: 13px; margin-top: 2; }
@@ -415,11 +408,36 @@ li { color: #d4d4dc; font-size: 14px; }
    don't narrow to match; .trendcvh/.trendlabsh are pinned a bit inside that
    52vw instead, the same margin .sbox leaves .sfld. */
 .trendcv { height: 130; margin-top: 16; margin-bottom: 6; }
+/* Same unsized width as .trendcv, inside a plain .card rather than .trend. */
+.barcv { height: 108; margin-top: 2; margin-bottom: 6; }
 .trendcvh { width: 47vw; height: 108; margin-top: 14; margin-bottom: 6; }
 .trendlabs { display: flex; flex-direction: row; justify-content: space-between; }
 .trendlabsh { display: flex; flex-direction: row; justify-content: space-between;
               width: 47vw; }
 .trendlab { color: #6f6f7c; font-size: 11px; margin: 0; }
+
+/* Two classes rather than one plus a modifier, since an element can only
+   carry a single class here; same split as .navon/.navoff. */
+.ranges { display: flex; flex-direction: row; align-items: center; gap: 8;
+          margin-bottom: 18; }
+.rgon {
+  background: #17171c;
+  border-width: 1; border-color: #6b4ef0; border-radius: 14;
+  height: 28; padding-left: 13; padding-right: 13;
+  display: flex; flex-direction: row; align-items: center;
+}
+.rgoff {
+  background: #000000;
+  border-width: 1; border-color: #24242b; border-radius: 14;
+  height: 28; padding-left: 13; padding-right: 13;
+  display: flex; flex-direction: row; align-items: center;
+}
+.rgtxt { color: #ffffff; font-size: 12px; margin: 0; margin-top: 3; }
+.rgmut { color: #8b8b96; font-size: 12px; margin: 0; margin-top: 3; }
+
+/* Wider than .k: these labels carry the window's own noun, so they run to
+   "Busiest 5 minutes" rather than the cert card's one-word keys. */
+.ak { color: #8b8b96; font-size: 13px; width: 132; margin: 0; }
 
 .spark { display: flex; flex-direction: row; align-items: center; gap: 14;
          height: 40; }
@@ -458,6 +476,11 @@ def lua_arr(values) -> str:
     return "{" + ",".join(str(int(v)) for v in values) + "}"
 
 
+def lua_strs(values) -> str:
+    """A Lua literal for a flat array of strings, e.g. a chart's axis labels."""
+    return "{" + ",".join(lua_str(v) for v in values) + "}"
+
+
 def page(title: str, body: str, script: str = "") -> str:
     tail = f"<script>\n{script}\n</script>" if script else ""
     return f"""<!DOCTYPE html>
@@ -491,11 +514,29 @@ def plural(n: int, word: str) -> str:
     return word if n == 1 else word + "s"
 
 
+def _queries(n: int) -> str:
+    return "query" if n == 1 else "queries"
+
+
 def _fit(name: str, limit: int) -> str:
     """Domain labels run up to 63 characters; the fixed-width tile and spark
     row that show one don't wrap or clip on overflow, so anything past what
     the box can hold needs shortening before it lands there."""
     return name if len(name) <= limit else name[: limit - 3] + "..."
+
+
+def range_pills(active: str, path: str, token: str) -> tuple[str, list[str]]:
+    """The window picker. Returns the markup and the links that drive it; the
+    selected window rides in `r` alongside the token."""
+    pills, script = [], []
+    for i, (key, short, *_) in enumerate(analytics.RANGES, 1):
+        on = key == active
+        pills.append(f"""
+      <div class="{'rgon' if on else 'rgoff'}" id="rp-{i}">
+        <p class="{'rgtxt' if on else 'rgmut'}">{esc(short)}</p>
+      </div>""")
+        script.append(f'link("rp-{i}", {lua_str(f"{path}?t={token}&r={key}")})')
+    return f'<div class="ranges">{"".join(pills)}</div>', script
 
 
 def tile(number, label: str) -> str:
@@ -554,7 +595,7 @@ end)
 # The icon layer. Geometry comes from the lucide SVGs in assets/icons, flattened
 # to polylines by shapes.lua_icons(); this is only the drawing. `s` is pixels per
 # grid unit, so one table serves every size a page asks for, and `paint` draws
-# once the renderer has sized the canvas -- ops persist until cleared, so a
+# once the renderer has sized the canvas; ops persist until cleared, so a
 # static icon costs nothing per frame. Round caps and joins are what lucide is
 # drawn with, and without them the corners come out as mitre spikes.
 ICONS = """
@@ -606,29 +647,83 @@ local function chartMax(values)
     return m > 0 and m or 1
 end
 
-function chartBars(id, values, colour)
+local PILLPAD = 14
+local PILLH = 26
+
+-- measureText and the corner radius on fillRect are both newer than some builds
+-- out there, and a missing method is a nil call rather than a no-op, so the
+-- guess stays as the fallback. An older build draws the readout square.
+local function textWidth(ctx, text)
+    if ctx.measureText then
+        local m = ctx:measureText(text)
+        if m and m.width and m.width > 0 then return m.width end
+    end
+    return #text * 8
+end
+
+local function readout(ctx, w, text, centre)
+    local tw = textWidth(ctx, text) + PILLPAD * 2
+    local x = centre - tw / 2
+    -- A pixel off each edge, since the outline straddles the rect it traces.
+    if x < 1 then x = 1 elseif x + tw > w - 1 then x = w - 1 - tw end
+    local r = PILLH / 2
+    ctx.fillStyle = "#17171c"
+    ctx:fillRect(x, 2, tw, PILLH, r)
+    ctx.strokeStyle = "#6b4ef0"
+    ctx.lineWidth = 1
+    ctx:strokeRect(x, 2, tw, PILLH, r)
+    ctx.fillStyle = "#ffffff"
+    ctx:fillText(text, x + PILLPAD, 7)
+end
+
+-- cv.hoverX is the pointer's x within the canvas, or -1 when it is elsewhere.
+-- Read from the rAF loop rather than delivered as an event, so the redraw the
+-- highlight needs is the one already running. A build that predates it reports
+-- nil, and comparing that would kill the callback before it re-registers,
+-- taking the whole chart with it, so the fallback is not optional.
+function chartBars(id, values, labels, colour)
     local cv = document.getElementById(id)
     if not cv then return end
     local ctx = cv:getContext("2d")
-    local w, h = -1, -1
+    local w, h, hot = -1, -1, -2
     local n = #values
 
     local function draw()
-        if cv.width ~= w or cv.height ~= h then
-            w, h = cv.width, cv.height
+        local cw, ch = cv.width, cv.height
+        local gap, bw = 0, 0
+        if cw > 0 and n > 0 then
+            gap = math.min(4, cw / (n * 6))
+            bw = (cw - gap * (n - 1)) / n
+        end
+
+        local hx = cv.hoverX or -1
+        local over = -1
+        if bw > 0 and hx >= 0 then
+            local i = math.floor(hx / (bw + gap)) + 1
+            if i >= 1 and i <= n then over = i end
+        end
+
+        if cw ~= w or ch ~= h or over ~= hot then
+            w, h, hot = cw, ch, over
             if w > 0 and h > 0 and n > 0 then
                 ctx:clearRect(0, 0, w, h)
                 local maxv = chartMax(values)
-                local gap = math.min(4, w / (n * 6))
-                local bw = (w - gap * (n - 1)) / n
-                ctx.fillStyle = colour
                 for i = 1, n do
-                    -- Zero draws nothing; only positive values get the 2px
-                    -- floor, so a quiet series doesn't smear into solid bars.
-                    if values[i] > 0 then
-                        local bh = math.max(2, (values[i] / maxv) * (h - 2))
+                    -- A zero bar draws nothing, so a quiet series does not
+                    -- smear into a solid floor, but the hovered one keeps a
+                    -- stub to show the readout belongs to it.
+                    if values[i] > 0 or i == hot then
+                        local bh = 2
+                        if values[i] > 0 then
+                            bh = math.max(2, (values[i] / maxv) * (h - 2))
+                        end
+                        ctx.fillStyle = (i == hot) and "#cbb2ff" or colour
                         ctx:fillRect((i - 1) * (bw + gap), h - bh, bw, bh)
                     end
+                end
+                if hot > 0 then
+                    readout(ctx, w, labels[hot] .. ": " .. values[hot],
+                            (hot - 1) * (bw + gap) + bw / 2)
                 end
             end
         end
@@ -696,7 +791,7 @@ TABS = (
 def shell(active: str, token: str, content: str, art: bool = False) -> tuple[str, str]:
     """The signed-in frame. Returns the markup and the script that goes with it;
     a page appends its own icons and row links to the latter. The artwork is the
-    account home's alone -- behind a list of cards it is just noise."""
+    account home's alone; behind a list of cards it is just noise."""
     rows, script = [], []
     for key, label, icon, path in TABS:
         on = key == active
@@ -871,11 +966,7 @@ def home_page(username: str, token: str, domains: list[dict],
           <p class="trendtot">{total}</p>
         </div>
         <canvas class="trendcvh" id="chart-home"></canvas>
-        <div class="trendlabsh">
-          <p class="trendlab">{esc(labels[0])}</p>
-          <p class="trendlab">{esc(labels[len(labels) // 2])}</p>
-          <p class="trendlab">Today</p>
-        </div>
+        {axis(labels, analytics.DEFAULT_RANGE, "trendlabsh")}
       </div>
     </div>"""
 
@@ -1004,10 +1095,21 @@ end)
     return page(f"{BRAND} - domains", body, script)
 
 
+def axis(labels: list[str], rng: str, cls: str = "trendlabs") -> str:
+    """A chart's x axis: first bucket, middle bucket, and the one running now."""
+    latest = "Now" if analytics.spec(rng)[3] < analytics.DAY else "Today"
+    return f"""<div class="{cls}">
+        <p class="trendlab">{esc(labels[0])}</p>
+        <p class="trendlab">{esc(labels[len(labels) // 2])}</p>
+        <p class="trendlab">{latest}</p>
+      </div>"""
+
+
 def analytics_page(token: str, domains: list[dict], series: list[int],
-                   labels: list[str], per_domain: list[dict]) -> str:
-    """per_domain is one dict per domain: {"name", "series" (14-day counts),
-    "total" (queries in that window)}, same order as domains."""
+                   labels: list[str], per_domain: list[dict],
+                   rng: str = analytics.DEFAULT_RANGE) -> str:
+    """per_domain is one dict per domain: {"name", "series", "total"}, all over
+    the selected window, in the same order as domains."""
     if not domains:
         content = """
     <div class="page">
@@ -1021,48 +1123,48 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
         body, script = shell("analytics", token, content, art=True)
         return page(f"{BRAND} - analytics", body, script)
 
+    _, short, window, _, buckets, unit = analytics.spec(rng)
     total = sum(series)
-    avg = round(total / len(labels)) if labels else 0
+    avg = round(total / buckets)
     busiest = max(per_domain, key=lambda d: d["total"])
     busiest_name = _fit(busiest["name"], 13) if busiest["total"] > 0 else "-"
 
-    rows, script = [], []
+    picker, script = range_pills(rng, "/analytics", token)
+    rows = []
     for i, d in enumerate(per_domain, 1):
         rows.append(f"""
     <div class="spark" id="spk-{i}">
       <p class="sparkname">{esc(_fit(d['name'], 20))}</p>
       <canvas class="sparkcv" id="chart-dom-{i}"></canvas>
-      <p class="sparktot">{d['total']} / 14d</p>
+      <p class="sparktot">{d['total']} / {esc(short)}</p>
       <canvas class="sparkchev" id="spc-{i}"></canvas>
     </div>""")
         if i < len(per_domain):
             rows.append('    <div class="hair"></div>')
         script.append(f'chartLine("chart-dom-{i}", {lua_arr(d["series"])}, "#8b6ef0")')
         script.append(f'paint("spc-{i}", "chevron-right", "#6f6f7c", 1.4)')
-        target = f"/domain/{d['name']}?t={token}"
+        target = f"/analytics/{d['name']}?t={token}&r={rng}"
         script.append(f'link("spk-{i}", {lua_str(target)})')
 
     content = f"""
     <div class="page">
     <h3>ANALYTICS</h3>
 
+    {picker}
+
     <div class="tiles">
-      {tile(total, "queries (14d)")}
+      {tile(total, "queries")}
       {tile(busiest_name, "busiest domain")}
-      {tile(avg, "avg per day")}
+      {tile(avg, f"avg per {unit}")}
     </div>
 
     <div class="trend">
       <div class="trendhead">
-        <p class="trendttl">Queries across your domains</p>
+        <p class="trendttl">{esc(window)} across your domains</p>
         <p class="trendtot">{total}</p>
       </div>
       <canvas class="trendcv" id="chart-all"></canvas>
-      <div class="trendlabs">
-        <p class="trendlab">{esc(labels[0])}</p>
-        <p class="trendlab">{esc(labels[len(labels) // 2])}</p>
-        <p class="trendlab">Today</p>
-      </div>
+      {axis(labels, rng)}
     </div>
 
     <h3>BY DOMAIN</h3>
@@ -1074,6 +1176,80 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
     body, shell_script = shell("analytics", token, content, art=True)
     script.insert(0, f'chartLine("chart-all", {lua_arr(series)}, "#ba8cf5")')
     return page(f"{BRAND} - analytics", body,
+                shell_script + "\n" + CHARTS + "\n" + "\n".join(script))
+
+
+def domain_analytics_page(token: str, domain: str, series: list[int],
+                          labels: list[str], rng: str, all_time: int) -> str:
+    """One domain's own analytics over the selected window."""
+    _, _, window, _, buckets, unit = analytics.spec(rng)
+    picker, script = range_pills(rng, f"/analytics/{domain}", token)
+
+    total = sum(series)
+    avg = round(total / buckets)
+    peak = max(series)
+    peak_text = (f"{labels[series.index(peak)]}, {peak} {_queries(peak)}"
+                 if peak else "Nothing yet")
+    active = sum(1 for v in series if v)
+
+    content = f"""
+    <div class="page">
+    <h3>{esc(domain)}</h3>
+
+    <div class="backrow" id="back-ana">
+      <canvas class="backico" id="bc-back"></canvas>
+      <p class="backlbl">All analytics</p>
+    </div>
+
+    {picker}
+
+    <div class="tiles">
+      {tile(total, "queries")}
+      {tile(avg, f"avg per {unit}")}
+    </div>
+
+    <div class="trend">
+      <div class="trendhead">
+        <p class="trendttl">{esc(window)} for {esc(_fit(domain, 26))}</p>
+        <p class="trendtot">{total}</p>
+      </div>
+      <canvas class="trendcv" id="chart-dom"></canvas>
+      {axis(labels, rng)}
+    </div>
+
+    <h3>BY {unit.upper()}</h3>
+    <div class="card">
+      <canvas class="barcv" id="chart-days"></canvas>
+      {axis(labels, rng)}
+    </div>
+
+    <h3>ACTIVITY</h3>
+    <div class="card">
+      <div class="kv"><p class="ak">Busiest {esc(unit)}</p><p class="v">{esc(peak_text)}</p></div>
+      <div class="kv"><p class="ak">Coverage</p><p class="v">{active} of {buckets} with any traffic</p></div>
+      <div class="kv"><p class="ak">All time</p><p class="v">{all_time} {_queries(all_time)}</p></div>
+    </div>
+
+    <div class="card">
+      <div class="lrow" id="manage">
+        <canvas class="lico" id="mg-ico"></canvas>
+        <p class="lname">Manage records and certificate</p>
+        <canvas class="lchev" id="mg-chev"></canvas>
+      </div>
+    </div>
+    </div>"""
+
+    body, shell_script = shell("analytics", token, content, art=True)
+    script += [
+        'paint("bc-back", "chevron-left", "#8b8b96", 1.5)',
+        f'link("back-ana", {lua_str(f"/analytics?t={token}&r={rng}")})',
+        'paint("mg-ico", "globe", "#8b8b96", 1.45)',
+        'paint("mg-chev", "chevron-right", "#6f6f7c", 1.45)',
+        f'link("manage", {lua_str(f"/domain/{domain}?t={token}")})',
+        f'chartLine("chart-dom", {lua_arr(series)}, "#ba8cf5")',
+        f'chartBars("chart-days", {lua_arr(series)}, {lua_strs(labels)}, "#8b6ef0")',
+    ]
+    return page(f"{BRAND} - {domain} analytics", body,
                 shell_script + "\n" + CHARTS + "\n" + "\n".join(script))
 
 

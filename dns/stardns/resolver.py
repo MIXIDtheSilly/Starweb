@@ -58,7 +58,7 @@ def _records(domain: str, rel: str) -> list[dict]:
 
 
 def _has_children(domain: str, rel: str) -> bool:
-    """True when rel is an empty non-terminal — no records of its own, but
+    """True when rel is an empty non-terminal: no records of its own, but
     something lives beneath it, so the name exists and the answer is NODATA."""
     if rel == "@":
         return True

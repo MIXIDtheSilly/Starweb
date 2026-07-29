@@ -165,6 +165,16 @@ void script_set_canvas_size(int tab_id, uint64_t node_id, float w, float h) {
     if (it != g_script_engines.end() && it->second) it->second->set_canvas_size(node_id, w, h);
 }
 
+void script_set_canvas_hover(int tab_id, uint64_t node_id, float x, float y) {
+    auto it = g_script_engines.find(tab_id);
+    if (it != g_script_engines.end() && it->second) it->second->set_canvas_hover(node_id, x, y);
+}
+
+void script_set_canvas_font(int tab_id, uint64_t node_id, ImFont* font, float size) {
+    auto it = g_script_engines.find(tab_id);
+    if (it != g_script_engines.end() && it->second) it->second->set_canvas_font(node_id, font, size);
+}
+
 // Frames to keep drawing after the UI was last busy. ImGui resolves interaction
 // over several frames (hover, popups, scroll targets), so going straight to sleep
 // on the first quiet frame would leave the last one unpainted.
@@ -173,9 +183,14 @@ static constexpr int kSettleFrames = 3;
 // How long the main loop may block waiting for input, or 0 when something on
 // screen still has to animate and we need the next frame immediately. Called on
 // the render thread, which is the only writer of the state it reads.
-static double idle_wait_seconds() {
+static double idle_wait_seconds(GLFWwindow* window) {
     // Upper bound on wake latency for anything not covered below.
     constexpr double kHeartbeat = 0.5;
+
+    // A held button means a drag or resize, both of which move the window a
+    // frame at a time from the render loop. Sleeping through one leaves the
+    // window trailing the cursor.
+    if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) return 0.0;
 
     for (const Tab& tab : tabs) {
         if (tab.is_fetching) return 0.0; // loading spinner
@@ -413,7 +428,7 @@ int main() {
     int settle_frames = kSettleFrames;
 
     while (!glfwWindowShouldClose(window)) {
-        double wait = (settle_frames > 0) ? 0.0 : idle_wait_seconds();
+        double wait = (settle_frames > 0) ? 0.0 : idle_wait_seconds(window);
         if (wait > 0.0) {
             glfwWaitEventsTimeout(wait);
         } else {
@@ -513,8 +528,14 @@ int main() {
 
         dispatch_page_keys(window);
 
+        int visible_tab_id = (active_tab_idx >= 0 && active_tab_idx < (int)tabs.size()
+                              && !glfwGetWindowAttrib(window, GLFW_ICONIFIED))
+                           ? tabs[active_tab_idx].id : -1;
         for (auto& [id, eng] : g_script_engines)
-            if (eng) { eng->poll_fetches(); eng->poll_timers(); eng->run_raf(); }
+            if (eng) {
+                eng->set_visible(id == visible_tab_id);
+                eng->poll_fetches(); eng->poll_timers(); eng->run_raf();
+            }
 
         if (!g_pending_navs.empty()) {
             auto navs = std::move(g_pending_navs);
@@ -1167,7 +1188,7 @@ int main() {
         bool default_inline_flow = false;
         // Vertical gaps are the page's to set via margins; ImGui's own
         // ItemSpacing would stack 4px per nesting level on top, which is what
-        // kept a 100vh box from reaching the bottom. X spacing stays —
+        // kept a 100vh box from reaching the bottom. X spacing stays;
         // SameLine passes its own gap explicitly.
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
                             ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));

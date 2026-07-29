@@ -4,6 +4,7 @@
 #include "parser.hpp"
 #include "../common/url_parser.hpp"
 
+#include <cfloat>
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
@@ -161,7 +162,7 @@ static int el_addEventListener(lua_State* L) {
     return 0;
 }
 
-// document.addEventListener(type, fn) — page-wide key events. Called with a dot,
+// document.addEventListener(type, fn): page-wide key events. Called with a dot,
 // like the rest of the document table, so the event name is the first argument.
 static int doc_addEventListener(lua_State* L) {
     std::string ev = luaL_checkstring(L, 1);
@@ -189,6 +190,12 @@ static int element_index(lua_State* L) {
         ScriptEngine* eng = engine_from_lua(L);
         auto& s = eng->canvas_state(n->node_id);
         lua_pushnumber(L, key[0] == 'w' ? s.w : s.h);
+        return 1;
+    }
+    if (n->tag == "canvas" && (std::strcmp(key, "hoverX") == 0 || std::strcmp(key, "hoverY") == 0)) {
+        ScriptEngine* eng = engine_from_lua(L);
+        auto& s = eng->canvas_state(n->node_id);
+        lua_pushnumber(L, key[5] == 'X' ? s.hover_x : s.hover_y);
         return 1;
     }
     if      (std::strcmp(key, "textContent") == 0) push_str(L, n->text_content);
@@ -323,6 +330,7 @@ static int ctx_fillRect(lua_State* L) {
     op.kind = CanvasOp::FillRect;
     op.a = (float)luaL_checknumber(L, 2); op.b = (float)luaL_checknumber(L, 3);
     op.c = (float)luaL_checknumber(L, 4); op.d = (float)luaL_checknumber(L, 5);
+    op.radius = (float)luaL_optnumber(L, 6, 0.0);
     op.color = eng->canvas_state(id).fill;
     canvas_push(eng, id, op);
     return 0;
@@ -337,6 +345,7 @@ static int ctx_strokeRect(lua_State* L) {
     op.kind = CanvasOp::StrokeRect;
     op.a = (float)luaL_checknumber(L, 2); op.b = (float)luaL_checknumber(L, 3);
     op.c = (float)luaL_checknumber(L, 4); op.d = (float)luaL_checknumber(L, 5);
+    op.radius = (float)luaL_optnumber(L, 6, 0.0);
     op.color = st.stroke; op.line_width = st.line_width;
     canvas_push(eng, id, op);
     return 0;
@@ -429,22 +438,37 @@ static int ctx_fillText(lua_State* L) {
     return 0;
 }
 
-static int ctx_index(lua_State* L) {
-    const char* key = luaL_checkstring(L, 2);
-    lua_CFunction fn = nullptr;
-    if      (std::strcmp(key, "clearRect")  == 0) fn = &ctx_clearRect;
-    else if (std::strcmp(key, "fillRect")   == 0) fn = &ctx_fillRect;
-    else if (std::strcmp(key, "strokeRect") == 0) fn = &ctx_strokeRect;
-    else if (std::strcmp(key, "beginPath")  == 0) fn = &ctx_beginPath;
-    else if (std::strcmp(key, "moveTo")     == 0) fn = &ctx_moveTo;
-    else if (std::strcmp(key, "lineTo")     == 0) fn = &ctx_lineTo;
-    else if (std::strcmp(key, "stroke")     == 0) fn = &ctx_stroke;
-    else if (std::strcmp(key, "fill")       == 0) fn = &ctx_fill;
-    else if (std::strcmp(key, "arc")        == 0) fn = &ctx_arc;
-    else if (std::strcmp(key, "fillText")   == 0) fn = &ctx_fillText;
-    if (fn) lua_pushcfunction(L, fn); else lua_pushnil(L);
+// Measured against the font the canvas was last drawn with, which is the page's
+// family rather than the UI default whenever the page sets one. Returns a table
+// so the call site reads like the real thing.
+static int ctx_measureText(lua_State* L) {
+    ScriptEngine* eng = engine_from_lua(L);
+    if (!eng) return 0;
+    const char* text = luaL_checkstring(L, 2);
+    auto& st = eng->canvas_state(ctx_node(L));
+    ImVec2 sz(0, 0);
+    if (st.font && st.font_size > 0.0f)
+        sz = st.font->CalcTextSizeA(st.font_size, FLT_MAX, 0.0f, text);
+    lua_createtable(L, 0, 2);
+    lua_pushnumber(L, sz.x); lua_setfield(L, -2, "width");
+    lua_pushnumber(L, sz.y); lua_setfield(L, -2, "height");
     return 1;
 }
+
+static const luaL_Reg kCtxMethods[] = {
+    { "clearRect",   &ctx_clearRect   },
+    { "fillRect",    &ctx_fillRect    },
+    { "strokeRect",  &ctx_strokeRect  },
+    { "beginPath",   &ctx_beginPath   },
+    { "moveTo",      &ctx_moveTo      },
+    { "lineTo",      &ctx_lineTo      },
+    { "stroke",      &ctx_stroke      },
+    { "fill",        &ctx_fill        },
+    { "arc",         &ctx_arc         },
+    { "fillText",    &ctx_fillText    },
+    { "measureText", &ctx_measureText },
+    { nullptr, nullptr },
+};
 
 static int ctx_newindex(lua_State* L) {
     ScriptEngine* eng = engine_from_lua(L);
@@ -637,8 +661,13 @@ int ScriptEngine::p_install(lua_State* L) {
     lua_pushcfunction(L, &l_requestAnimationFrame); lua_setglobal(L, "requestAnimationFrame");
     lua_pushcfunction(L, &l_cancelAnimationFrame);  lua_setglobal(L, "cancelAnimationFrame");
 
+    // __index is a table, not a function: a halftone that draws thousands of
+    // rects a frame looks each method up thousands of times, and a hash hit in
+    // Lua costs nothing next to a call into C that walks a strcmp chain.
     luaL_newmetatable(L, kCanvasCtxMT);
-    lua_pushcfunction(L, &ctx_index);    lua_setfield(L, -2, "__index");
+    lua_newtable(L);
+    luaL_setfuncs(L, kCtxMethods, 0);
+    lua_setfield(L, -2, "__index");
     lua_pushcfunction(L, &ctx_newindex); lua_setfield(L, -2, "__newindex");
     lua_pushboolean(L, 0);               lua_setfield(L, -2, "__metatable");
     lua_pop(L, 1);
@@ -692,7 +721,10 @@ ScriptEngine::ScriptEngine(LogSink log, AlertSink alert)
         return;
     }
 
-    lua_sethook(L_, &ScriptEngine::l_hook, LUA_MASKCOUNT, 1000);
+    // Each fire reads the clock, and a per-pixel canvas loop runs millions of
+    // instructions a frame. 10k still checks the budget every fraction of a
+    // millisecond, which is fine against a budget measured in seconds.
+    lua_sethook(L_, &ScriptEngine::l_hook, LUA_MASKCOUNT, 10000);
 }
 
 ScriptEngine::~ScriptEngine() {
@@ -924,27 +956,46 @@ void ScriptEngine::cancel_raf(int id) {
 }
 
 void ScriptEngine::run_raf() {
-    if (!L_ || raf_.empty()) return;
+    if (!L_ || raf_.empty() || !visible_) return;
+    auto began = std::chrono::steady_clock::now();
+    if (began < raf_next_) return;
+
     std::vector<std::pair<int, int>> due;
     due.swap(raf_);
-    double ts = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - start_).count();
-    for (auto& [id, ref] : due) {
+
+    double ts = std::chrono::duration<double, std::milli>(began - start_).count();
+    size_t i = 0;
+    for (; i < due.size(); i++) {
         deadline_ = std::chrono::steady_clock::now() + time_budget_;
-        lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+        lua_rawgeti(L_, LUA_REGISTRYINDEX, due[i].second);
         lua_pushnumber(L_, ts);
         if (lua_pcall(L_, 1, 0, 0) != LUA_OK) {
             const char* msg = lua_tostring(L_, -1);
             log(std::string("[raf] ") + (msg ? msg : "?"));
             lua_pop(L_, 1);
         }
-        luaL_unref(L_, LUA_REGISTRYINDEX, ref);
+        luaL_unref(L_, LUA_REGISTRYINDEX, due[i].second);
+        // Two costly canvases stall the loop for both at once unless they are
+        // taken a frame apart. What is left goes back at the front, ahead of
+        // whatever the callbacks just re-registered, or it would never run.
+        if (std::chrono::steady_clock::now() - began > kRafRunBudget) { i++; break; }
     }
+    if (i < due.size())
+        raf_.insert(raf_.begin(), due.begin() + i, due.end());
+
+    auto cost = std::chrono::steady_clock::now() - began;
+    auto gap = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        cost * (1.0 / kRafShare - 1.0));
+    if (gap > kRafMaxGap) gap = kRafMaxGap;
+    raf_next_ = std::chrono::steady_clock::now() + gap;
 }
 
 std::optional<std::chrono::steady_clock::time_point> ScriptEngine::next_wake() const {
     if (!L_) return std::nullopt;
-    if (!raf_.empty()) return std::chrono::steady_clock::now();
+    // A paused engine's queue never drains, so reporting it as due would spin
+    // the main loop at zero timeout for a tab that is not even on screen.
+    if (!raf_.empty() && visible_)
+        return std::max(raf_next_, std::chrono::steady_clock::now());
     {
         std::lock_guard<std::mutex> lk(fetch_inbox_->m);
         if (!fetch_inbox_->done.empty()) return std::chrono::steady_clock::now();

@@ -14,7 +14,7 @@ automatically by the build system:
 
 `miniaudio` is vendored (`src/thirdparty/miniaudio.h`); FFmpeg is a system
 dependency on Linux/Windows only. **OpenSSL 3** is a system dependency on every
-platform — it provides the TLS 1.3 transport for the `star://` scheme. See
+platform: it provides the TLS 1.3 transport for the `star://` scheme. See
 `THIRD_PARTY_LICENSES.md` for the license terms of FFmpeg, OpenSSL, and every
 other dependency.
 
@@ -54,7 +54,7 @@ make            # or: cmake -S . -B build && cmake --build build
 ```
 
 Binaries land in the project root (`stwp_server`, `stwp_client`, `stwp_browser`).
-Audio output uses ALSA or PulseAudio, discovered at runtime by miniaudio — no
+Audio output uses ALSA or PulseAudio, discovered at runtime by miniaudio; no
 extra build-time audio dependency is required.
 
 ---
@@ -76,7 +76,7 @@ cmake --build build --config Release
 ```
 
 Replace `C:/path/to/vcpkg` with your actual vcpkg checkout (e.g. `$env:VCPKG_ROOT`
-if that's set, or wherever you cloned it — it's a placeholder, not a literal path).
+if that's set, or wherever you cloned it; it's a placeholder, not a literal path).
 Binaries land in `build\Release\`.
 
 **Troubleshooting**:
@@ -85,9 +85,9 @@ Binaries land in `build\Release\`.
   CMake can default to `NMake Makefiles` in a plain PowerShell window, which then
   fails because NMake needs a Developer Command Prompt environment (`vcvarsall.bat`)
   that a regular shell doesn't have. The `-G "Visual Studio 17 2022" -A x64` flags
-  above sidestep this — that generator locates MSVC itself.
+  above sidestep this: that generator locates MSVC itself.
 - *`LNK1104: cannot open ... .exe`*: one of the built binaries is still running
-  (Windows locks the file while it's open) — close it and rebuild.
+  (Windows locks the file while it's open); close it and rebuild.
 - Winsock (`ws2_32`) is linked automatically; no extra step needed.
 
 ### Optional: also building the Linux binaries, via WSL
@@ -105,7 +105,7 @@ wsl -d Ubuntu -u root -- bash -c "apt-get update && apt-get install -y \
     cmake libpulse0 pulseaudio-utils alsa-utils"
 ```
 
-**Build** (run from Windows; `/mnt/e/...` maps to `E:\...` — adjust the drive letter):
+**Build** (run from Windows; `/mnt/e/...` maps to `E:\...`; adjust the drive letter):
 
 ```powershell
 wsl -d Ubuntu -u root -- bash -c "cd /mnt/e/Github_projects/StarWeb && \
@@ -121,7 +121,7 @@ wsl -d Ubuntu -u root -- bash -c "cd /mnt/e/Github_projects/StarWeb && ./build-l
 ```
 
 On Windows 11, WSLg shows `stwp_browser`'s GUI as a normal desktop window
-automatically — no X server setup needed. `libpulse0`/`alsa-utils` aren't in a
+automatically; no X server setup needed. `libpulse0`/`alsa-utils` aren't in a
 minimal WSL image by default; without them miniaudio has no audio backend to
 load, and video/audio play back silently with no error.
 
@@ -129,7 +129,7 @@ load, and video/audio play back silently with no error.
 
 ## Running the binaries
 
-**Generate the TLS certificates first** — the browser opens `star://` by default,
+**Generate the TLS certificates first**: the browser opens `star://` by default,
 so without them it has nothing to load. Then start the server and the browser (or
 client), each in its own terminal:
 

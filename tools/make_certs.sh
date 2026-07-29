@@ -67,7 +67,7 @@ if [ "$FORCE" = 1 ] || [ ! -f "$ROOT_KEY" ] || [ ! -f "$ROOT_CRT" ]; then
 else
     echo "Reusing existing root CA ($ROOT_CRT). Pass --force to regenerate it."
     if ! openssl x509 -in "$ROOT_CRT" -noout -ext nameConstraints 2>/dev/null | grep -q Permitted; then
-        echo "  WARNING: this root has no name constraints — it can sign for any name."
+        echo "  WARNING: this root has no name constraints; it can sign for any name."
         echo "           Re-run with --force to replace it with a constrained root."
     fi
 fi

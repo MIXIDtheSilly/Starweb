@@ -90,7 +90,33 @@ std::string decode_entities(std::string_view str) {
     return out;
 }
 
+static inline int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 ImVec4 parse_color(std::string_view str) {
+    // Bare #rgb/#rrggbb without the trim, the lowercase copy, the name table and
+    // the throwing stoul below. A canvas that sets fillStyle per drawn dot lands
+    // here thousands of times a frame, and it is the only form it ever uses.
+    if ((str.size() == 7 || str.size() == 4) && str[0] == '#') {
+        int d[6];
+        bool ok = true;
+        for (size_t i = 1; i < str.size() && ok; i++) {
+            d[i - 1] = hex_digit(str[i]);
+            if (d[i - 1] < 0) ok = false;
+        }
+        if (ok) {
+            if (str.size() == 4)
+                return ImVec4(d[0] * 17 / 255.0f, d[1] * 17 / 255.0f,
+                              d[2] * 17 / 255.0f, 1.0f);
+            return ImVec4((d[0] * 16 + d[1]) / 255.0f, (d[2] * 16 + d[3]) / 255.0f,
+                          (d[4] * 16 + d[5]) / 255.0f, 1.0f);
+        }
+    }
+
     std::string s = trim_spaces(str);
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
     

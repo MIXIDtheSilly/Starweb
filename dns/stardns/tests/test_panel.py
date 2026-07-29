@@ -256,6 +256,108 @@ def test_analytics_tab_shows_real_per_domain_breakdown(session):
     assert '<p class="tlab">busiest domain</p>' in res.text
 
 
+def test_analytics_rows_link_to_the_per_domain_page(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/analytics?t={session}")
+    assert f"/analytics/mysite.{ZONE}?t={session}" in res.text
+
+
+def test_domain_analytics_page_charts_that_domains_series(session):
+    from stardns import analytics
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    post("/api/domain/add", {"token": session, "domain": "other"})
+    for _ in range(3):
+        analytics.record_query(f"mysite.{ZONE}")
+    analytics.record_query(f"other.{ZONE}")
+
+    res = get(f"/analytics/mysite.{ZONE}?t={session}")
+    assert res.status_code == 200
+    assert f"Last 14 days for mysite.{ZONE}" in res.text
+    assert 'id="chart-dom"' in res.text and 'id="chart-days"' in res.text
+    # The 14-day series ends on today's three queries, and the totals read off
+    # this domain alone, never the account-wide figure of four.
+    assert ",3}" in res.text
+    assert '<p class="tnum">3</p>' in res.text
+
+
+def test_domain_analytics_page_with_no_queries_yet(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/analytics/mysite.{ZONE}?t={session}")
+    assert res.status_code == 200
+    assert "Nothing yet" in res.text
+
+
+def test_bar_chart_survives_a_browser_without_canvas_hover(session):
+    """cv.hoverX is newer than some builds out there. Reading it bare threw
+    inside the rAF callback, which then never re-registered, so the bars never
+    drew at all; the chart has to fall back rather than die."""
+    from stardns import ui
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/analytics/mysite.{ZONE}?t={session}")
+    assert "cv.hoverX or -1" in res.text
+    assert "cv.hoverX >=" not in ui.CHARTS
+
+
+def test_hover_readout_falls_back_without_measure_text(session):
+    """Same lesson as cv.hoverX: a method an older build lacks reads as nil, and
+    calling it throws inside the rAF callback, which takes the whole chart with
+    it. The corner radius degrades on its own, since an extra argument to
+    fillRect is simply ignored, but measureText has to be guarded."""
+    from stardns import ui
+    body = ui.CHARTS[ui.CHARTS.index("local function textWidth"):]
+    body = body[:body.index("\nend\n")]
+    assert "if ctx.measureText then" in body
+    assert "return #text * 8" in body
+
+
+def test_analytics_range_switches_the_window(session):
+    from stardns import analytics
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    analytics.record_query(f"mysite.{ZONE}")
+
+    res = get(f"/analytics/mysite.{ZONE}?t={session}&r=24h")
+    assert res.status_code == 200
+    assert "<h3>BY HOUR</h3>" in res.text
+    assert "Last 24 hours for" in res.text
+    # Sub-day windows end on a bucket still filling, not on a whole day.
+    assert ">Now</p>" in res.text
+    assert ">Today</p>" not in res.text
+
+
+def test_analytics_range_pills_carry_the_token_and_key(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/analytics?t={session}&r=90d")
+    assert f'"/analytics?t={session}&r=1h"' in res.text
+    assert f'"/analytics?t={session}&r=365d"' in res.text
+    # The selected pill is the only filled one.
+    assert res.text.count('class="rgon"') == 1
+    assert "<h3>ANALYTICS</h3>" in res.text and "Last 3 months" in res.text
+
+
+def test_analytics_range_falls_back_when_the_key_is_junk(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/analytics/mysite.{ZONE}?t={session}&r=../etc")
+    assert res.status_code == 200
+    assert "Last 14 days for" in res.text
+
+
+def test_domain_analytics_drops_what_the_domain_page_already_shows(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    post("/api/record/add", {"token": session, "domain": "mysite",
+                             "name": "www", "type": "A", "value": "10.0.0.1"})
+    res = get(f"/analytics/mysite.{ZONE}?t={session}")
+    assert "Certificate" not in res.text
+    assert f"1 of {config.MAX_RECORDS}" not in res.text
+
+
+def test_domain_analytics_page_rejects_someone_elses_domain(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    other = post("/api/register", {"username": "mallory",
+                                   "password": "hunter2hunter2"}).json()["token"]
+    res = get(f"/analytics/mysite.{ZONE}?t={other}")
+    assert res.status_code == 404
+
+
 def test_domain_page_has_no_analytics_on_it(session):
     from stardns import analytics
     post("/api/domain/add", {"token": session, "domain": "mysite"})

@@ -2,7 +2,7 @@
 // Name resolution for StarWeb.
 //
 // Names inside the StarWeb zone (.web) are resolved by asking StarDNS
-// directly over UDP, not through getaddrinfo — the system resolver knows
+// directly over UDP, not through getaddrinfo: the system resolver knows
 // nothing about .web, and routing these names through it would put the
 // namespace back in ICANN's hands. Everything else still goes to getaddrinfo,
 // so localhost and IP literals behave exactly as before.
@@ -388,7 +388,7 @@ inline std::vector<std::string> lookup(const std::string& host, std::string& err
     }
     cache_put(name, ips, ttl);
 
-    // Once per name per TTL, not once per fetch — the cache keeps subresource
+    // Once per name per TTL, not once per fetch: the cache keeps subresource
     // loads quiet.
     std::cerr << "[StarDNS] " << name << " -> ";
     for (size_t i = 0; i < ips.size(); i++) std::cerr << (i ? ", " : "") << ips[i];

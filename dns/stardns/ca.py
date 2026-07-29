@@ -1,7 +1,7 @@
 """Leaf certificates for star:// hosts, signed by the StarWeb root CA.
 
 The root is name-constrained to .star (see PROTOCOL.md), so it can only vouch
-for names inside this network — which is exactly the set the panel hands out.
+for names inside this network, which is exactly the set the panel hands out.
 """
 import os
 import secrets

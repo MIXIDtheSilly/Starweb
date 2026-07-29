@@ -80,12 +80,26 @@ public:
         bool round_cap = false;
         bool round_join = false;
         float w = 0, h = 0;
+        // Pointer position in canvas coordinates, or -1 when it is elsewhere.
+        // Polled off the element rather than delivered as an event, so a chart
+        // reads it from the rAF loop it already redraws in.
+        float hover_x = -1.0f, hover_y = -1.0f;
+        // What the next AddText on this canvas will use, so measureText answers
+        // for the font the page actually pushed rather than the UI default.
+        ImFont* font = nullptr;
+        float font_size = 0.0f;
         std::vector<std::vector<ImVec2>> path;
     };
     std::vector<CanvasOp>& canvas_ops(uint64_t id) { return canvas_ops_[id]; }
     CanvasState& canvas_state(uint64_t id) { return canvas_state_[id]; }
     void set_canvas_size(uint64_t id, float w, float h) {
         auto& s = canvas_state_[id]; s.w = w; s.h = h;
+    }
+    void set_canvas_hover(uint64_t id, float x, float y) {
+        auto& s = canvas_state_[id]; s.hover_x = x; s.hover_y = y;
+    }
+    void set_canvas_font(uint64_t id, ImFont* f, float size) {
+        auto& s = canvas_state_[id]; s.font = f; s.font_size = size;
     }
     const std::vector<CanvasOp>* canvas_ops_ptr(uint64_t id) const {
         auto it = canvas_ops_.find(id);
@@ -96,8 +110,12 @@ public:
     void cancel_raf(int id);
     void run_raf();
 
+    // Animation frames only serve painting, so a page nobody is looking at does
+    // not get them. Timers and fetches keep running, as they would in a real
+    // browser: a background tab still finishes what it started.
+    void set_visible(bool v) { visible_ = v; }
+
     // When this engine next needs a frame, or nullopt if nothing is scheduled.
-    // A pending rAF reports "now" since it runs on the next rendered frame.
     std::optional<std::chrono::steady_clock::time_point> next_wake() const;
 
     bool ok() const { return L_ != nullptr; }
@@ -147,6 +165,20 @@ private:
     static constexpr size_t kMaxCanvasOps = 200000;
     std::chrono::steady_clock::time_point start_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point deadline_{};
+
+    bool visible_ = true;
+    // rAF callbacks run on the render thread, so an expensive one stalls the
+    // whole browser for as long as it takes. Rather than run it every vsync
+    // regardless, the next run is held off by roughly what the last one cost,
+    // which caps the share of wall time any page animation can take. Cheap
+    // callbacks land under a frame interval and are paced exactly as before.
+    static constexpr double kRafShare = 0.5;
+    static constexpr std::chrono::milliseconds kRafMaxGap{500};
+    // Once a run has spent this long it stops and leaves the rest for the next
+    // frame. A page's cheap callbacks all still land in one go; only a heavy one
+    // pushes past it, and then only ever by its own single cost.
+    static constexpr std::chrono::microseconds kRafRunBudget{4000};
+    std::chrono::steady_clock::time_point raf_next_{};
 
     std::size_t              mem_cap_bytes_ = 64u * 1024u * 1024u;
     std::chrono::milliseconds time_budget_  = std::chrono::milliseconds(2000);

@@ -48,3 +48,8 @@ MAX_RECORDS = _int("STARDNS_MAX_RECORDS", 50)
 SESSION_DAYS = _int("STARDNS_SESSION_DAYS", 7)
 DEFAULT_TTL = _int("STARDNS_TTL", 300)
 CERT_DAYS = _int("STARDNS_CERT_DAYS", 825)
+
+# How long per-minute query counters are kept. Only the hour and day windows
+# read them; every longer window comes off the daily counters, which never
+# expire, so a few days is enough with room for clock skew.
+STATS_MINUTE_DAYS = _int("STARDNS_STATS_MINUTE_DAYS", 3)

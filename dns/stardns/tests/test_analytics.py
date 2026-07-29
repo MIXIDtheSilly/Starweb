@@ -51,3 +51,51 @@ def test_total_queries_can_be_windowed(fake_db, monkeypatch):
 
 def test_day_labels_length(fake_db):
     assert len(analytics.day_labels(7)) == 7
+
+
+def test_series_defaults_to_fourteen_daily_buckets(fake_db):
+    analytics.record_query("mysite.web")
+    values, labels = analytics.series(["mysite.web"])
+    assert len(values) == 14 and len(labels) == 14
+    assert values[-1] == 1 and sum(values) == 1
+
+
+def test_series_buckets_an_hour_into_five_minute_slots(fake_db):
+    analytics.record_query("mysite.web")
+    values, labels = analytics.series(["mysite.web"], "1h")
+    assert len(values) == 12
+    assert values[-1] == 1
+    assert ":" in labels[0]
+
+
+def test_series_buckets_a_day_into_hours(fake_db):
+    analytics.record_query("mysite.web")
+    analytics.record_query("mysite.web")
+    values, _ = analytics.series(["mysite.web"], "24h")
+    assert len(values) == 24 and values[-1] == 2
+
+
+def test_series_widens_the_buckets_for_long_windows(fake_db):
+    from stardns.db import db
+
+    values, labels = analytics.series(["mysite.web"], "90d")
+    assert len(values) == 13 and len(labels) == 13
+
+    # 10 days back is two weekly buckets from the end of a 91-day window.
+    old = (analytics._today() - timedelta(days=10)).isoformat()
+    db().stats.update_one({"domain": "mysite.web", "day": old},
+                          {"$inc": {"count": 4}}, upsert=True)
+    values, _ = analytics.series(["mysite.web"], "90d")
+    assert values[-2] == 4 and sum(values) == 4
+
+
+def test_series_ignores_an_unknown_range_key(fake_db):
+    assert len(analytics.series([], "nonsense")[0]) == 14
+
+
+def test_minute_counters_carry_a_timestamp_for_the_ttl(fake_db):
+    from stardns.db import db
+
+    analytics.record_query("mysite.web")
+    doc = db().stats_min.find_one({"domain": "mysite.web"})
+    assert doc["count"] == 1 and doc["at"] is not None

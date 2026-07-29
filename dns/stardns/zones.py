@@ -33,7 +33,7 @@ def normalize_domain(name: str) -> str:
         raise PanelError("Enter a domain name.")
     if "." in name:
         raise PanelError(f"Register a single label under .{config.ZONE}, "
-                         f"e.g. mysite.{config.ZONE} — subdomains are records.")
+                         f"e.g. mysite.{config.ZONE}; subdomains are records.")
     if not LABEL_RE.match(name):
         raise PanelError("Domain may use a-z, 0-9 and dashes, and cannot start "
                          "or end with a dash.")
@@ -169,7 +169,7 @@ def add_record(username: str, domain_name: str, name: str, rtype: str,
     if db().records.count_documents({"domain": dn}) >= config.MAX_RECORDS:
         raise PanelError(f"{dn} is at the {config.MAX_RECORDS}-record limit.", 403)
 
-    # A CNAME owns its name outright — nothing else may share it, and the apex
+    # A CNAME owns its name outright: nothing else may share it, and the apex
     # is already occupied by the zone's own SOA and NS.
     siblings = list(db().records.find({"domain": dn, "name": name}))
     if rtype == "CNAME":

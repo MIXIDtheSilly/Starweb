@@ -93,6 +93,7 @@ struct CanvasOp {
     float a = 0, b = 0, c = 0, d = 0;
     ImVec4 color = ImVec4(1, 1, 1, 1);
     float line_width = 1.0f;
+    float radius = 0.0f;
     bool fill = false;
     bool round_cap = false;
     bool round_join = false;

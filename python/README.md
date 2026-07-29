@@ -1,6 +1,6 @@
 # starweb
 
-STWP client and server for [StarWeb](https://github.com/MIXIDtheSilly/StarWeb) —
+STWP client and server for [StarWeb](https://github.com/MIXIDtheSilly/StarWeb):
 a pure-Python implementation of the `moon://` (plaintext) and `star://` (TLS)
 schemes. No dependencies beyond the standard library.
 
@@ -83,4 +83,4 @@ finds.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

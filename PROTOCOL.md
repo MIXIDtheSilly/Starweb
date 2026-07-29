@@ -5,7 +5,7 @@ implemented from scratch. It is carried over two URL schemes:
 
 | Scheme | Transport | Default port | Encrypted |
 |--------|-----------|--------------|-----------|
-| `moon://` | TCP | 8090 | no — plaintext on the wire |
+| `moon://` | TCP | 8090 | no; plaintext on the wire |
 | `star://` | TCP + TLS 1.3 | 8490 | yes |
 
 `star://` is to `moon://` what `https` is to `http`: the messages are identical,
@@ -54,10 +54,10 @@ Content-Range: bytes 0-1048575/137404199
 Content-Length: 1048576
 ```
 
-Three forms are accepted — `bytes=a-b`, `bytes=a-` (to EOF), and `bytes=-n` (the
+Three forms are accepted: `bytes=a-b`, `bytes=a-` (to EOF), and `bytes=-n` (the
 trailing *n* bytes, which is how a player finds an MP4's `moov` atom). An end past
-EOF is clamped. A range that cannot be satisfied — a start past EOF, a malformed
-spec, or a multi-range request, which is deliberately unsupported — is answered
+EOF is clamped. A range that cannot be satisfied (a start past EOF, a malformed
+spec, or a multi-range request, which is deliberately unsupported) is answered
 `416 Range Not Satisfiable` with `Content-Range: bytes */<size>`; the server never
 answers a range request with the wrong slice. A request with no `Range` header
 still gets the whole file as `200`.
@@ -66,8 +66,8 @@ still gets the whole file as `200`.
 
 Establishing a `star://` connection is two handshakes stacked:
 
-1. **TCP** — the ordinary three-way handshake (SYN, SYN-ACK, ACK) from `connect()`.
-2. **TLS 1.3** — a 1-RTT handshake on top of the established socket: ClientHello,
+1. **TCP**: the ordinary three-way handshake (SYN, SYN-ACK, ACK) from `connect()`.
+2. **TLS 1.3**: a 1-RTT handshake on top of the established socket: ClientHello,
    ServerHello, certificate, Finished.
 
 Only then does the first STWP byte go out, encrypted.
@@ -76,7 +76,7 @@ Only then does the first STWP byte go out, encrypted.
 
 - **TLS 1.3 only.** Both the client and the server pin minimum *and* maximum
   version to TLS 1.3. There is no negotiation down to 1.2, and no cipher
-  downgrade — stricter than the web, which is affordable because `star://` has no
+  downgrade, stricter than the web, which is affordable because `star://` has no
   legacy clients to support.
 - **ALPN `stwp/1.0`.** The client offers it; the server selects it and fails the
   handshake if the client offers nothing it recognises.
@@ -86,10 +86,10 @@ Only then does the first STWP byte go out, encrypted.
 
 A `star://` server's certificate must satisfy all of:
 
-- **Chain** — signed by a CA in the client's trust store. The trust anchor is the
+- **Chain**: signed by a CA in the client's trust store. The trust anchor is the
   StarWeb root CA (`certs/starweb_root.pem`), overridable via the `STARWEB_CA`
   environment variable. The system root store is not consulted.
-- **Hostname** — the URL's host must match the certificate's SAN. DNS names are
+- **Hostname**: the URL's host must match the certificate's SAN. DNS names are
   checked with `X509_VERIFY_PARAM_set1_host`, IP literals with
   `X509_VERIFY_PARAM_set1_ip_asc`. This is a separate check from the chain: a
   certificate legitimately signed by the StarWeb root but issued for a *different*
@@ -124,7 +124,7 @@ StarWeb is a separate web, and the boundary is enforced rather than assumed:
   version is just a token), so the server checks it explicitly and answers anything
   else with `505 Version Not Supported`. A plain HTTP client gets no content.
 - **Connections must negotiate ALPN `stwp/1.0`.** The server rejects a client that
-  offers `h2`/`http/1.1`, *and* one that offers no ALPN at all — the select callback
+  offers `h2`/`http/1.1`, *and* one that offers no ALPN at all; the select callback
   never fires in that case, so the check happens after the handshake instead. The
   client enforces the same in reverse. A real browser cannot complete a TLS
   handshake with a StarWeb server.
@@ -139,11 +139,11 @@ StarWeb is a separate web, and the boundary is enforced rather than assumed:
   and page scripts cannot navigate to any other scheme.
 
 - **Names are resolved by StarWeb's own DNS.** A host under `.web` is looked up
-  by asking StarDNS directly over UDP (`src/common/resolver.hpp`), never
+  by asking Nebula directly over UDP (`src/common/resolver.hpp`), never
   `getaddrinfo`, so the namespace is not ICANN's and a `.web` lookup is not
-  leaked to a public resolver. There is deliberately no fallback: if StarDNS
+  leaked to a public resolver. There is deliberately no fallback: if Nebula
   cannot answer, the load fails rather than quietly asking the public DNS.
-  Everything else — `localhost`, IP literals, any other name — still goes to
+  Everything else (`localhost`, IP literals, any other name) still goes to
   the system resolver and behaves exactly as before.
 
   ```sh
@@ -159,12 +159,12 @@ StarWeb is a separate web, and the boundary is enforced rather than assumed:
 Two rules apply to `star://` pages, both enforced in the browser:
 
 - **Mixed content is blocked.** A `star://` page may not load `moon://`
-  subresources — stylesheets, images, media, or scripts. A blocked load is logged
+  subresources: stylesheets, images, media, or scripts. A blocked load is logged
   and dropped; it never reaches the network.
 - **Script-driven downgrades are blocked.** A page script (`location.assign`,
   `location.href = ...`) on a `star://` page cannot navigate to `moon://`. This is
   stricter than the web, where an `https` page may navigate to `http`. Typing a
-  `moon://` URL by hand still works — the restriction is on pages, not on users.
+  `moon://` URL by hand still works; the restriction is on pages, not on users.
 
 ## URLs
 
@@ -178,7 +178,7 @@ without a scheme is assumed to be `moon://`.
 
 ## Certificates for local development
 
-`certs/` is generated locally and git-ignored — the root CA private key is never
+`certs/` is generated locally and git-ignored; the root CA private key is never
 committed.
 
 ```sh
@@ -190,7 +190,7 @@ This produces a P-256 root CA (10 years) and a `localhost` leaf (825 days) with
 `SAN = DNS:localhost, IP:127.0.0.1, IP:::1` and `extendedKeyUsage=serverAuth`.
 
 The root is name-constrained (see *Isolation*, above), so any leaf must fall under
-`localhost`, `.local`, `.web`, `.star`, or a private IP range — a leaf outside those is
+`localhost`, `.local`, `.web`, `.star`, or a private IP range; a leaf outside those is
 signed happily but fails verification with `permitted subtree violation`. Roots
 generated before constraints existed keep working; `--force` replaces them, and the
 script warns when it reuses an unconstrained one.

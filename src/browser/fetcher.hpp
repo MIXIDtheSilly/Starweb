@@ -21,7 +21,7 @@ struct RequestOptions {
     std::function<bool(net::socket_t)> on_socket;
     std::function<void(net::socket_t)> on_socket_done;
     // A sink streams the body past the caller instead of buffering it. It bypasses
-    // max_response_bytes — the point is bodies too big to hold — and leaves
+    // max_response_bytes (the point is bodies too big to hold) and leaves
     // FetchResult::body empty. Returning false aborts the transfer.
     BodySink on_body_chunk;
     // Consulted once the response headers are in, for callers that only know

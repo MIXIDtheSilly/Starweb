@@ -110,14 +110,32 @@ def analytics_view(req):
     except PanelError as e:
         return _html(ui.error_page(e.message), e.status)
 
+    rng = req.query.get("r", analytics.DEFAULT_RANGE)
     names = [d["name"] for d in domains]
-    series = analytics.daily_totals(names)
-    labels = analytics.day_labels()
-    per_domain = [{"name": name,
-                   "series": analytics.daily_counts(name),
-                   "total": analytics.total_queries(name, days=14)}
-                  for name in names]
-    return _html(ui.analytics_page(token, domains, series, labels, per_domain))
+    series, labels = analytics.series(names, rng)
+
+    per_domain = []
+    for name in names:
+        counts, _ = analytics.series([name], rng)
+        per_domain.append({"name": name, "series": counts, "total": sum(counts)})
+    return _html(ui.analytics_page(token, domains, series, labels,
+                                   per_domain, rng))
+
+
+@app.route("/analytics/<name>")
+def domain_analytics_view(req, name):
+    token = req.query.get("t", "")
+    try:
+        username = auth.user_for(token)
+        domain = zones.get_domain(username, name)
+    except PanelError as e:
+        return _html(ui.error_page(e.message, token if token else None), e.status)
+
+    rng = req.query.get("r", analytics.DEFAULT_RANGE)
+    series, labels = analytics.series([domain["name"]], rng)
+    return _html(ui.domain_analytics_page(
+        token, domain["name"], series, labels, rng,
+        analytics.total_queries(domain["name"])))
 
 
 # The domain sits in the path, not the query: the renderer does not decode HTML

@@ -31,7 +31,7 @@ def main(argv=None) -> int:
     print(f"[stardns] mongo {config.MONGO_URI}/{config.MONGO_DB}", flush=True)
 
     ok, why = ca.ca_ready()
-    print(f"[stardns] CA: {why}" + ("" if ok else " — certificate issuing is off"),
+    print(f"[stardns] CA: {why}" + ("" if ok else "; certificate issuing is off"),
           flush=True)
 
     dns = None
