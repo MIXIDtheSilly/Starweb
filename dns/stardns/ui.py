@@ -169,6 +169,7 @@ li { color: #d4d4dc; font-size: 14px; }
 .label { color: #8b8b96; font-size: 13px; margin-bottom: 5; margin-top: 10; }
 .hint { color: #74747f; font-size: 12px; margin-top: 8; margin-bottom: 0; }
 .body { color: #d4d4dc; font-size: 14px; margin-top: 0; }
+.certdesc { color: #d4d4dc; font-size: 14px; margin-top: 0; margin-bottom: 10; }
 .mono { color: #d4d4dc; font-size: 13px; }
 
 .kv { display: flex; flex-direction: row; align-items: center; gap: 10;
@@ -194,14 +195,14 @@ li { color: #d4d4dc; font-size: 14px; }
   padding: 10; margin-bottom: 6;
   display: flex; flex-direction: row; align-items: center; gap: 12;
 }
-.c-name { color: #74747f; font-size: 12px; width: 150; margin: 0; }
-.c-type { color: #74747f; font-size: 12px; width: 100; margin: 0; }
-.c-val { color: #74747f; font-size: 12px; width: 340; margin: 0; }
-.c-ttl { color: #74747f; font-size: 12px; width: 90; margin: 0; }
+.c-name { color: #74747f; font-size: 12px; width: 10vw; margin: 0; }
+.c-type { color: #74747f; font-size: 12px; width: 7vw; margin: 0; }
+.c-val { color: #74747f; font-size: 12px; flex-grow: 1; margin: 0; }
+.c-ttl { color: #74747f; font-size: 12px; width: 6vw; margin: 0; }
 .c-act { color: #74747f; font-size: 12px; width: 74; margin: 0; }
 
-/* vw-matched to .in-name/.sel/.in-val/.in-ttl, not the fixed-px .c-name
-   columns the records table uses. */
+/* Same vw units as .in-name/.sel/.in-val/.in-ttl below, so the add-record
+   row's columns track the records table's columns as the window resizes. */
 .ac-name { color: #74747f; font-size: 12px; width: 10vw; margin: 0; }
 .ac-type { color: #74747f; font-size: 12px; width: 7vw; margin: 0; }
 .ac-val { color: #74747f; font-size: 12px; margin: 0; flex-grow: 1; }
@@ -209,13 +210,13 @@ li { color: #d4d4dc; font-size: 14px; }
 
 /* margin-top matches text to .btn-del's vertical center; buttons don't get
    the same extra intrinsic-height padding text tags do. */
-.rname { color: #ffffff; font-size: 14px; width: 150; margin: 0; margin-top: 3; }
-.rval { color: #d4d4dc; font-size: 14px; width: 340; margin: 0; margin-top: 3; }
-.rttl { color: #8b8b96; font-size: 14px; width: 90; margin: 0; margin-top: 3; }
-.rt-a { color: #79c0ff; font-size: 14px; width: 100; margin: 0; margin-top: 3; }
-.rt-aaaa { color: #6fd0c0; font-size: 14px; width: 100; margin: 0; margin-top: 3; }
-.rt-cname { color: #ba8cf5; font-size: 14px; width: 100; margin: 0; margin-top: 3; }
-.rt-txt { color: #d9a94e; font-size: 14px; width: 100; margin: 0; margin-top: 3; }
+.rname { color: #ffffff; font-size: 14px; width: 10vw; margin: 0; margin-top: 3; }
+.rval { color: #d4d4dc; font-size: 14px; flex-grow: 1; margin: 0; margin-top: 3; }
+.rttl { color: #8b8b96; font-size: 14px; width: 6vw; margin: 0; margin-top: 3; }
+.rt-a { color: #79c0ff; font-size: 14px; width: 7vw; margin: 0; margin-top: 3; }
+.rt-aaaa { color: #6fd0c0; font-size: 14px; width: 7vw; margin: 0; margin-top: 3; }
+.rt-cname { color: #ba8cf5; font-size: 14px; width: 7vw; margin: 0; margin-top: 3; }
+.rt-txt { color: #d9a94e; font-size: 14px; width: 7vw; margin: 0; margin-top: 3; }
 
 .in {
   background: #000000; color: #ffffff;
@@ -304,6 +305,48 @@ li { color: #d4d4dc; font-size: 14px; }
   border-width: 0; font-size: 14px;
   width: 200; padding-left: 0; padding-top: 4;
 }
+
+/* position:fixed keeps the closed state out of flow; toggled via className. */
+.qdropoff {
+  position: fixed; left: 24; top: 161; width: 252;
+  border-width: 0; border-radius: 8;
+}
+.qdropon {
+  position: fixed; left: 24; top: 161; width: 252;
+  background: #000000; border-width: 1; border-color: #7c5cff; border-radius: 8;
+  padding-top: 6; padding-bottom: 6;
+}
+.qheadoff { color: #6f6f7c; font-size: 11px; margin: 0; }
+.qheadon { color: #6f6f7c; font-size: 11px; margin: 0;
+           padding-left: 12; padding-top: 8; padding-bottom: 4; }
+.qrow { display: flex; flex-direction: row; align-items: center; gap: 10;
+        width: 228; height: 36; padding-left: 12; padding-right: 12; }
+.qricon { width: 15; height: 15; }
+.qrname { color: #d4d4dc; font-size: 13px; margin: 0; margin-top: 2; }
+.qrchev { width: 13; height: 13; }
+
+/* left tracks .sbox's centring but is computed in Lua (heroPosition, home_page)
+   since this engine has no calc() to combine px and vw. */
+.hdropoff {
+  position: fixed; top: 248; width: 52vw;
+  border-width: 0; border-radius: 8;
+}
+.hdropon {
+  position: fixed; top: 248; width: 52vw;
+  background: #000000; border-width: 1; border-color: #7c5cff; border-radius: 8;
+  padding-top: 6; padding-bottom: 6;
+}
+.hheadoff { color: #6f6f7c; font-size: 11px; margin: 0; }
+.hheadon { color: #6f6f7c; font-size: 11px; margin: 0;
+           padding-left: 12; padding-top: 8; padding-bottom: 4; }
+.hrow { display: flex; flex-direction: row; align-items: center; gap: 10;
+        width: 52vw; height: 36; padding-left: 12; padding-right: 12; }
+.hricon { width: 15; height: 15; }
+.hrname { color: #d4d4dc; font-size: 13px; margin: 0; margin-top: 2; }
+.hrchev { width: 13; height: 13; }
+
+/* 1px sliver whose .width in Lua is the only way to read live window width. */
+.vpmeter { position: fixed; left: 0; top: 0; width: 100vw; height: 1; }
 
 /* The current tab is the only row with a fill; the rest repeat the page colour
    so both kinds of row measure and indent identically. */
@@ -452,6 +495,11 @@ MUTED = "#8b8b96"
 BAD = "#f87171"
 
 
+def icon_src(name: str, color: str) -> str:
+    """URL for a recoloured lucide icon, served by shapes.icon_svg() via panel.py."""
+    return f"/assets/icon/{name}/{color.lstrip('#')}"
+
+
 def esc(value) -> str:
     return (str(value).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
@@ -592,12 +640,8 @@ end)
 """
 
 
-# The icon layer. Geometry comes from the lucide SVGs in assets/icons, flattened
-# to polylines by shapes.lua_icons(); this is only the drawing. `s` is pixels per
-# grid unit, so one table serves every size a page asks for, and `paint` draws
-# once the renderer has sized the canvas; ops persist until cleared, so a
-# static icon costs nothing per frame. Round caps and joins are what lucide is
-# drawn with, and without them the corners come out as mitre spikes.
+# stroke() backs drawIcon() (the two live search dropdowns); link() and
+# urlenc() are used everywhere.
 ICONS = """
 local function stroke(ctx, s, p)
     ctx:beginPath()
@@ -606,34 +650,29 @@ local function stroke(ctx, s, p)
     ctx:stroke()
 end
 
-function paint(id, name, colour, weight)
-    local cv = document.getElementById(id)
-    local paths = ICON_PATHS[name]
-    if not cv or not paths then return end
-    local ctx = cv:getContext("2d")
-    local w, h = -1, -1
-
-    local function draw()
-        if cv.width ~= w or cv.height ~= h then
-            w, h = cv.width, cv.height
-            if w > 0 and h > 0 then
-                ctx:clearRect(0, 0, w, h)
-                ctx.strokeStyle = colour
-                ctx.lineWidth = weight
-                ctx.lineCap = "round"
-                ctx.lineJoin = "round"
-                for i = 1, #paths do stroke(ctx, w / 24, paths[i]) end
-            end
-        end
-        requestAnimationFrame(draw)
-    end
-    requestAnimationFrame(draw)
-end
-
 -- A whole row is the click target, so nothing inside it has to be an anchor.
 function link(id, url)
     local el = document.getElementById(id)
     if el then el:addEventListener("click", function() location.assign(url) end) end
+end
+
+-- Percent-encodes a search query for the URL: the wire format splits the
+-- request line on the first two spaces (see stwp_msg.hpp), so a raw space in
+-- the query would truncate the path there. There is no JS-style
+-- encodeURIComponent in this runtime, hence this.
+function urlenc(s)
+    local out = {}
+    for i = 1, #s do
+        local b = string.byte(s, i)
+        local c = string.sub(s, i, i)
+        if (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122)
+           or c == "-" or c == "_" or c == "." or c == "~" then
+            out[#out + 1] = c
+        else
+            out[#out + 1] = string.format("%%%02X", b)
+        end
+    end
+    return table.concat(out)
 end
 """
 
@@ -787,8 +826,106 @@ TABS = (
     ("analytics", "Analytics", "chart-pie", "/analytics"),
 )
 
+# How many rows a search widget reserves. Fixed, since there is no way to
+# create DOM nodes at runtime here: every page renders all of them up front,
+# collapsed, and JS only ever fills in or clears what's already there.
+SEARCH_SLOTS = 6
 
-def shell(active: str, token: str, content: str, art: bool = False) -> tuple[str, str]:
+# drawIcon draws once rather than looping on requestAnimationFrame, since a
+# repeat call per keystroke would pile up one redraw loop per keystroke. Still
+# canvas+Lua rather than an <img>, since which icon a row needs is only known
+# once the user has typed something, and an <img>'s src can't swap live.
+DRAW_ICON_ONCE = """
+function drawIcon(id, name, colour, weight)
+    local cv = document.getElementById(id)
+    if not cv then return end
+    local ctx = cv:getContext("2d")
+    local w, h = cv.width, cv.height
+    if w <= 0 or h <= 0 then return end
+    ctx:clearRect(0, 0, w, h)
+    local paths = name and ICON_PATHS[name]
+    if not paths then return end
+    ctx.strokeStyle = colour
+    ctx.lineWidth = weight
+    ctx.lineCap = "round"
+    ctx.lineJoin = "round"
+    for i = 1, #paths do stroke(ctx, w / 24, paths[i]) end
+end
+"""
+
+
+def _search_widget(prefix: str, field_id: str, token: str,
+                   domains: list[dict]) -> tuple[str, str]:
+    """A self-contained live search box: a header and SEARCH_SLOTS rows.
+    `prefix` names everything (classes, ids, the Lua index/target/search
+    function) so two calls with different prefixes share no state."""
+    items = [(label, icon, f"{path}?t={token}") for _, label, icon, path in TABS]
+    for d in domains:
+        name = d["name"]
+        items.append((name, "globe", f"/domain/{name}?t={token}"))
+        items.append((f"Analytics for {name}", "chart-pie", f"/analytics/{name}?t={token}"))
+    index = ",\n  ".join("{" + lua_str(label) + ", " + lua_str(icon) + ", " + lua_str(url) + "}"
+                         for label, icon, url in items)
+
+    rows, binds = [f'<p class="{prefix}headoff" id="{prefix}head"></p>'], []
+    for i in range(1, SEARCH_SLOTS + 1):
+        rows.append(f"""
+    <div class="{prefix}row" id="{prefix}r-{i}">
+      <canvas class="{prefix}ricon" id="{prefix}ri-{i}"></canvas>
+      <p class="{prefix}rname" id="{prefix}rn-{i}"></p>
+      <canvas class="{prefix}rchev" id="{prefix}rc-{i}"></canvas>
+    </div>""")
+        binds.append(f"""
+document.getElementById({lua_str(f"{prefix}r-{i}")}):addEventListener("click", function()
+    if {prefix}Target[{i}] then location.assign({prefix}Target[{i}]) end
+end)""")
+    markup = f'<div class="{prefix}dropoff" id="{prefix}drop">{"".join(rows)}</div>'
+
+    script = f"""
+local {prefix}Index = {{
+  {index}
+}}
+local {prefix}Target = {{}}
+
+local function {prefix}Search(q)
+    local qlow = string.lower(q)
+    local n = 0
+    if q ~= "" then
+        for i = 1, #{prefix}Index do
+            if n >= {SEARCH_SLOTS} then break end
+            local item = {prefix}Index[i]
+            if string.find(string.lower(item[1]), qlow, 1, true) then
+                n = n + 1
+                {prefix}Target[n] = item[3]
+                document.getElementById({lua_str(prefix + "rn-")} .. n).textContent = item[1]
+                drawIcon({lua_str(prefix + "ri-")} .. n, item[2], "#d4d4dc", 1.4)
+                drawIcon({lua_str(prefix + "rc-")} .. n, "chevron-right", "#6f6f7c", 1.3)
+            end
+        end
+    end
+    for i = n + 1, {SEARCH_SLOTS} do
+        {prefix}Target[i] = nil
+        document.getElementById({lua_str(prefix + "rn-")} .. i).textContent = ""
+        drawIcon({lua_str(prefix + "ri-")} .. i)
+        drawIcon({lua_str(prefix + "rc-")} .. i)
+    end
+    document.getElementById({lua_str(prefix + "head")}).className =
+        (n > 0) and {lua_str(prefix + "headon")} or {lua_str(prefix + "headoff")}
+    document.getElementById({lua_str(prefix + "head")}).textContent = (n > 0) and "GO TO" or ""
+    document.getElementById({lua_str(prefix + "drop")}).className =
+        (n > 0) and {lua_str(prefix + "dropon")} or {lua_str(prefix + "dropoff")}
+end
+
+document.getElementById({lua_str(field_id)}):addEventListener("input", function()
+    {prefix}Search(document.getElementById({lua_str(field_id)}).value)
+end)
+""" + "\n".join(binds)
+
+    return markup, script
+
+
+def shell(active: str, token: str, domains: list[dict], content: str,
+         art: bool = False) -> tuple[str, str]:
     """The signed-in frame. Returns the markup and the script that goes with it;
     a page appends its own icons and row links to the latter. The artwork is the
     account home's alone; behind a list of cards it is just noise."""
@@ -797,13 +934,12 @@ def shell(active: str, token: str, content: str, art: bool = False) -> tuple[str
         on = key == active
         rows.append(f"""
     <div class="{'navon' if on else 'navoff'}" id="nav-{key}">
-      <canvas class="navico" id="i-{key}"></canvas>
+      <img class="navico" src="{icon_src(icon, '#ffffff' if on else '#b6b6c2')}">
       <p class="{'navtxt' if on else 'navmut'}">{esc(label)}</p>
     </div>""")
-        script.append(f'paint("i-{key}", "{icon}", '
-                      f'"{"#ffffff" if on else "#b6b6c2"}", 1.55)')
         script.append(f'link("nav-{key}", {lua_str(path + "?t=" + token)})')
 
+    qdrop_markup, qdrop_script = _search_widget("q", "qfld", token, domains)
     decoration = ('<canvas class="art-bl" id="art-bl"></canvas>\n'
                   '<canvas class="art-tr" id="art-tr"></canvas>') if art else ""
     body = f"""
@@ -812,7 +948,7 @@ def shell(active: str, token: str, content: str, art: bool = False) -> tuple[str
 <div class="main">
   <div class="topbar">
     <div class="avatar" id="avatar">
-      <canvas class="avico" id="i-user"></canvas>
+      <img class="avico" src="{icon_src('user-round', '#8b8b96')}">
     </div>
   </div>
 {content}
@@ -824,14 +960,15 @@ def shell(active: str, token: str, content: str, art: bool = False) -> tuple[str
   <img class="navmark" src="/banner_trans.png">
 
   <div class="qbox">
-    <canvas class="qico" id="i-quick"></canvas>
-    <input type="text" class="qfld" placeholder="Quick search...">
+    <img class="qico" src="{icon_src('search', '#6f6f7c')}">
+    <input type="text" class="qfld" id="qfld" placeholder="Quick search...">
   </div>
 {''.join(rows)}
+{qdrop_markup}
 </div>"""
 
-    script.append('paint("i-quick", "search", "#6f6f7c", 1.45)')
-    script.append('paint("i-user", "user-round", "#8b8b96", 1.55)')
+    script.append(DRAW_ICON_ONCE)
+    script.append(qdrop_script)
     # Sign out lives on the shared avatar now, not a Domains-only button, so
     # every tab can reach it.
     script.append(f"""
@@ -893,7 +1030,7 @@ def _hub_column(title: str, rows: str, key: str) -> str:
       <div class="hubcol">
         <div class="colhead" id="head-{key}">
           <p class="colttl">{esc(title)}</p>
-          <canvas class="colchev" id="hc-{key}"></canvas>
+          <img class="colchev" src="{icon_src('chevron-right', '#8b8b96')}">
         </div>
 {rows}
       </div>"""
@@ -905,20 +1042,19 @@ HUB_ROWS = 5
 
 
 def home_page(username: str, token: str, domains: list[dict],
-             series: list[int], labels: list[str]) -> str:
+             series: list[int], labels: list[str],
+             recent: list[dict] = ()) -> str:
     listed = domains[:HUB_ROWS]
 
     rows, script = [], []
     for i, d in enumerate(listed, 1):
         rows.append(f"""
         <div class="lrow" id="row-{i}">
-          <canvas class="lico" id="rg-{i}"></canvas>
+          <img class="lico" src="{icon_src('globe', '#8b8b96')}">
           <p class="lname">{esc(d['name'])}</p>
-          <canvas class="lchev" id="rc-{i}"></canvas>
+          <img class="lchev" src="{icon_src('chevron-right', '#6f6f7c')}">
         </div>
         <div class="hair"></div>""")
-        script.append(f'paint("rg-{i}", "globe", "#8b8b96", 1.45)')
-        script.append(f'paint("rc-{i}", "chevron-right", "#6f6f7c", 1.45)')
         target = f"/domain/{d['name']}?t={token}"
         script.append(f'link("row-{i}", {lua_str(target)})')
 
@@ -934,26 +1070,35 @@ def home_page(username: str, token: str, domains: list[dict],
         ana_body = ('        <p class="empty">Register a domain to start '
                    'counting queries.</p>')
 
+    rec_rows = []
+    for i, r in enumerate(recent, 1):
+        rec_rows.append(f"""
+        <div class="lrow" id="rrow-{i}">
+          <img class="lico" src="{icon_src(r['icon'], '#8b8b96')}">
+          <p class="lname">{esc(r['label'])}</p>
+          <img class="lchev" src="{icon_src('chevron-right', '#6f6f7c')}">
+        </div>
+        <div class="hair"></div>""")
+        script.append(f'link("rrow-{i}", {lua_str(r["path"] + "?t=" + token)})')
+    if not rec_rows:
+        rec_rows.append('        <p class="empty">Places you visit will show up '
+                        'here.</p>')
+
     columns = [
         _hub_column("Domains", "".join(rows), "dom"),
         _hub_column("Analytics", ana_body, "ana"),
-        _hub_column("Recent", '        <p class="empty">Nothing yet.</p>', "rec"),
+        _hub_column("Recent", "".join(rec_rows), "rec"),
     ]
     for key, path in (("dom", "/domains"), ("ana", "/analytics")):
-        script.append(f'paint("hc-{key}", "chevron-right", "#8b8b96", 1.5)')
         script.append(f'link("head-{key}", {lua_str(path + "?t=" + token)})')
-    script.append('paint("hc-rec", "chevron-right", "#8b8b96", 1.5)')
 
-    # The search field is not wired to anything yet: a text field keeps the
-    # keyboard to itself while it has focus, so there is no Enter to act on, and
-    # the design has no button. The columns are the way through for now.
     content = f"""
     <div class="hub">
       <p class="hero">What are we doing today?</p>
 
       <div class="sbox">
-        <canvas class="sico" id="i-search"></canvas>
-        <input type="text" class="sfld" placeholder="Search">
+        <img class="sico" id="i-search" src="{icon_src('search', '#8b8b96')}">
+        <input type="text" class="sfld" id="sfld" placeholder="Search">
       </div>
 
       <div class="hubcols">
@@ -970,11 +1115,38 @@ def home_page(username: str, token: str, domains: list[dict],
       </div>
     </div>"""
 
-    body, shell_script = shell("home", token, content, art=True)
-    script.append('paint("i-search", "search", "#8b8b96", 1.6)')
+    body, shell_script = shell("home", token, domains, content, art=True)
+    hdrop_markup, hdrop_script = _search_widget("h", "sfld", token, domains)
+    script.append(f"""
+document.getElementById("i-search"):addEventListener("click", function()
+    local q = document.getElementById("sfld").value
+    if q ~= "" then
+        location.assign({lua_str(f"/search?t={token}&q=")} .. urlenc(q))
+    end
+end)""")
+    # Retries until #vpmeter reports a width (unsized on the first frame),
+    # capped so it can't spin requestAnimationFrame forever.
+    script.append("""
+local heroTries = 0
+local function heroPosition()
+    local vpw = document.getElementById("vpmeter").width
+    if vpw > 0 then
+        local hubw = vpw - 301
+        local sboxw = 0.52 * vpw
+        local left = 301 + (hubw - sboxw) / 2
+        document.getElementById("hdrop").style.left = tostring(left) .. "px"
+        return
+    end
+    heroTries = heroTries + 1
+    if heroTries < 60 then requestAnimationFrame(heroPosition) end
+end
+heroPosition()""")
     script.append(f'chartLine("chart-home", {lua_arr(series)}, "#ba8cf5")')
-    return page(f"{BRAND} - {esc(username)}", body,
-                shell_script + "\n" + CHARTS + "\n" + "\n".join(script))
+    # Must come after the sidebar in document order to paint on top of it.
+    vpmeter_markup = '<canvas class="vpmeter" id="vpmeter"></canvas>'
+    return page(f"{BRAND} - {esc(username)}", body + vpmeter_markup + hdrop_markup,
+                shell_script + "\n" + CHARTS + "\n" + "\n".join(script) +
+                "\n" + hdrop_script)
 
 
 def panel_page(username: str, token: str, domains: list[dict],
@@ -995,23 +1167,21 @@ def panel_page(username: str, token: str, domains: list[dict],
     for i, d in enumerate(domains, 1):
         name = d["name"]
         has_cert = certs.get(name, False)
+        cert_icon = (icon_src("shield-check", "#4ade80") if has_cert
+                    else icon_src("shield-question-mark", "#74747f"))
         rows.append(f"""
 <div class="drow" id="drow-{i}">
-  <canvas class="dico" id="dg-{i}"></canvas>
+  <img class="dico" src="{icon_src('globe', '#8b8b96')}">
   <a class="dname" href="/domain/{esc(name)}?t={esc(token)}">{esc(name)}</a>
   <canvas class="dspark" id="dchart-{i}"></canvas>
-  <canvas class="dcert" id="dcert-{i}"></canvas>
+  <img class="dcert" src="{cert_icon}">
   <button class="btn-del" id="drop-{esc(name)}">Delete</button>
 </div>""")
         if i < len(domains):
             rows.append('<div class="hair"></div>')
-        icon_script.append(f'paint("dg-{i}", "globe", "#8b8b96", 1.5)')
         icon_script.append(f'chartLine("dchart-{i}", '
                            f'{lua_arr(series.get(name) or [0] * analytics.DEFAULT_DAYS)}, '
                            f'"#8b6ef0")')
-        icon_script.append(
-            f'paint("dcert-{i}", "shield-check", "#4ade80", 1.5)' if has_cert
-            else f'paint("dcert-{i}", "shield-question-mark", "#74747f", 1.5)')
 
     if domains:
         list_card = f'<div class="card">{"".join(rows)}</div>'
@@ -1052,7 +1222,7 @@ def panel_page(username: str, token: str, domains: list[dict],
     <p class="msg" id="msg"></p>
 
     </div>"""
-    body, shell_script = shell("domains", token, content, art=True)
+    body, shell_script = shell("domains", token, domains, content, art=True)
 
     drops = "\n".join(f'bind({lua_str(d["name"])})' for d in domains)
     script = shell_script + "\n" + CHARTS + "\n" + "\n".join(icon_script) + f"""
@@ -1120,7 +1290,7 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
       and something has looked it up. Register one from the Domains tab.</p>
     </div>
     </div>"""
-        body, script = shell("analytics", token, content, art=True)
+        body, script = shell("analytics", token, domains, content, art=True)
         return page(f"{BRAND} - analytics", body, script)
 
     _, short, window, _, buckets, unit = analytics.spec(rng)
@@ -1137,12 +1307,11 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
       <p class="sparkname">{esc(_fit(d['name'], 20))}</p>
       <canvas class="sparkcv" id="chart-dom-{i}"></canvas>
       <p class="sparktot">{d['total']} / {esc(short)}</p>
-      <canvas class="sparkchev" id="spc-{i}"></canvas>
+      <img class="sparkchev" src="{icon_src('chevron-right', '#6f6f7c')}">
     </div>""")
         if i < len(per_domain):
             rows.append('    <div class="hair"></div>')
         script.append(f'chartLine("chart-dom-{i}", {lua_arr(d["series"])}, "#8b6ef0")')
-        script.append(f'paint("spc-{i}", "chevron-right", "#6f6f7c", 1.4)')
         target = f"/analytics/{d['name']}?t={token}&r={rng}"
         script.append(f'link("spk-{i}", {lua_str(target)})')
 
@@ -1173,13 +1342,13 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
     </div>
     </div>"""
 
-    body, shell_script = shell("analytics", token, content, art=True)
+    body, shell_script = shell("analytics", token, domains, content, art=True)
     script.insert(0, f'chartLine("chart-all", {lua_arr(series)}, "#ba8cf5")')
     return page(f"{BRAND} - analytics", body,
                 shell_script + "\n" + CHARTS + "\n" + "\n".join(script))
 
 
-def domain_analytics_page(token: str, domain: str, series: list[int],
+def domain_analytics_page(token: str, domain: str, domains: list[dict], series: list[int],
                           labels: list[str], rng: str, all_time: int) -> str:
     """One domain's own analytics over the selected window."""
     _, _, window, _, buckets, unit = analytics.spec(rng)
@@ -1197,7 +1366,7 @@ def domain_analytics_page(token: str, domain: str, series: list[int],
     <h3>{esc(domain)}</h3>
 
     <div class="backrow" id="back-ana">
-      <canvas class="backico" id="bc-back"></canvas>
+      <img class="backico" src="{icon_src('chevron-left', '#8b8b96')}">
       <p class="backlbl">All analytics</p>
     </div>
 
@@ -1232,19 +1401,16 @@ def domain_analytics_page(token: str, domain: str, series: list[int],
 
     <div class="card">
       <div class="lrow" id="manage">
-        <canvas class="lico" id="mg-ico"></canvas>
+        <img class="lico" src="{icon_src('globe', '#8b8b96')}">
         <p class="lname">Manage records and certificate</p>
-        <canvas class="lchev" id="mg-chev"></canvas>
+        <img class="lchev" src="{icon_src('chevron-right', '#6f6f7c')}">
       </div>
     </div>
     </div>"""
 
-    body, shell_script = shell("analytics", token, content, art=True)
+    body, shell_script = shell("analytics", token, domains, content, art=True)
     script += [
-        'paint("bc-back", "chevron-left", "#8b8b96", 1.5)',
         f'link("back-ana", {lua_str(f"/analytics?t={token}&r={rng}")})',
-        'paint("mg-ico", "globe", "#8b8b96", 1.45)',
-        'paint("mg-chev", "chevron-right", "#6f6f7c", 1.45)',
         f'link("manage", {lua_str(f"/domain/{domain}?t={token}")})',
         f'chartLine("chart-dom", {lua_arr(series)}, "#ba8cf5")',
         f'chartBars("chart-days", {lua_arr(series)}, {lua_strs(labels)}, "#8b6ef0")',
@@ -1285,15 +1451,14 @@ def _record_rows(records: list[dict]) -> str:
     return head + "".join(rows)
 
 
-def domain_page(token: str, domain: str, records: list[dict],
+def domain_page(token: str, domain: str, domains: list[dict], records: list[dict],
                 cert: dict | None, ca_note: str | None) -> str:
-    cert_icon_script = ""
     if ca_note:
         cert_body = f'<p class="bad">Certificates are unavailable: {esc(ca_note)}.</p>'
     elif cert:
         cert_body = f"""
 <div class="certhead">
-  <canvas class="certicon" id="cert-ico"></canvas>
+  <img class="certicon" src="{icon_src('shield-check', '#4ade80')}">
   <p class="certttl">Certificate issued</p>
 </div>
 <div class="kv"><p class="k">Issued</p><p class="v">{esc(cert['issued_at'].strftime('%Y-%m-%d %H:%M UTC'))}</p></div>
@@ -1305,25 +1470,23 @@ def domain_page(token: str, domain: str, records: list[dict],
   <a href="/cert/{esc(domain)}/key?t={esc(token)}">Download private key</a>
 </div>
 <button class="btn" id="issue">Re-issue</button>"""
-        cert_icon_script = 'paint("cert-ico", "shield-check", "#4ade80", 1.6)'
     else:
         cert_body = f"""
 <div class="certhead">
-  <canvas class="certicon" id="cert-ico"></canvas>
+  <img class="certicon" src="{icon_src('shield-question-mark', '#74747f')}">
   <p class="certttl">No certificate yet</p>
 </div>
-<p class="body">Issuing one gives you a leaf for {esc(domain)} and *.{esc(domain)},
+<p class="certdesc">Issuing one gives you a leaf for {esc(domain)} and *.{esc(domain)},
 signed by the StarWeb root CA, which is enough to serve star:// to any StarWeb
 client on the network.</p>
 <button class="btn" id="issue">Issue certificate</button>"""
-        cert_icon_script = 'paint("cert-ico", "shield-question-mark", "#74747f", 1.6)'
 
     content = f"""
     <div class="page">
     <h3>{esc(domain)}</h3>
 
     <div class="backrow" id="back-all">
-      <canvas class="backico" id="bc-back"></canvas>
+      <img class="backico" src="{icon_src('chevron-left', '#8b8b96')}">
       <p class="backlbl">All domains</p>
     </div>
 
@@ -1368,14 +1531,12 @@ client on the network.</p>
     <p class="msg" id="msg"></p>
 
     </div>"""
-    body, shell_script = shell("domains", token, content, art=True)
+    body, shell_script = shell("domains", token, domains, content, art=True)
 
     binds = "\n".join(f'bind({lua_str(str(r["_id"]))})' for r in records)
     back_target = f"/domains?t={token}"
     script = shell_script + f"""
-paint("bc-back", "chevron-left", "#8b8b96", 1.5)
 link("back-all", {lua_str(back_target)})
-{cert_icon_script}
 
 local token = {lua_str(token)}
 local domain = {lua_str(domain)}
@@ -1429,6 +1590,67 @@ if issue then
 end
 """
     return page(f"{BRAND} - {domain}", body, script)
+
+
+def _search_rows(items: list[tuple[str, str, str]], token: str, prefix: str) -> tuple[str, list[str]]:
+    """items: (label, icon, path). Same lrow/hair idiom as the account home
+    columns, since these are the same thing: a navigable, icon-led list."""
+    rows, script = [], []
+    for i, (label, icon, path) in enumerate(items, 1):
+        rid = f"{prefix}-{i}"
+        rows.append(f"""
+<div class="lrow" id="{rid}">
+  <img class="lico" src="{icon_src(icon, '#8b8b96')}">
+  <p class="lname">{esc(label)}</p>
+  <img class="lchev" src="{icon_src('chevron-right', '#6f6f7c')}">
+</div>""")
+        if i < len(items):
+            rows.append('<div class="hair"></div>')
+        script.append(f'link("{rid}", {lua_str(f"{path}?t={token}")})')
+    return "".join(rows), script
+
+
+def search_page(token: str, domains: list[dict], q: str) -> str:
+    """Quick search results: pages, domains and per-domain analytics, the same
+    three things the sidebar tabs reach. There is no live-as-you-type result
+    list here (see the click handlers in shell()/home_page() for why), so this
+    is a real results page, reached by clicking the search icon."""
+    query = q.strip()
+    qlow = query.lower()
+
+    page_items = [(label, icon, path) for _, label, icon, path in TABS
+                 if qlow in label.lower()] if query else []
+    matched = [d["name"] for d in domains if qlow in d["name"].lower()] if query else []
+    domain_items = [(name, "globe", f"/domain/{name}") for name in matched]
+    analytics_items = [(f"Analytics for {name}", "chart-pie", f"/analytics/{name}")
+                       for name in matched]
+
+    sections, script = [], []
+    for title, items, prefix in (("PAGES", page_items, "sp"),
+                                 ("DOMAINS", domain_items, "sd"),
+                                 ("ANALYTICS", analytics_items, "sa")):
+        if not items:
+            continue
+        rows, rscript = _search_rows(items, token, prefix)
+        script += rscript
+        sections.append(f'<h3>{title}</h3>\n<div class="card">{rows}</div>')
+
+    if not query:
+        status = "Type something, then press the search icon."
+    elif not sections:
+        status = f'No results for "{esc(query)}".'
+    else:
+        status = f'Results for "{esc(query)}"'
+
+    content = f"""
+    <div class="page">
+    <h3>SEARCH</h3>
+    <p class="body">{status}</p>
+    {''.join(sections)}
+    </div>"""
+
+    body, shell_script = shell("", token, domains, content, art=True)
+    return page(f"{BRAND} - search", body, shell_script + "\n" + "\n".join(script))
 
 
 def error_page(message: str, token: str | None = None) -> str:

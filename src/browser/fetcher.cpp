@@ -542,7 +542,7 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                         if (ext != ".html" && ext != ".htm" && !ext.empty()) {
                             is_html = false;
                         }
-                        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif") {
+                        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" || ext == ".svg") {
                             is_image = true;
                         } else if (ext == ".mp4" || ext == ".mov" || ext == ".m4v") {
                             is_video = true;

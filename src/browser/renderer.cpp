@@ -1627,6 +1627,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                 if (ImGui::InputTextWithHint(input_label.c_str(), node.placeholder.c_str(), buf, sizeof(buf),
                         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_CharsScientific)) {
                     node.value = buf;
+                    script_dispatch_input(tab.id, node.node_id);
                 }
             }
             ImGui::PopItemWidth();
@@ -1862,6 +1863,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                 ChromeFieldGuard style_guard(merged);
                 if (ImGui::InputTextWithHint(input_label.c_str(), hint.c_str(), buf, sizeof(buf), flags)) {
                     node.value = buf;
+                    script_dispatch_input(tab.id, node.node_id);
                 }
             }
             ImGui::PopItemWidth();
@@ -1883,6 +1885,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             InputStyleGuard style_guard(merged);
             if (ImGui::InputTextMultiline(label.c_str(), buf, sizeof(buf), ImVec2(width, height))) {
                 node.value = buf;
+                script_dispatch_input(tab.id, node.node_id);
             }
             
             if (node.value.empty() && !node.placeholder.empty()) {

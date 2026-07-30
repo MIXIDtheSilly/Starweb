@@ -120,6 +120,11 @@ bool script_has_click_handler(int tab_id, uint64_t node_id) {
     return it != g_script_engines.end() && it->second && it->second->has_click_handler(node_id);
 }
 
+void script_dispatch_input(int tab_id, uint64_t node_id) {
+    auto it = g_script_engines.find(tab_id);
+    if (it != g_script_engines.end() && it->second) it->second->dispatch_input(node_id);
+}
+
 
 static void dispatch_page_keys(GLFWwindow* window) {
     struct NamedKey { int key; const char* name; };
@@ -214,12 +219,33 @@ static double idle_wait_seconds(GLFWwindow* window) {
 #define STB_IMAGE_IMPLEMENTATION
 #include "../thirdparty/stb_image.h"
 
-bool LoadTextureFromMemory(const unsigned char* image_data, int image_size, unsigned int* out_texture, int* out_width, int* out_height) {
-    int image_width = 0;
-    int image_height = 0;
-    unsigned char* data = stbi_load_from_memory(image_data, image_size, &image_width, &image_height, NULL, 4);
-    if (data == NULL) return false;
+#define NANOSVG_IMPLEMENTATION
+#include "../thirdparty/nanosvg.h"
+#define NANOSVGRAST_IMPLEMENTATION
+#include "../thirdparty/nanosvgrast.h"
 
+// stb_image can't decode SVG, and extension/content-type aren't reliable, so
+// sniff the bytes instead.
+static bool looks_like_svg(const unsigned char* data, int size) {
+    int scan = std::min(size, 512);
+    int i = 0;
+    if (scan >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) i = 3; // UTF-8 BOM
+    while (i < scan && std::isspace(data[i])) i++;
+
+    auto starts_with = [&](const char* s) {
+        size_t len = std::strlen(s);
+        return (size_t)(scan - i) >= len && std::memcmp(data + i, s, len) == 0;
+    };
+    if (starts_with("<svg")) return true;
+    if (starts_with("<?xml")) {
+        for (int j = i; j + 4 <= scan; j++) {
+            if (std::memcmp(data + j, "<svg", 4) == 0) return true;
+        }
+    }
+    return false;
+}
+
+static void upload_rgba_texture(const unsigned char* pixels, int w, int h, unsigned int* out_texture) {
     GLuint image_texture;
     glGenTextures(1, &image_texture);
     glBindTexture(GL_TEXTURE_2D, image_texture);
@@ -232,10 +258,66 @@ bool LoadTextureFromMemory(const unsigned char* image_data, int image_size, unsi
 #if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 #endif
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image_width, image_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    *out_texture = image_texture;
+}
+
+// Rasterizes at 2x for retina sharpness, capped so a bad viewBox can't
+// allocate a huge texture.
+static bool LoadSvgTextureFromMemory(const unsigned char* image_data, int image_size, unsigned int* out_texture, int* out_width, int* out_height) {
+    std::vector<char> buf((const char*)image_data, (const char*)image_data + image_size);
+    buf.push_back('\0');
+
+    NSVGimage* image = nsvgParse(buf.data(), "px", 96.0f);
+    if (!image) return false;
+    if (image->width <= 0.0f || image->height <= 0.0f) {
+        nsvgDelete(image);
+        return false;
+    }
+
+    constexpr float kSuperSample = 2.0f;
+    constexpr int kMaxDim = 2048;
+    float scale = kSuperSample;
+    int raster_w = std::max(1, (int)(image->width * scale));
+    int raster_h = std::max(1, (int)(image->height * scale));
+    if (raster_w > kMaxDim || raster_h > kMaxDim) {
+        scale *= (float)kMaxDim / (float)std::max(raster_w, raster_h);
+        raster_w = std::max(1, (int)(image->width * scale));
+        raster_h = std::max(1, (int)(image->height * scale));
+    }
+
+    std::vector<unsigned char> pixels((size_t)raster_w * (size_t)raster_h * 4);
+    NSVGrasterizer* rast = nsvgCreateRasterizer();
+    if (!rast) {
+        nsvgDelete(image);
+        return false;
+    }
+    nsvgRasterize(rast, image, 0.0f, 0.0f, scale, pixels.data(), raster_w, raster_h, raster_w * 4);
+    nsvgDeleteRasterizer(rast);
+
+    // Layout sees the SVG's own size, not the supersampled texture.
+    *out_width = (int)image->width;
+    *out_height = (int)image->height;
+    nsvgDelete(image);
+
+    upload_rgba_texture(pixels.data(), raster_w, raster_h, out_texture);
+    return true;
+}
+
+bool LoadTextureFromMemory(const unsigned char* image_data, int image_size, unsigned int* out_texture, int* out_width, int* out_height) {
+    if (looks_like_svg(image_data, image_size) &&
+        LoadSvgTextureFromMemory(image_data, image_size, out_texture, out_width, out_height)) {
+        return true;
+    }
+
+    int image_width = 0;
+    int image_height = 0;
+    unsigned char* data = stbi_load_from_memory(image_data, image_size, &image_width, &image_height, NULL, 4);
+    if (data == NULL) return false;
+
+    upload_rgba_texture(data, image_width, image_height, out_texture);
     stbi_image_free(data);
 
-    *out_texture = image_texture;
     *out_width = image_width;
     *out_height = image_height;
 

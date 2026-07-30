@@ -49,6 +49,7 @@ std::string get_cache_filepath(const std::string& url);
 void prune_media_cache(std::uintmax_t max_bytes);
 void script_dispatch_click(int tab_id, uint64_t node_id);
 bool script_has_click_handler(int tab_id, uint64_t node_id);
+void script_dispatch_input(int tab_id, uint64_t node_id);
 const std::vector<CanvasOp>* script_canvas_ops(int tab_id, uint64_t node_id);
 void script_set_canvas_size(int tab_id, uint64_t node_id, float w, float h);
 void script_set_canvas_hover(int tab_id, uint64_t node_id, float x, float y);

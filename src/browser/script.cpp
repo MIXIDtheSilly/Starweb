@@ -155,10 +155,13 @@ static int el_addEventListener(lua_State* L) {
     DomNode* n = resolve_element(L, 1);
     std::string ev = luaL_checkstring(L, 2);
     luaL_checktype(L, 3, LUA_TFUNCTION);
-    if (!n || ev != "click") return 0;
+    if (!n || (ev != "click" && ev != "input")) return 0;
     lua_pushvalue(L, 3);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    if (ScriptEngine* eng = engine_from_lua(L)) eng->add_click_handler(n->node_id, ref);
+    ScriptEngine* eng = engine_from_lua(L);
+    if (!eng) return 0;
+    if (ev == "click") eng->add_click_handler(n->node_id, ref);
+    else eng->add_input_handler(n->node_id, ref);
     return 0;
 }
 
@@ -856,6 +859,17 @@ void ScriptEngine::dispatch_click(uint64_t node_id) {
     deadline_ = std::chrono::steady_clock::now() + time_budget_;
     for (int ref : refs) {
         call_handler(ref, 1, [node_id](lua_State* L) { push_element(L, node_id); }, "[click]");
+    }
+}
+
+void ScriptEngine::dispatch_input(uint64_t node_id) {
+    if (!L_) return;
+    auto it = input_handlers_.find(node_id);
+    if (it == input_handlers_.end()) return;
+    std::vector<int> refs = it->second;
+    deadline_ = std::chrono::steady_clock::now() + time_budget_;
+    for (int ref : refs) {
+        call_handler(ref, 1, [node_id](lua_State* L) { push_element(L, node_id); }, "[input]");
     }
 }
 

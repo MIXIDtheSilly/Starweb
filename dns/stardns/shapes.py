@@ -1,9 +1,9 @@
 """Decorative SVG shapes, flattened into numbers the page script can use.
 
-The browser has no SVG support and no way to sample an image from script, so
-the artwork in assets/ is reduced here to plain geometry and emitted as Lua
-literals. The page then rasterises it per frame as a dithered halftone, which
-is what makes the shapes spin and shimmer.
+Most icons are now a plain <img> via icon_svg() below, now that the browser
+can rasterise SVG. What's left here is what a static image can't do: the
+cog/line artwork animates every frame, and the two live search dropdowns pick
+an icon at runtime from what the user has typed.
 
 Two forms come out of this:
 
@@ -356,8 +356,14 @@ def icon_subpaths(name: str) -> list[list[tuple[float, float]]]:
     return out
 
 
-ICON_NAMES = ("house", "globe", "chart-pie", "chevron-right", "chevron-left", "search",
-              "user-round", "shield-check", "shield-question-mark")
+ICON_NAMES = ("house", "globe", "chart-pie", "chevron-right")
+
+
+@lru_cache(maxsize=None)
+def icon_svg(name: str, color: str) -> bytes:
+    """One lucide icon, recoloured for a direct <img> src."""
+    svg = (ICONS / f"{name}.svg").read_text()
+    return svg.replace('stroke="currentColor"', f'stroke="{color}"').encode()
 
 
 @lru_cache(maxsize=1)

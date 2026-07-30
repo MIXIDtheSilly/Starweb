@@ -34,6 +34,8 @@ def _ensure_indexes(d) -> None:
                              unique=True)
     d.stats_min.create_index([("at", ASCENDING)],
                              expireAfterSeconds=config.STATS_MINUTE_DAYS * 86400)
+    d.recents.create_index([("username", ASCENDING), ("key", ASCENDING)], unique=True)
+    d.recents.create_index([("username", ASCENDING), ("visited_at", ASCENDING)])
 
 
 def ping() -> None:

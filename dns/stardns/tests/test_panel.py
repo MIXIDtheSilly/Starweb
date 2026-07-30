@@ -3,7 +3,7 @@ import json
 import pytest
 from starweb import Request
 
-from stardns import config, panel, zones
+from stardns import config, panel, ui, zones
 
 ZONE = config.ZONE
 
@@ -203,6 +203,45 @@ def test_home_shows_query_total(session):
     assert ">2<" in res.text
 
 
+def test_home_recent_column_starts_empty(session):
+    res = get(f"/panel?t={session}")
+    assert "Places you visit will show up here." in res.text
+
+
+def test_home_recent_column_tracks_visited_pages(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    get(f"/domain/mysite.{ZONE}?t={session}")
+    get(f"/analytics/mysite.{ZONE}?t={session}")
+
+    res = get(f"/panel?t={session}")
+    assert f"mysite.{ZONE}" in res.text
+    assert f'link("rrow-1", "/analytics/mysite.{ZONE}?t={session}")' in res.text
+    assert f'link("rrow-2", "/domain/mysite.{ZONE}?t={session}")' in res.text
+    # Slice past the Domains column first, since it also uses globe.
+    recent_col = res.text[res.text.index('id="head-rec"'):]
+    chart_pie_src = f'src="{ui.icon_src("chart-pie", "#8b8b96")}"'
+    globe_src = f'src="{ui.icon_src("globe", "#8b8b96")}"'
+    assert chart_pie_src in recent_col
+    assert globe_src in recent_col
+    assert recent_col.index(chart_pie_src) < recent_col.index(globe_src)
+
+
+def test_home_recent_column_caps_at_three_and_dedupes_repeat_visits(session):
+    for name in ("one", "two", "three"):
+        post("/api/domain/add", {"token": session, "domain": name})
+    # Repeat visit to /domain/one should jump back to the front, not duplicate.
+    for path in ("/domain/one", "/domain/two", "/domain/three",
+                 "/analytics/one", "/domain/one"):
+        get(f"{path}.{ZONE}?t={session}")
+
+    res = get(f"/panel?t={session}")
+    assert res.text.count('class="lrow" id="rrow-') == 3
+    assert f'link("rrow-1", "/domain/one.{ZONE}?t={session}")' in res.text
+    assert f'link("rrow-2", "/analytics/one.{ZONE}?t={session}")' in res.text
+    assert f'link("rrow-3", "/domain/three.{ZONE}?t={session}")' in res.text
+    assert 'link("rrow-4"' not in res.text
+
+
 def test_domains_tab_shows_a_queries_tile(session):
     from stardns import analytics
     post("/api/domain/add", {"token": session, "domain": "mysite"})
@@ -381,7 +420,7 @@ def test_domain_page_back_link_is_an_icon_row_not_literal_arrow(session):
     res = get(f"/domain/mysite.{ZONE}?t={session}")
     assert "&lt;" not in res.text
     assert "All domains" in res.text
-    assert '"chevron-left"' in res.text
+    assert f'src="{ui.icon_src("chevron-left", "#8b8b96")}"' in res.text
 
 
 def test_domain_page_certificate_card_has_no_written_to_line(session):
@@ -406,3 +445,78 @@ def test_html_is_escaped(session, fake_db):
     res = get(f"/domain/mysite.{ZONE}?t={session}")
     assert "<script>bad</script>" not in res.text
     assert "&lt;script&gt;" in res.text
+
+
+def test_search_finds_a_matching_domain(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    post("/api/domain/add", {"token": session, "domain": "other"})
+    res = get(f"/search?t={session}&q=mysi")
+    assert res.status_code == 200
+    assert f"/domain/mysite.{ZONE}?t={session}" in res.text
+    assert f"/analytics/mysite.{ZONE}?t={session}" in res.text
+    # The sidebar's live dropdown index carries every domain regardless of
+    # query, so check the rendered result row, not the whole page.
+    assert f'<p class="lname">other.{ZONE}</p>' not in res.text
+
+
+def test_search_finds_a_matching_page(session):
+    res = get(f"/search?t={session}&q=analytic")
+    assert res.status_code == 200
+    assert f"/analytics?t={session}" in res.text
+
+
+def test_search_with_no_matches_says_so(session):
+    res = get(f"/search?t={session}&q=nothingmatchesthis")
+    assert "No results" in res.text
+
+
+def test_search_with_no_query_prompts_instead_of_matching_everything(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/search?t={session}")
+    assert f'<p class="lname">mysite.{ZONE}</p>' not in res.text
+    assert "press the search icon" in res.text
+
+
+def test_search_needs_a_session(fake_db):
+    assert get("/search?q=x").status_code == 401
+
+
+def test_search_result_links_lead_somewhere(session):
+    import re
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    text = get(f"/search?t={session}&q=my").text
+    targets = re.findall(r'link\("[^"]*", "([^"]*)"\)', text)
+    assert targets
+    for target in targets:
+        assert get(target).status_code == 200, target
+
+
+def test_quick_search_dropdown_index_covers_pages_and_domains(session):
+    # The sidebar's qSearch index must include every domain and its
+    # analytics link, not just the static pages.
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/panel?t={session}")
+    assert 'id="qdrop"' in res.text
+    assert "local function qSearch(q)" in res.text
+    assert f'"mysite.{ZONE}", "globe", "/domain/mysite.{ZONE}?t={session}"' in res.text
+    assert (f'"Analytics for mysite.{ZONE}", "chart-pie", '
+            f'"/analytics/mysite.{ZONE}?t={session}"') in res.text
+    assert f'"Domains", "globe", "/domains?t={session}"' in res.text
+
+
+def test_hero_box_does_not_touch_the_sidebar_widget(session):
+    # The hero search box must stay independent of the sidebar's qSearch table.
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/panel?t={session}").text
+    assert "local function qSearch(q)" in res
+    assert 'id="qdrop"' in res
+    assert "qSearch(document.getElementById(\"sfld\").value)" not in res
+    assert 'id="sdrop"' not in res
+
+
+def test_quick_search_dropdown_present_on_the_domain_and_domain_analytics_pages(session):
+    post("/api/domain/add", {"token": session, "domain": "mysite"})
+    res = get(f"/domain/mysite.{ZONE}?t={session}")
+    assert res.status_code == 200 and 'id="qdrop"' in res.text
+    res = get(f"/analytics/mysite.{ZONE}?t={session}")
+    assert res.status_code == 200 and 'id="qdrop"' in res.text

@@ -3,7 +3,7 @@ import json
 
 from starweb import App, Response
 
-from . import analytics, auth, ca, config, shapes, ui, zones
+from . import analytics, auth, ca, config, recents, shapes, ui, zones
 from .db import db
 from .errors import PanelError
 
@@ -63,6 +63,14 @@ def banner_trans(req):
                     headers={"Content-Type": "image/png"})
 
 
+# Every icon <img> in ui.py points here; icon_svg() is cached, so recolouring
+# is a one-time string substitution per (name, colour) pair actually used.
+@app.route("/assets/icon/<name>/<color>")
+def icon(req, name, color):
+    return Response(200, body=shapes.icon_svg(name, "#" + color),
+                    headers={"Content-Type": "image/svg+xml"})
+
+
 @app.route("/")
 def index(req):
     return _html(ui.login_page())
@@ -81,7 +89,20 @@ def panel(req):
 
     series = analytics.daily_totals([d["name"] for d in domains])
     labels = analytics.day_labels()
-    return _html(ui.home_page(username, token, domains, series, labels))
+    recent = recents.list_recent(username)
+    return _html(ui.home_page(username, token, domains, series, labels, recent))
+
+
+@app.route("/search")
+def search_view(req):
+    token = req.query.get("t", "")
+    try:
+        username = auth.user_for(token)
+        domains = zones.list_domains(username)
+    except PanelError as e:
+        return _html(ui.error_page(e.message), e.status)
+
+    return _html(ui.search_page(token, domains, req.query.get("q", "")))
 
 
 @app.route("/domains")
@@ -128,13 +149,16 @@ def domain_analytics_view(req, name):
     try:
         username = auth.user_for(token)
         domain = zones.get_domain(username, name)
+        domains = zones.list_domains(username)
     except PanelError as e:
         return _html(ui.error_page(e.message, token if token else None), e.status)
 
+    recents.touch(username, f"analytics:{domain['name']}",
+                 domain["name"], "chart-pie", f"/analytics/{domain['name']}")
     rng = req.query.get("r", analytics.DEFAULT_RANGE)
     series, labels = analytics.series([domain["name"]], rng)
     return _html(ui.domain_analytics_page(
-        token, domain["name"], series, labels, rng,
+        token, domain["name"], domains, series, labels, rng,
         analytics.total_queries(domain["name"])))
 
 
@@ -147,12 +171,15 @@ def domain_view(req, name):
     try:
         username = auth.user_for(token)
         domain = zones.get_domain(username, name)
+        domains = zones.list_domains(username)
         records = zones.list_records(domain["name"])
     except PanelError as e:
         return _html(ui.error_page(e.message, token if token else None), e.status)
 
+    recents.touch(username, f"domain:{domain['name']}", domain["name"],
+                 "globe", f"/domain/{domain['name']}")
     ok, why = ca.ca_ready()
-    return _html(ui.domain_page(token, domain["name"], records,
+    return _html(ui.domain_page(token, domain["name"], domains, records,
                                 ca.latest(domain["name"]),
                                 None if ok else why))
 

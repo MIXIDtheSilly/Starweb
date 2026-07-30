@@ -56,6 +56,17 @@ public:
         return click_handlers_.find(node_id) != click_handlers_.end();
     }
 
+    // "input" fires on every value change of a text-like field (text, number,
+    // textarea), unlike keydown/keyup: those are swallowed page-wide while
+    // ImGui owns a focused field for text entry (see dispatch_page_keys in
+    // browser.cpp), so this is the only per-keystroke signal a page script can
+    // get out of a field it doesn't have to click away from first.
+    void add_input_handler(uint64_t node_id, int ref) { input_handlers_[node_id].push_back(ref); }
+    void dispatch_input(uint64_t node_id);
+    bool has_input_handler(uint64_t node_id) const {
+        return input_handlers_.find(node_id) != input_handlers_.end();
+    }
+
     void add_key_handler(bool down, int ref);
     void dispatch_key(bool down, const std::string& key);
     bool wants_keys() const { return !keydown_handlers_.empty() || !keyup_handlers_.empty(); }
@@ -140,6 +151,7 @@ private:
     NavSink     nav_;
     UrlProvider url_;
     std::unordered_map<uint64_t, std::vector<int>> click_handlers_;
+    std::unordered_map<uint64_t, std::vector<int>> input_handlers_;
     std::vector<int> keydown_handlers_;
     std::vector<int> keyup_handlers_;
     static constexpr size_t kMaxKeyHandlers = 64;
