@@ -306,7 +306,9 @@ li { color: #d4d4dc; font-size: 14px; }
   width: 200; padding-left: 0; padding-top: 4;
 }
 
-/* position:fixed keeps the closed state out of flow; toggled via className. */
+/* position:fixed keeps the closed state out of flow; toggled via className.
+   The idle state sets no background at all, since even a matching black
+   still paints a fill. */
 .qdropoff {
   position: fixed; left: 24; top: 161; width: 252;
   border-width: 0; border-radius: 8;
@@ -319,6 +321,8 @@ li { color: #d4d4dc; font-size: 14px; }
 .qheadoff { color: #6f6f7c; font-size: 11px; margin: 0; }
 .qheadon { color: #6f6f7c; font-size: 11px; margin: 0;
            padding-left: 12; padding-top: 8; padding-bottom: 4; }
+/* The dropdown is a plain block, not a flex container, so an unset width here
+   would fall back to the full window rather than 252. */
 .qrow { display: flex; flex-direction: row; align-items: center; gap: 10;
         width: 228; height: 36; padding-left: 12; padding-right: 12; }
 .qricon { width: 15; height: 15; }

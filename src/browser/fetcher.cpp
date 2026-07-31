@@ -1,6 +1,7 @@
 #include "fetcher.hpp"
 #include "globals.hpp"
 #include "parser.hpp"
+#include "devtools.hpp"
 #include "../common/url_parser.hpp"
 #include "../common/stwp_msg.hpp"
 #include "../common/net.hpp"
@@ -598,6 +599,8 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                     std::string sheet_url = resolve_url(final_url, href);
                     if (is_mixed_content(page_secure, sheet_url)) {
                         std::cerr << "[mixed-content] blocked stylesheet " << sheet_url << "\n";
+                        devtools::log(tab_id, devtools::Level::Warn,
+                                      "blocked mixed-content stylesheet " + sheet_url);
                         continue;
                     }
                     FetchResult sheet_res = perform_fetch(tab_id, sheet_url, false);
@@ -614,6 +617,8 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                     std::string img_url = resolve_url(final_url, src);
                     if (is_mixed_content(page_secure, img_url)) {
                         std::cerr << "[mixed-content] blocked image " << img_url << "\n";
+                        devtools::log(tab_id, devtools::Level::Warn,
+                                      "blocked mixed-content image " + img_url);
                         continue;
                     }
                     FetchResult img_res = perform_fetch(tab_id, img_url, false);
@@ -631,6 +636,8 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                     std::string media_url = resolve_url(final_url, src);
                     if (is_mixed_content(page_secure, media_url)) {
                         std::cerr << "[mixed-content] blocked media " << media_url << "\n";
+                        devtools::log(tab_id, devtools::Level::Warn,
+                                      "blocked mixed-content media " + media_url);
                     }
                 }
 
@@ -642,17 +649,21 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                     script.src = resolve_url(final_url, script.src);
                     if (is_mixed_content(page_secure, script.src)) {
                         std::cerr << "[mixed-content] blocked script " << script.src << "\n";
+                        devtools::log(tab_id, devtools::Level::Warn,
+                                      "blocked mixed-content script " + script.src);
                         continue;
                     }
                     FetchResult script_res = perform_fetch(tab_id, script.src, false);
                     if (script_res.success && script_res.status_code == 200) {
                         script.source = std::move(script_res.body);
                     } else {
-                        std::cerr << "[script] failed to load " << script.src << ": "
-                                  << (script_res.success
-                                          ? std::to_string(script_res.status_code) + " " + script_res.status_text
-                                          : script_res.error_message)
-                                  << "\n";
+                        std::string why =
+                            script_res.success
+                                ? std::to_string(script_res.status_code) + " " + script_res.status_text
+                                : script_res.error_message;
+                        std::cerr << "[script] failed to load " << script.src << ": " << why << "\n";
+                        devtools::log(tab_id, devtools::Level::Error,
+                                      "failed to load script: " + why, script.src);
                     }
                 }
             } else {

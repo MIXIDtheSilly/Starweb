@@ -43,8 +43,20 @@ public:
 
     bool run(const std::string& source, const std::string& chunk_name, std::string& error_out);
 
+    // Console prompt. Compiles as an expression and falls back to a statement,
+    // the way the stock REPL does, so both `1+1` and `x = 1` work. Runs in the
+    // page's own sandbox with nothing extra bound.
+    bool eval(const std::string& source, std::string& result_out, std::string& error_out);
+
     void log(const std::string& msg);
     void alert(const std::string& msg);
+    // Diagnostics the page did not ask to print: handler failures, compile
+    // errors. Falls back to the log sink when unset.
+    void set_error_sink(LogSink e) { err_ = std::move(e); }
+    void error(const std::string& msg);
+
+    void set_tab_id(int id) { tab_id_ = id; }
+    int  tab_id() const { return tab_id_; }
 
     void set_dom_provider(DomProvider p) { dom_root_ = std::move(p); }
     DomNode* dom_root() { return dom_root_ ? dom_root_() : nullptr; }
@@ -131,6 +143,18 @@ public:
 
     bool ok() const { return L_ != nullptr; }
 
+    // Live counts for the devtools Metrics panel.
+    std::size_t mem_used() const { return mem_.used; }
+    std::size_t mem_cap() const { return mem_cap_bytes_; }
+    std::size_t timer_count() const { return timers_.size(); }
+    std::size_t raf_count() const { return raf_.size(); }
+    std::size_t key_handler_count() const {
+        return keydown_handlers_.size() + keyup_handlers_.size();
+    }
+    std::size_t click_handler_count() const;
+    std::size_t input_handler_count() const;
+    std::size_t canvas_op_count() const;
+
 private:
     // Calls one registry-ref'd handler with args pushed by `push_args`. Both the
     // pushing and the call happen inside a single pcall, because pushing allocates
@@ -146,7 +170,9 @@ private:
     lua_State*  L_ = nullptr;
     MemState    mem_;
     LogSink     log_;
+    LogSink     err_;
     AlertSink   alert_;
+    int         tab_id_ = 0;
     DomProvider dom_root_;
     NavSink     nav_;
     UrlProvider url_;

@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstring>
 #include <unordered_map>
+#include <map>
 #include <cmath>
 #include <chrono>
 
@@ -50,6 +51,7 @@
 #include "renderer.hpp"
 #include "media_player.hpp"
 #include "script.hpp"
+#include "devtools.hpp"
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -65,10 +67,18 @@ static void run_page_scripts(Tab& tab) {
     int tid = tab.id;
     auto& eng = g_script_engines[tid];
     eng = std::make_unique<ScriptEngine>(
-        [tid](const std::string& s) { std::cerr << "[lua " << tid << "] " << s << "\n"; },
+        [tid](const std::string& s) {
+            std::cerr << "[lua " << tid << "] " << s << "\n";
+            devtools::log(tid, devtools::Level::Log, s);
+        },
         [tid](const std::string& s) {
             if (Tab* t = find_tab_by_id(tid)) { t->alert_text = s; t->show_alert = true; }
         });
+    eng->set_tab_id(tid);
+    eng->set_error_sink([tid](const std::string& s) {
+        std::cerr << "[lua " << tid << "] " << s << "\n";
+        devtools::log(tid, devtools::Level::Error, s);
+    });
     eng->set_dom_provider([tid]() -> DomNode* {
         Tab* t = find_tab_by_id(tid);
         return t ? &t->page_dom : nullptr;
@@ -88,12 +98,14 @@ static void run_page_scripts(Tab& tab) {
         const bool to_star = url.rfind("star://", 0) == 0;
         if (!to_moon && !to_star) {
             std::cerr << "[lua " << tid << "] blocked navigation to " << url << "\n";
+            devtools::log(tid, devtools::Level::Warn, "blocked navigation to " + url);
             return;
         }
         // Stricter than the web: no script-driven downgrade. Typing the moon://
         // URL by hand still works.
         if (to_moon && t->current_url.rfind("star://", 0) == 0) {
             std::cerr << "[lua " << tid << "] blocked downgrade navigation to " << url << "\n";
+            devtools::log(tid, devtools::Level::Warn, "blocked downgrade navigation to " + url);
             return;
         }
         g_pending_navs.emplace_back(tid, url);
@@ -103,11 +115,18 @@ static void run_page_scripts(Tab& tab) {
         // An external script that failed to load has no source; the fetcher already
         // reported why, so skip it rather than reporting an empty chunk again.
         if (script.source.empty()) continue;
+        std::string chunk = script.src.empty() ? "page" : script.src;
         std::string err;
-        if (!eng->run(script.source, script.src.empty() ? "page" : script.src, err)) {
+        if (!eng->run(script.source, chunk, err)) {
             std::cerr << "[lua " << tid << "] error: " << err << "\n";
+            devtools::log(tid, devtools::Level::Error, err, chunk);
         }
     }
+}
+
+ScriptEngine* script_engine_for(int tab_id) {
+    auto it = g_script_engines.find(tab_id);
+    return it == g_script_engines.end() ? nullptr : it->second.get();
 }
 
 void script_dispatch_click(int tab_id, uint64_t node_id) {
@@ -216,6 +235,12 @@ static double idle_wait_seconds(GLFWwindow* window) {
     return timeout;
 }
 
+static double idle_wait_reported(GLFWwindow* window) {
+    double secs = idle_wait_seconds(window);
+    devtools::note_idle_wait(secs);
+    return secs;
+}
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "../thirdparty/stb_image.h"
 
@@ -302,6 +327,33 @@ static bool LoadSvgTextureFromMemory(const unsigned char* image_data, int image_
 
     upload_rgba_texture(pixels.data(), raster_w, raster_h, out_texture);
     return true;
+}
+
+// UI icons come from their own Lucide source, rasterized at the exact device size
+// they are drawn at so the result is texel-for-pixel. Keyed on the literal's
+// address: the sources are string literals with static storage.
+unsigned int svg_icon_texture(const char* svg, int px) {
+    static std::map<std::pair<const char*, int>, unsigned int> cache;
+    auto key = std::make_pair(svg, px);
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+
+    unsigned int tex = 0;
+    std::vector<char> buf(svg, svg + std::strlen(svg) + 1);
+    if (NSVGimage* image = nsvgParse(buf.data(), "px", 96.0f)) {
+        if (image->width > 0.0f && image->height > 0.0f) {
+            if (NSVGrasterizer* rast = nsvgCreateRasterizer()) {
+                std::vector<unsigned char> pixels((size_t)px * (size_t)px * 4);
+                nsvgRasterize(rast, image, 0.0f, 0.0f, px / image->width,
+                              pixels.data(), px, px, px * 4);
+                nsvgDeleteRasterizer(rast);
+                upload_rgba_texture(pixels.data(), px, px, &tex);
+            }
+        }
+        nsvgDelete(image);
+    }
+    cache[key] = tex;
+    return tex;
 }
 
 bool LoadTextureFromMemory(const unsigned char* image_data, int image_size, unsigned int* out_texture, int* out_width, int* out_height) {
@@ -502,6 +554,11 @@ int main() {
     int shot_countdown = shot_path ? 240 : -1;
     tabs.push_back(initial_tab);
     active_tab_idx = 0;
+    // A headless run takes no keys, so the panel name comes from the environment.
+    if (const char* dt = std::getenv("STARWEB_DEVTOOLS")) {
+        devtools::set_open(initial_tab.id, true);
+        devtools::set_panel(initial_tab.id, dt);
+    }
     start_async_fetch(tabs[active_tab_idx].id, tabs[active_tab_idx].current_url);
 
     // ImGui rebuilds its draw data from scratch every frame, so a vsync-paced loop
@@ -510,7 +567,7 @@ int main() {
     int settle_frames = kSettleFrames;
 
     while (!glfwWindowShouldClose(window)) {
-        double wait = (settle_frames > 0) ? 0.0 : idle_wait_seconds(window);
+        double wait = (settle_frames > 0) ? 0.0 : idle_wait_reported(window);
         if (wait > 0.0) {
             glfwWaitEventsTimeout(wait);
         } else {
@@ -527,7 +584,8 @@ int main() {
                     tab.reset_scroll_next_frame = true;
                     tab.vp_slack = 0.0f;
                     tab.vp_last_h = 0.0f;
-                    
+                    devtools::on_navigate(tab.id);
+
                     for (const auto& [url, tex] : tab.page_textures) {
                         if (tex.id != 0) {
                             glDeleteTextures(1, &tex.id);
@@ -570,6 +628,9 @@ int main() {
                         }
                         
                         run_page_scripts(tab);
+                        if (const char* sel = std::getenv("STARWEB_DEVTOOLS_SELECT")) {
+                            devtools::select_node(tab, sel);
+                        }
                     } else {
                         tab.status_text = "Error: " + tab.active_page.error_message;
                         // Also on stderr: an interstitial says a load failed, but
@@ -577,6 +638,9 @@ int main() {
                         // when the same page keeps showing the same error.
                         std::cerr << "[Load failed] " << tab.current_url << " -> "
                                   << tab.active_page.error_message << "\n";
+                        devtools::log(tab.id, devtools::Level::Error,
+                                      "load failed: " + tab.active_page.error_message,
+                                      tab.current_url);
                         std::string error_html;
                         if (tab.active_page.tls_error) {
                             auto p = parse_url(tab.current_url);
@@ -628,6 +692,17 @@ int main() {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+
+        if (active_tab_idx >= 0 && active_tab_idx < (int)tabs.size()) {
+            const int tid = tabs[active_tab_idx].id;
+            devtools::begin_frame(tid);
+            const bool cmd = io.KeySuper || io.KeyCtrl;
+            if (ImGui::IsKeyPressed(ImGuiKey_F12, false) ||
+                (cmd && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_I, false))) {
+                devtools::toggle(tid);
+                settle_frames = kSettleFrames;
+            }
+        }
 
         {
             static int current_resize_dir = 0;
@@ -976,6 +1051,7 @@ int main() {
             }
             tabs[tab_to_close].active_players.clear();
             g_script_engines.erase(tabs[tab_to_close].id);
+            devtools::on_tab_closed(tabs[tab_to_close].id);
 
             tabs.erase(tabs.begin() + tab_to_close);
             if (tabs.empty()) {
@@ -1205,8 +1281,16 @@ int main() {
         // No padding of its own: a full-bleed element needs to reach the edge,
         // and the page insets itself via body margin. Popped right after
         // Begin reads it.
+        // The dock eats into the page from the right. vw/vh and canvas auto-fit
+        // all measure against this child, so they follow the narrowed viewport.
+        const ImVec2 shell_avail = ImGui::GetContentRegionAvail();
+        const float dt_splitter_w = 4.0f;
+        const float dt_w = devtools::dock_width(active_tab.id, shell_avail.x);
+        const bool dt_open = dt_w > 0.0f;
+        const float page_w = dt_open ? shell_avail.x - dt_w - dt_splitter_w : 0.0f;
+
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        ImGui::BeginChild("RenderViewport", ImVec2(0, 0), false, 0);
+        ImGui::BeginChild("RenderViewport", ImVec2(page_w, 0), false, 0);
         ImGui::PopStyleVar();
         if (active_tab.reset_scroll_next_frame) {
             ImGui::SetScrollY(0.0f);
@@ -1228,7 +1312,10 @@ int main() {
         ImVec2 max_p = ImVec2(min_p.x + ImGui::GetWindowWidth(), min_p.y + ImGui::GetWindowHeight());
         
         float inner_radius = ImGui::GetStyle().ChildRounding;
-        
+        // With the dock open the window's bottom-right corner belongs to it.
+        const ImDrawFlags vp_corners = dt_open ? ImDrawFlags_RoundCornersBottomLeft
+                                               : ImDrawFlags_RoundCornersBottom;
+
         if (body_it != active_tab.css_classes.end()) {
             const auto& body_style = body_it->second;
             if (body_style.has_gradient) {
@@ -1236,12 +1323,12 @@ int main() {
                 ImU32 col_end = ImGui::ColorConvertFloat4ToU32(body_style.gradient_end);
                 vp_draw_list->AddRectFilledMultiColor(min_p, max_p, col_start, col_start, col_end, col_end);
             } else if (body_style.has_bg) {
-                vp_draw_list->AddRectFilled(min_p, max_p, ImGui::ColorConvertFloat4ToU32(body_style.bg_color), inner_radius, ImDrawFlags_RoundCornersBottom);
+                vp_draw_list->AddRectFilled(min_p, max_p, ImGui::ColorConvertFloat4ToU32(body_style.bg_color), inner_radius, vp_corners);
             } else {
-                vp_draw_list->AddRectFilled(min_p, max_p, Theme::viewport_bg, inner_radius, ImDrawFlags_RoundCornersBottom);
+                vp_draw_list->AddRectFilled(min_p, max_p, Theme::viewport_bg, inner_radius, vp_corners);
             }
         } else {
-            vp_draw_list->AddRectFilled(min_p, max_p, Theme::viewport_bg, inner_radius, ImDrawFlags_RoundCornersBottom);
+            vp_draw_list->AddRectFilled(min_p, max_p, Theme::viewport_bg, inner_radius, vp_corners);
         }
 
         // Vector art is drawn in logical pixels and scaled up to the framebuffer,
@@ -1278,9 +1365,12 @@ int main() {
         ImGui::PopStyleVar();
 
         float vp_h = ImGui::GetWindowHeight();
-        if (vp_h != active_tab.vp_last_h) {
+        float vp_w = ImGui::GetWindowWidth();
+        // Width too: opening the dock reflows the page, so the slack is stale.
+        if (vp_h != active_tab.vp_last_h || vp_w != active_tab.vp_last_w) {
             active_tab.vp_slack = 0.0f;
             active_tab.vp_last_h = vp_h;
+            active_tab.vp_last_w = vp_w;
         } else if (active_tab.vp_fit_used) {
             // What a 100vh box costs beyond its own height: wrappers around it,
             // plus whatever trails after. Measured directly rather than
@@ -1301,6 +1391,36 @@ int main() {
 
         ImGui::EndChild();
         ImGui::PopStyleColor(2);
+
+        if (dt_open) {
+            ImVec2 vp_rect_min = ImGui::GetItemRectMin();
+            ImVec2 vp_rect_max = ImGui::GetItemRectMax();
+            devtools::draw_overlay(active_tab, vp_rect_min, vp_rect_max);
+
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::InvisibleButton("##dt_splitter", ImVec2(dt_splitter_w, shell_avail.y));
+            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            }
+            if (ImGui::IsItemActive()) devtools::drag_dock(-io.MouseDelta.x);
+            ImVec2 sp_min = ImGui::GetItemRectMin();
+            ImGui::GetWindowDrawList()->AddLine(
+                ImVec2(sp_min.x + dt_splitter_w * 0.5f, sp_min.y),
+                ImVec2(sp_min.x + dt_splitter_w * 0.5f, sp_min.y + shell_avail.y),
+                Theme::border_separator, 1.0f);
+
+            ImGui::SameLine(0.0f, 0.0f);
+            // The dock never scrolls as a whole; each panel scrolls its own panes.
+            ImGui::BeginChild("DevTools", ImVec2(0, 0), false, ImGuiWindowFlags_NoScrollbar);
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                ImGui::GetWindowPos(),
+                ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowWidth(),
+                       ImGui::GetWindowPos().y + ImGui::GetWindowHeight()),
+                Theme::dt_bg, ImGui::GetStyle().ChildRounding,
+                ImDrawFlags_RoundCornersBottomRight);
+            devtools::draw(active_tab);
+            ImGui::EndChild();
+        }
 
         if (active_tab.show_alert) {
             ImGui::OpenPopup("Alert");
@@ -1323,7 +1443,7 @@ int main() {
         bool ui_busy = io.WantTextInput || ImGui::IsAnyItemActive() || ImGui::IsAnyMouseDown() ||
                        io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f ||
                        io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f ||
-                       active_tab.show_alert;
+                       active_tab.show_alert || devtools::wants_frames(active_tab.id);
         if (ui_busy) settle_frames = kSettleFrames;
         else if (settle_frames > 0) settle_frames--;
 

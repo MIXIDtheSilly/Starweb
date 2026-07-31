@@ -776,6 +776,133 @@ void ScriptEngine::alert(const std::string& msg) {
     if (alert_) alert_(msg);
 }
 
+void ScriptEngine::error(const std::string& msg) {
+    if (err_) err_(msg);
+    else if (log_) log_(msg);
+}
+
+std::size_t ScriptEngine::click_handler_count() const {
+    std::size_t n = 0;
+    for (const auto& [id, v] : click_handlers_) n += v.size();
+    return n;
+}
+
+std::size_t ScriptEngine::input_handler_count() const {
+    std::size_t n = 0;
+    for (const auto& [id, v] : input_handlers_) n += v.size();
+    return n;
+}
+
+std::size_t ScriptEngine::canvas_op_count() const {
+    std::size_t n = 0;
+    for (const auto& [id, v] : canvas_ops_) n += v.size();
+    return n;
+}
+
+namespace {
+// Renders a stack value for the console without touching a metamethod: a page's
+// own __tostring/__index could raise, and a raise outside a pcall reaches Lua's
+// panic handler and aborts the browser.
+void append_value(lua_State* L, int idx, int depth, std::string& out) {
+    idx = lua_absindex(L, idx);
+    switch (lua_type(L, idx)) {
+        case LUA_TNIL:
+            out += "nil";
+            return;
+        case LUA_TBOOLEAN:
+            out += lua_toboolean(L, idx) ? "true" : "false";
+            return;
+        case LUA_TNUMBER: {
+            char buf[48];
+            if (lua_isinteger(L, idx))
+                std::snprintf(buf, sizeof buf, "%lld", (long long)lua_tointeger(L, idx));
+            else
+                std::snprintf(buf, sizeof buf, "%.14g", (double)lua_tonumber(L, idx));
+            out += buf;
+            return;
+        }
+        case LUA_TSTRING: {
+            std::size_t len = 0;
+            const char* s = lua_tolstring(L, idx, &len);
+            if (len > 512) {
+                out += '"';
+                out.append(s, 512);
+                out += "\"...";
+            } else {
+                out += '"';
+                out.append(s, len);
+                out += '"';
+            }
+            return;
+        }
+        case LUA_TTABLE: {
+            if (depth <= 0 || !lua_checkstack(L, 4)) { out += "{...}"; return; }
+            out += "{";
+            int count = 0;
+            lua_pushnil(L);
+            while (lua_next(L, idx) != 0) {
+                if (count >= 50) { out += " ..."; lua_pop(L, 2); break; }
+                out += count ? ", " : " ";
+                // On a copy: formatting a number key converts it in place, and
+                // lua_next needs the original back.
+                lua_pushvalue(L, -2);
+                append_value(L, -1, 0, out);
+                lua_pop(L, 1);
+                out += " = ";
+                append_value(L, -1, depth - 1, out);
+                lua_pop(L, 1);
+                count++;
+            }
+            out += count ? " }" : "}";
+            return;
+        }
+        default: {
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "%s: %p", lua_typename(L, lua_type(L, idx)),
+                          lua_topointer(L, idx));
+            out += buf;
+            return;
+        }
+    }
+}
+}  // namespace
+
+bool ScriptEngine::eval(const std::string& source, std::string& result_out,
+                        std::string& error_out) {
+    if (!L_) { error_out = "script engine unavailable"; return false; }
+    if (source.size() > max_source_bytes_) { error_out = "expression too long"; return false; }
+
+    const int base = lua_gettop(L_);
+    std::string expr = "return " + source;
+    int status = luaL_loadbufferx(L_, expr.data(), expr.size(), "=console", "t");
+    if (status != LUA_OK) {
+        lua_pop(L_, 1);
+        status = luaL_loadbufferx(L_, source.data(), source.size(), "=console", "t");
+    }
+    if (status != LUA_OK) {
+        const char* msg = lua_tostring(L_, -1);
+        error_out = msg ? msg : "syntax error";
+        lua_settop(L_, base);
+        return false;
+    }
+
+    deadline_ = std::chrono::steady_clock::now() + time_budget_;
+    if (lua_pcall(L_, 0, LUA_MULTRET, 0) != LUA_OK) {
+        const char* msg = lua_tostring(L_, -1);
+        error_out = msg ? msg : "error";
+        lua_settop(L_, base);
+        return false;
+    }
+
+    const int n = lua_gettop(L_) - base;
+    for (int i = 1; i <= n; i++) {
+        if (i > 1) result_out += ", ";
+        append_value(L_, base + i, 2, result_out);
+    }
+    lua_settop(L_, base);
+    return true;
+}
+
 bool ScriptEngine::run(const std::string& source, const std::string& chunk_name,
                        std::string& error_out) {
     if (!L_) { error_out = "script engine unavailable"; return false; }
@@ -810,7 +937,7 @@ void ScriptEngine::bind_inline_handlers() {
             add_click_handler(n->node_id, luaL_ref(L_, LUA_REGISTRYINDEX));
         } else {
             const char* msg = lua_tostring(L_, -1);
-            log(std::string("[onclick] ") + (msg ? msg : "?"));
+            error(std::string("[onclick] ") + (msg ? msg : "?"));
             lua_pop(L_, 1);
         }
     }
@@ -837,7 +964,7 @@ void ScriptEngine::call_handler(int ref, int nargs,
                                 const char* tag) {
     if (!L_) return;
     if (!lua_checkstack(L_, nargs + 4)) {
-        log(std::string(tag) + " out of stack, handler dropped");
+        error(std::string(tag) + " out of stack, handler dropped");
         return;
     }
     HandlerCall hc{ref, nargs, &push_args};
@@ -845,7 +972,7 @@ void ScriptEngine::call_handler(int ref, int nargs,
     lua_pushlightuserdata(L_, &hc);
     if (lua_pcall(L_, 1, 0, 0) != LUA_OK) {
         const char* msg = lua_tostring(L_, -1);
-        log(std::string(tag) + " " + (msg ? msg : "?"));
+        error(std::string(tag) + " " + (msg ? msg : "?"));
         lua_pop(L_, 1);
     }
 }

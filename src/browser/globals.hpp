@@ -45,6 +45,11 @@ extern ImVec2 page_viewport_origin;
 const std::filesystem::path& app_dir();
 
 Tab* find_tab_by_id(int tab_id);
+// The tab's live interpreter, or null. browser.cpp owns the engines themselves.
+class ScriptEngine;
+ScriptEngine* script_engine_for(int tab_id);
+// A square texture of an embedded SVG, cached. Drawn white, so the caller tints.
+unsigned int svg_icon_texture(const char* svg, int px);
 std::string get_cache_filepath(const std::string& url);
 void prune_media_cache(std::uintmax_t max_bytes);
 void script_dispatch_click(int tab_id, uint64_t node_id);

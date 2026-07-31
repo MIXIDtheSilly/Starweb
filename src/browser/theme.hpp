@@ -41,6 +41,12 @@ namespace Theme {
     constexpr ImVec4 spinner                 = ImVec4(0.75f, 0.60f, 0.95f, 1.00f);
     constexpr ImVec4 omnibox_bg              = ImVec4(0.11f, 0.11f, 0.11f, 1.00f);
 
+    // Devtools dock is chrome, not page, so it follows the tab strip's palette.
+    constexpr ImVec4 dt_text                 = ImVec4(0.94f, 0.94f, 0.94f, 1.00f);
+    constexpr ImVec4 dt_dim                  = ImVec4(0.67f, 0.67f, 0.70f, 1.00f);
+    constexpr ImVec4 dt_accent               = ImVec4(0.73f, 0.55f, 0.96f, 1.00f);
+    constexpr ImVec4 dt_field_bg             = ImVec4(0.11f, 0.11f, 0.11f, 1.00f);
+
     #define IM_COL32_THEME(r,g,b,a) (((ImU32)(a)<<24)|((ImU32)(b)<<16)|((ImU32)(g)<<8)|((ImU32)(r)))
     
     constexpr ImU32 bar_bg                   = IM_COL32_THEME(24, 24, 24, 255);
@@ -60,4 +66,14 @@ namespace Theme {
     constexpr ImU32 plus_color_hover         = IM_COL32_THEME(240, 240, 240, 255);
     
     constexpr ImU32 border_separator         = IM_COL32_THEME(80, 80, 80, 255);
+
+    // The same three tones the window chrome uses: strip, raised tab, recessed pane.
+    constexpr ImU32 dt_bg                    = IM_COL32_THEME(24, 24, 24, 255);
+    constexpr ImU32 dt_strip_bg              = IM_COL32_THEME(28, 28, 28, 255);
+    constexpr ImU32 dt_tab_active_bg         = IM_COL32_THEME(40, 40, 40, 255);
+    constexpr ImU32 dt_tab_hover_bg          = IM_COL32_THEME(50, 50, 50, 255);
+    constexpr ImU32 dt_surface_bg            = IM_COL32_THEME(32, 32, 32, 255);
+    constexpr ImU32 dt_hairline              = IM_COL32_THEME(58, 58, 58, 255);
+    constexpr ImU32 dt_text_on               = IM_COL32_THEME(240, 240, 240, 255);
+    constexpr ImU32 dt_text_off              = IM_COL32_THEME(170, 170, 180, 255);
 }

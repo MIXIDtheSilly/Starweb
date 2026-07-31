@@ -14,9 +14,20 @@ CssStyle merge_node_style(const DomNode& node, const CssStyle& parent_style, Tab
 // their own offset and take no part in the surrounding layout.
 bool is_positioned(const CssStyle& style);
 
+// How much bigger h1..h6 draw than the size they inherited. Folded in at paint
+// time rather than by the cascade, so measuring and inspecting both have to apply
+// it themselves.
+float heading_font_scale(const std::string& tag);
+
 void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_flow, Tab& tab, int li_index = -1, float parent_accumulated_right = 0.0f);
 void DrawSpinner(ImVec2 center, float radius, float thickness, const ImVec4& color);
 void DrawBackArrowIcon(ImVec2 center, ImU32 color, float thickness = 2.0f);
 void DrawForwardArrowIcon(ImVec2 center, ImU32 color, float thickness = 2.0f);
 void DrawReloadIcon(ImVec2 center, float radius, ImU32 color, float thickness = 2.0f);
 void DrawLockIcon(ImVec2 center, ImU32 color, bool closed, float size = 16.0f);
+void DrawInspectIcon(ImVec2 center, ImU32 color, float size = 16.0f);
+void DrawChevronRightIcon(ImVec2 center, ImU32 color, float size = 16.0f);
+void DrawBanIcon(ImVec2 center, ImU32 color, float size = 16.0f);
+void DrawScrollIcon(ImVec2 center, ImU32 color, float size = 16.0f);
+void DrawTriangleAlertIcon(ImVec2 center, ImU32 color, float size = 16.0f);
+void DrawCircleXIcon(ImVec2 center, ImU32 color, float size = 16.0f);

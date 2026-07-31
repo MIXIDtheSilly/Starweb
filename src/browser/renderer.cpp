@@ -6,6 +6,7 @@
 #include "theme.hpp"
 #include "media_player.hpp"
 #include "layout.hpp"
+#include "devtools.hpp"
 #include "../common/url_parser.hpp"
 #include <cmath>
 #include <cstring>
@@ -714,7 +715,16 @@ static float inline_text_width(const DomNode& node, float scale) {
 
 // Draws one inline text node with its tag decoration, leaving it as the last item so
 // the caller can chain the next sibling with SameLine.
-static void draw_inline_item(const DomNode& node, const CssStyle& merged, float scale, bool trim_leading) {
+static void draw_inline_item(const DomNode& node, const CssStyle& merged, float scale,
+                             bool trim_leading, int tab_id) {
+    // These never reach render_node, so the box they report is their own. Inline
+    // text takes no padding, hence the zero quad.
+    auto note = [&](ImVec2 mn, ImVec2 mx) {
+        if (devtools::capturing(tab_id)) {
+            devtools::note_box(tab_id, node.node_id, mn, mx, ImVec4(0, 0, 0, 0));
+        }
+    };
+
     std::string text = collapse_inline(node.text_content, trim_leading);
     if (text.empty()) { ImGui::Dummy(ImVec2(0.0f, 0.0f)); return; }
 
@@ -744,6 +754,7 @@ static void draw_inline_item(const DomNode& node, const CssStyle& merged, float 
         if (shrink) ImGui::SetWindowFontScale(scale);
         if (use_mono) ImGui::PopFont();
         ImGui::Dummy(ImVec2(sz.x, full_h));
+        note(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
         return;
     }
 
@@ -787,6 +798,7 @@ static void draw_inline_item(const DomNode& node, const CssStyle& merged, float 
 
     if (shrink) ImGui::SetWindowFontScale(scale);
     if (use_mono) ImGui::PopFont();
+    note(r_min, r_max);
 }
 
 // Inline flow: consecutive inline nodes share a line and wrap; block children break the
@@ -828,7 +840,7 @@ void render_flow_children(DomNode& parent, const CssStyle& merged, Tab& tab,
                 }
             }
             if (text_inline) {
-                draw_inline_item(child, merged, scale, !prev_inline);
+                draw_inline_item(child, merged, scale, !prev_inline, tab.id);
             } else {
                 bool child_flow = false;
                 render_node(child, merged, child_flow, tab, -1, right_offset);
@@ -907,6 +919,15 @@ bool is_positioned(const CssStyle& style) {
     return style.position == "absolute" || style.position == "fixed";
 }
 
+float heading_font_scale(const std::string& tag) {
+    if (tag == "h1") return 1.8f;
+    if (tag == "h2") return 1.4f;
+    if (tag == "h3") return 1.2f;
+    if (tag == "h4") return 1.1f;
+    if (tag == "h6") return 0.9f;
+    return 1.0f;
+}
+
 // Top-left for a positioned box, in screen coordinates. `right` and `bottom`
 // measure from the far edge of the viewport, which needs the box's own size, so
 // an element sized only by its content can anchor to the left and top only.
@@ -939,14 +960,25 @@ void render_flex_container(DomNode& node, const CssStyle& merged, Tab& tab, floa
     ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::SetWindowFontScale(1.0f); // measure children in absolute pixels
 
-    float content_w = merged.width > 0.0f ? merged.width
-                                          : ImGui::GetContentRegionAvail().x - right_offset;
+    // `width` is the box that gets painted, padding included, so the children lay
+    // out inside what is left of it. Handing them the full width instead put every
+    // padded flex container's contents through its own edge.
+    float content_w = merged.width > 0.0f
+                          ? merged.width - merged.padding_left - merged.padding_right
+                          : ImGui::GetContentRegionAvail().x - right_offset;
     if (content_w < 1.0f) content_w = 1.0f;
+
+    // Same for the cross axis, which Yoga reads off the style rather than the arg.
+    CssStyle flex_style = merged;
+    if (flex_style.height > 0.0f) {
+        flex_style.height = std::max(0.0f, flex_style.height - merged.padding_top
+                                                            - merged.padding_bottom);
+    }
 
     std::vector<DomNode*> kids;
     std::vector<FlexRect> rects;
     float total_w = 0.0f, total_h = 0.0f;
-    compute_flex_layout(node, merged, content_w, tab, kids, rects, total_w, total_h);
+    compute_flex_layout(node, flex_style, content_w, tab, kids, rects, total_w, total_h);
 
     for (size_t i = 0; i < kids.size(); ++i) {
         const FlexRect& r = rects[i];
@@ -962,7 +994,8 @@ void render_flex_container(DomNode& node, const CssStyle& merged, Tab& tab, floa
 
     ImGui::SetWindowFontScale(merged.font_size);
     ImGui::SetCursorScreenPos(origin);
-    ImGui::Dummy(ImVec2(merged.width > 0.0f ? merged.width : total_w, total_h));
+    // The content extent, not the box: render_node adds the padding back on.
+    ImGui::Dummy(ImVec2(merged.width > 0.0f ? content_w : total_w, total_h));
 }
 
 void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_flow, Tab& tab, int li_index, float parent_accumulated_right) {
@@ -973,6 +1006,10 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         std::string cleaned = collapse_whitespace(node.text_content);
         if (!cleaned.empty()) {
             ImGui::TextColored(parent_style.color, "%s", cleaned.c_str());
+            if (devtools::capturing(tab.id)) {
+                devtools::note_box(tab.id, node.node_id, ImGui::GetItemRectMin(),
+                                   ImGui::GetItemRectMax(), ImVec4(0, 0, 0, 0));
+            }
         }
         return;
     }
@@ -1007,13 +1044,15 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
     ImVec2 content_start = start_pos;
     float block_avail_w = -1.0f;
 
-    float base_font_scale = merged.font_size;
-    if (node.tag == "h1") base_font_scale *= 1.8f;
-    else if (node.tag == "h2") base_font_scale *= 1.4f;
-    else if (node.tag == "h3") base_font_scale *= 1.2f;
-    else if (node.tag == "h4") base_font_scale *= 1.1f;
-    else if (node.tag == "h5") base_font_scale *= 1.0f;
-    else if (node.tag == "h6") base_font_scale *= 0.9f;
+    // A form control draws its own frame and carries its padding inside it, so the
+    // cursor is never moved for one here and its box needs no trailing pad either.
+    const bool is_widget = (node.tag == "input" || node.tag == "textarea" ||
+                            node.tag == "select" || node.tag == "button");
+    // Padding as actually applied, left/top/right/bottom. Reported to the inspector,
+    // which has no way to derive it from the CSS: the branches below skip parts of it.
+    ImVec4 used_pad(0.0f, 0.0f, 0.0f, 0.0f);
+
+    float base_font_scale = merged.font_size * heading_font_scale(node.tag);
 
     if (base_font_scale != 1.0f) {
         ImGui::SetWindowFontScale(base_font_scale);
@@ -1041,20 +1080,54 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
         if (!is_inline_flow && merged.padding_top > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.padding_top);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.padding_left);
-        
+        used_pad = ImVec4(merged.padding_left, is_inline_flow ? 0.0f : merged.padding_top,
+                          merged.padding_right, merged.padding_bottom);
+
         splitter.Split(draw_list, 2);
         splitter.SetCurrentChannel(draw_list, 1);
     } else {
-        bool is_widget = (node.tag == "input" || node.tag == "textarea" || node.tag == "select" || node.tag == "button");
         if (!is_inline_flow && merged.margin_top > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.margin_top);
         if (merged.margin_left > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.margin_left);
+
+        content_start = ImGui::GetCursorScreenPos();
+        // Same block-fill as above. An element with no background needs it too,
+        // or the inspector's box only reaches as far as the text.
+        if (!is_inline) {
+            block_avail_w = ImGui::GetContentRegionAvail().x
+                          - (parent_accumulated_right + merged.margin_right);
+        }
+
         if (!is_widget && !is_inline_flow && merged.padding_top > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.padding_top);
         if (!is_widget && merged.padding_left > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.padding_left);
+
+        if (is_widget) {
+            // What the frame insets its own content by: InputStyleGuard's
+            // FramePadding, or ImGui's plus the button's fixed side gap. Symmetric,
+            // as FramePadding is, whatever the CSS asked for.
+            const float wx = node.tag == "button"
+                                 ? 18.0f
+                                 : (merged.padding_left > 0.0f ? merged.padding_left : kFieldPadX);
+            const float wy = node.tag == "button"
+                                 ? ImGui::GetStyle().FramePadding.y
+                                 : (merged.padding_top > 0.0f ? merged.padding_top : kFieldPadY);
+            used_pad = ImVec4(wx, wy, wx, wy);
+        } else {
+            used_pad = ImVec4(merged.padding_left, is_inline_flow ? 0.0f : merged.padding_top,
+                              merged.padding_right, merged.padding_bottom);
+        }
     }
 
     ImGui::BeginGroup();
 
     float child_accumulated_right = parent_accumulated_right + merged.margin_right + merged.padding_right;
+    // A box with a width of its own is what its children fill, not the window.
+    // Without this they measure against the viewport and paint straight through
+    // the edge of the box drawn around them. Never loosens an ancestor's limit.
+    if (merged.width > 0.0f) {
+        const float inner = std::max(0.0f, merged.width - used_pad.x - used_pad.z);
+        child_accumulated_right = std::max(child_accumulated_right,
+                                           ImGui::GetContentRegionAvail().x - inner);
+    }
     if (merged.display == "flex" && !node.children.empty()) {
         render_flex_container(node, merged, tab, child_accumulated_right);
     } else if (node.tag == "div") {
@@ -1126,8 +1199,9 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             if (node.tag != "span") ImGui::Spacing();
         }
     } else if (is_inline_text_tag(node.tag)) {
-        // inline tag rendered on its own (e.g. inside a table cell)
-        draw_inline_item(node, merged, base_font_scale, true);
+        // inline tag rendered on its own (e.g. inside a table cell). No tab id: this
+        // one came through render_node, which reports the fuller box itself below.
+        draw_inline_item(node, merged, base_font_scale, true, -1);
         bool child_inline_flow = true;
         for (auto& child : node.children) {
             if (child.tag == "#text") continue;
@@ -1255,7 +1329,8 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         ImGui::PushStyleColor(ImGuiCol_Border, merged.has_border_color ? merged.border_color : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
         
         std::string btn_id = cleaned_text + "##" + (node.id.empty() ? std::to_string((uintptr_t)&node) : node.id);
-        if (ImGui::Button(btn_id.c_str(), ImVec2(btn_width, btn_height))) {
+        if (ImGui::Button(btn_id.c_str(), ImVec2(btn_width, btn_height)) &&
+            !devtools::pick_active(tab.id)) {
             script_dispatch_click(tab.id, node.node_id);
         }
         
@@ -1314,7 +1389,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             min_pos.y = max_pos.y;
             ImGui::GetWindowDrawList()->AddLine(min_pos, max_pos, ImGui::ColorConvertFloat4ToU32(link_color));
             
-            if (ImGui::IsItemClicked()) {
+            if (ImGui::IsItemClicked() && !devtools::pick_active(tab.id)) {
                 std::string new_url = resolve_url(tab.current_url, node.href);
                 start_async_fetch(tab.id, new_url);
             }
@@ -1479,7 +1554,8 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             }
             float w = merged.width  > 0.0f ? merged.width  : 0.0f;
             float h = merged.height > 0.0f ? merged.height : 0.0f;
-            if (Chrome::Button(label, input_label, ImVec2(w, h))) {
+            if (Chrome::Button(label, input_label, ImVec2(w, h)) &&
+                !devtools::pick_active(tab.id)) {
                 if (type == "reset") {
                     reset_form_controls(tab.page_dom);
                     tab.radio_selection.clear();
@@ -2126,20 +2202,34 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
     ImGui::EndGroup();
 
-    ImVec2 min_p = draw_bg ? content_start : start_pos;
+    // The border box: padding included, margins not. The border itself is stroked
+    // on this edge rather than outside it, so it adds nothing.
+    ImVec2 min_p = content_start;
     ImVec2 max_p = ImGui::GetItemRectMax();
 
-    max_p.x += merged.padding_right;
-    max_p.y += merged.padding_bottom;
+    // Trailing padding, which the group cannot have measured. A widget's frame
+    // already contains it, and adding it again would report a box wider and taller
+    // than the control that was drawn.
+    if (!is_widget) {
+        max_p.x += merged.padding_right;
+        max_p.y += merged.padding_bottom;
+    }
 
     if (merged.width > 0.0f) max_p.x = min_p.x + merged.width;
     else if (block_avail_w > 0.0f) max_p.x = std::max(max_p.x, min_p.x + block_avail_w);
     if (merged.height > 0.0f) max_p.y = min_p.y + merged.height;
 
+    // Handed to the inspector rather than recomputed there, so it gets the box
+    // the page actually painted, corrections and all.
+    if (devtools::capturing(tab.id)) {
+        devtools::note_box(tab.id, node.node_id, min_p, max_p, used_pad);
+    }
+
     // Clicks on a box that registered a handler. <button> and the form widgets
     // report their own presses; this is what lets a whole row or card be the
     // target rather than just the run of text inside it.
-    if (!is_widget_tag(node.tag) && script_has_click_handler(tab.id, node.node_id)) {
+    if (!devtools::pick_active(tab.id) && !is_widget_tag(node.tag) &&
+        script_has_click_handler(tab.id, node.node_id)) {
         if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(min_p, max_p)) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -2169,7 +2259,6 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         ImGui::SetCursorScreenPos(ImVec2(start_pos.x, max_p.y + merged.margin_bottom));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     } else {
-        bool is_widget = (node.tag == "input" || node.tag == "textarea" || node.tag == "select" || node.tag == "button");
         if (!is_inline && !is_widget && merged.padding_bottom > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.padding_bottom);
         if (!is_inline && merged.margin_bottom > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.margin_bottom);
         // For inline elements, leave the group as the last item so the next inline
@@ -2237,6 +2326,121 @@ void DrawLockIcon(ImVec2 center, ImU32 color, bool closed, float size) {
     draw_list->PathArcTo(P(12, 7), 5.0f * s, PI, closed ? 2.0f * PI : 1.94f * PI, 20);
     if (closed) draw_list->PathLineTo(P(17, 11));
     draw_list->PathStroke(color, 0, thickness);
+}
+
+// Lucide icons, rasterized from their own source rather than retraced into
+// ImDrawList calls: nanosvg solves the arcs and strokes the round caps and joins,
+// which is what these were getting wrong at 14px.
+namespace {
+
+// White, so AddImage's tint carries the colour.
+#define LUCIDE_SVG(body)                                                       \
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" "     \
+    "viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#ffffff\" stroke-width=\"2\" "\
+    "stroke-linecap=\"round\" stroke-linejoin=\"round\">" body "</svg>"
+
+const char* const kBanSvg = LUCIDE_SVG(
+    "<circle cx=\"12\" cy=\"12\" r=\"10\"/>"
+    "<path d=\"M4.929 4.929 19.07 19.071\"/>");
+
+const char* const kCircleXSvg = LUCIDE_SVG(
+    "<circle cx=\"12\" cy=\"12\" r=\"10\"/>"
+    "<path d=\"m15 9-6 6\"/><path d=\"m9 9 6 6\"/>");
+
+const char* const kTriangleAlertSvg = LUCIDE_SVG(
+    "<path d=\"m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3\"/>"
+    "<path d=\"M12 9v4\"/><path d=\"M12 17h.01\"/>");
+
+const char* const kScrollSvg = LUCIDE_SVG(
+    "<path d=\"M19 17V5a2 2 0 0 0-2-2H4\"/>"
+    "<path d=\"M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0"
+    "V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3\"/>");
+
+const char* const kChevronRightSvg = LUCIDE_SVG("<path d=\"m9 18 6-6-6-6\"/>");
+
+#undef LUCIDE_SVG
+
+// Rasterized at the size it lands on the framebuffer, so the texture maps one
+// texel per device pixel. The centre is rounded for the same reason.
+void draw_svg_icon(const char* svg, ImVec2 center, ImU32 color, float size) {
+    const float dpr = ImGui::GetIO().DisplayFramebufferScale.y;
+    const int px = (int)std::lround(size * (dpr > 0.0f ? dpr : 1.0f));
+    if (px <= 0) return;
+    unsigned int tex = svg_icon_texture(svg, px);
+    if (!tex) return;
+    const float half = size * 0.5f;
+    const ImVec2 c(std::round(center.x), std::round(center.y));
+    ImGui::GetWindowDrawList()->AddImage(
+        (ImTextureID)(intptr_t)tex, ImVec2(c.x - half, c.y - half),
+        ImVec2(c.x + half, c.y + half), ImVec2(0, 0), ImVec2(1, 1), color);
+}
+
+}  // namespace
+
+// ImGui lines are butt-capped where Lucide's are round, so a disc at each end is
+// what keeps a 1-unit dash from reading as a sliver.
+static void RoundStroke(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 color, float thickness) {
+    dl->AddLine(a, b, color, thickness);
+    dl->AddCircleFilled(a, thickness * 0.5f, color);
+    dl->AddCircleFilled(b, thickness * 0.5f, color);
+}
+
+// Lucide "square-dashed-mouse-pointer": three rounded corners and six dashes,
+// with the cursor breaking out of the fourth.
+void DrawInspectIcon(ImVec2 center, ImU32 color, float size) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float PI = 3.14159265f;
+    const float s = size / 24.0f;
+    const float th = 2.0f * s;
+    auto P = [&](float x, float y) {
+        return ImVec2(center.x + (x - 12.0f) * s, center.y + (y - 12.0f) * s);
+    };
+
+    // The r=2 corners: M5 3 a2 2 0 0 0-2 2, and its two mirrors.
+    const float arcs[][4] = {
+        {5.0f,  5.0f,  -PI * 0.5f, -PI},    // top-left
+        {19.0f, 5.0f,  -PI * 0.5f, 0.0f},   // top-right
+        {5.0f,  19.0f,  PI * 0.5f,  PI},    // bottom-left
+    };
+    for (const auto& a : arcs) {
+        dl->PathClear();
+        dl->PathArcTo(P(a[0], a[1]), 2.0f * s, a[2], a[3], 12);
+        dl->PathStroke(color, 0, th);
+    }
+
+    const float dashes[][4] = {
+        { 9,  3, 10,  3}, {14,  3, 15,  3},
+        { 3,  9,  3, 10}, { 3, 14,  3, 15},
+        {21,  9, 21, 11}, { 9, 21, 11, 21},
+    };
+    for (const auto& d : dashes) RoundStroke(dl, P(d[0], d[1]), P(d[2], d[3]), color, th);
+
+    // Outlined, not filled: the source path is stroked with fill="none".
+    const ImVec2 pointer[] = {
+        P(12.03f, 12.68f), P(12.68f, 12.03f), P(21.68f, 15.53f), P(21.65f, 16.48f),
+        P(18.20f, 17.55f), P(17.54f, 18.21f), P(16.48f, 21.65f), P(15.53f, 21.68f),
+    };
+    dl->AddPolyline(pointer, 8, color, ImDrawFlags_Closed, th);
+}
+
+void DrawChevronRightIcon(ImVec2 center, ImU32 color, float size) {
+    draw_svg_icon(kChevronRightSvg, center, color, size);
+}
+
+void DrawBanIcon(ImVec2 center, ImU32 color, float size) {
+    draw_svg_icon(kBanSvg, center, color, size);
+}
+
+void DrawScrollIcon(ImVec2 center, ImU32 color, float size) {
+    draw_svg_icon(kScrollSvg, center, color, size);
+}
+
+void DrawTriangleAlertIcon(ImVec2 center, ImU32 color, float size) {
+    draw_svg_icon(kTriangleAlertSvg, center, color, size);
+}
+
+void DrawCircleXIcon(ImVec2 center, ImU32 color, float size) {
+    draw_svg_icon(kCircleXSvg, center, color, size);
 }
 
 void DrawReloadIcon(ImVec2 center, float radius, ImU32 color, float thickness) {

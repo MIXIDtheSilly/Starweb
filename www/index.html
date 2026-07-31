@@ -1,9 +1,118 @@
 <!DOCTYPE html>
 <html>
-    <head>
-        <title>Example</title>
-    </head>
-    <body>
-        <img src="cog.svg" style="height: 30px; width: 30px;">
-    </body>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Starmap Homepage</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1 class="title">Welcome to StarWeb</h1>
+            <p class="subtitle"> testing testing stardance bla bla yey</p>
+        </div>
+
+        <h2>About the Project</h2>
+        <p class="desc">
+            StarWeb is my attempt at building an internet of my own. A custom protocol, a custom URL scheme, and a
+            client and server that communicate using them.I put together STWP, my own protocol with request and response
+            parsing, structured similarly to HTTP but built from scratch.
+        </p>
+
+        <h2>form test</h2>
+        <div>
+            <p class="label">login name</p>
+            <input type="text" class="input-field" placeholder="Enter your name..." id="name-input">
+
+            <p class="label">login password</p>
+            <textarea class="textarea-field" placeholder="Type your password here..." id="msg-text"></textarea>
+
+            <button class="btn-primary" onclick="alert('Thank you for your feedback!')">Login</button>
+        </div>
+
+        <h2>Text Support Test</h2>
+        <div>
+            <p class="desc">
+                Click below to view a non-HTML plain text document:
+            </p>
+            <p><a href="/test.txt">View test.txt (Plain Text File)</a></p>
+        </div>
+
+        <h2>Image Support Test</h2>
+        <div>
+            <p class="desc">
+                Below is an embedded image (HTML <code>&lt;img&gt;</code> tag):
+            </p>
+            <p><img src="/cat.jpg" style="width: 200px; height: 128;"></p>
+            <p class="desc">
+                Click below to view the image as a standalone file:
+            </p>
+            <p><a href="/cat.jpg">View cat.jpg (Image File)</a></p>
+        </div>
+
+        <h2>Video and Audio Support Test</h2>
+        <div>
+            <p class="desc">
+                Below is an embedded video with controls and autoplay:
+            </p>
+            <p><video src="isaac.mov" controls style="width: 500; height: 1000;"></video></p>
+
+            <p class="desc">
+                Below is an embedded audio player with controls:
+            </p>
+            <p><audio src="Sorry_icannot.mp3" controls style="width: 300;"></audio></p>
+
+            <p class="desc">
+                Click below to view the video file directly (standalone media player):
+            </p>
+            <p><a href="/isaac.mov">View isaac.mov (Video File)</a></p>
+        </div>
+
+        <h2>Rich Text Formatting Test</h2>
+        <div>
+            <p class="desc">
+                This browser now renders <b>bold text</b>, <i>italic text</i>,
+                <u>underlined text</u>, <s>strikethrough</s>, <mark>highlighted text</mark>,
+                and inline <code>code snippets</code>. You can press <kbd>Ctrl</kbd> +
+                <kbd>C</kbd> to copy. Water is H<sub>2</sub>O and E = mc<sup>2</sup>.
+                Here is some <small>small print</small> and a
+                <strong>strong point</strong> worth <em>emphasizing</em>.
+            </p>
+            <blockquote>
+                "The best way to predict the future is to invent it."
+            </blockquote>
+        </div>
+
+        <h2>Table Support Test</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Feature</th>
+                    <th>Tag</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Bold</td>
+                    <td>&lt;b&gt;</td>
+                    <td>Supported</td>
+                </tr>
+                <tr>
+                    <td>Blockquote</td>
+                    <td>&lt;blockquote&gt;</td>
+                    <td>Supported</td>
+                </tr>
+                <tr>
+                    <td>Tables</td>
+                    <td>&lt;table&gt;</td>
+                    <td>Supported</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</body>
+
 </html>

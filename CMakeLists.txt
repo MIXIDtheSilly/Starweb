@@ -91,6 +91,7 @@ set(BROWSER_SRCS
     ${SRC}/browser/media_source.cpp
     ${SRC}/browser/renderer.cpp
     ${SRC}/browser/layout.cpp
+    ${SRC}/browser/devtools.cpp
     ${SRC}/browser/script.cpp
     ${SRC}/browser/script_fetch.cpp
     ${SRC}/common/tls.cpp

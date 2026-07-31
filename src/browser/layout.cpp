@@ -46,15 +46,6 @@ struct MeasureCtx {
     Tab* tab;
 };
 
-static float header_scale(const std::string& tag) {
-    if (tag == "h1") return 1.8f;
-    if (tag == "h2") return 1.4f;
-    if (tag == "h3") return 1.2f;
-    if (tag == "h4") return 1.1f;
-    if (tag == "h6") return 0.9f;
-    return 1.0f;
-}
-
 static bool is_renderable(const std::string& tag) {
     return !(tag == "script" || tag == "style" || tag == "head" ||
              tag == "title" || tag == "meta" || tag == "option");
@@ -134,7 +125,7 @@ static ImVec2 measure_intrinsic(const DomNode& node, const CssStyle& merged, flo
     }
 
     if (is_text_tag(tag) && !text.empty() && !has_elem_child) {
-        float scale = merged.font_size * header_scale(tag);
+        float scale = merged.font_size * heading_font_scale(tag);
         if (tag == "small" || tag == "sub" || tag == "sup") scale = merged.font_size * 0.8f;
         bool mono = (tag == "code" || tag == "kbd" || tag == "samp" || tag == "var") && mono_font != nullptr;
         ImFont* fam = mono ? mono_font : font_for_family(merged.font_family);

@@ -200,4 +200,5 @@ struct Tab {
     float vp_slack = 0.0f;
     bool  vp_fit_used = false;
     float vp_last_h = 0.0f;
+    float vp_last_w = 0.0f;
 };
