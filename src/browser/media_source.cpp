@@ -3,6 +3,8 @@
 #include "globals.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <sstream>
 
