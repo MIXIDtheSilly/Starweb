@@ -2,10 +2,10 @@
 #include "imgui.h"
 
 namespace Theme {
-    constexpr ImVec4 window_bg               = ImVec4(0.11f, 0.11f, 0.11f, 1.00f);
-    constexpr ImVec4 child_bg                = ImVec4(0.15f, 0.15f, 0.15f, 1.00f);
-    constexpr ImVec4 popup_bg                = ImVec4(0.15f, 0.15f, 0.15f, 0.98f);
-    constexpr ImVec4 border                  = ImVec4(0.30f, 0.30f, 0.30f, 0.40f);
+    constexpr ImVec4 window_bg               = ImVec4(0.075f, 0.075f, 0.090f, 1.00f);
+    constexpr ImVec4 child_bg                = ImVec4(0.106f, 0.106f, 0.125f, 1.00f);
+    constexpr ImVec4 popup_bg                = ImVec4(0.094f, 0.094f, 0.118f, 0.98f);
+    constexpr ImVec4 border                  = ImVec4(0.24f, 0.20f, 0.51f, 0.55f);
     
     constexpr ImVec4 frame_bg                = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
     constexpr ImVec4 frame_bg_hovered        = ImVec4(0.24f, 0.24f, 0.24f, 1.00f);
@@ -39,41 +39,65 @@ namespace Theme {
     constexpr ImVec4 btn_active_highlight    = ImVec4(0.70f, 0.55f, 0.90f, 0.35f);
     
     constexpr ImVec4 spinner                 = ImVec4(0.75f, 0.60f, 0.95f, 1.00f);
-    constexpr ImVec4 omnibox_bg              = ImVec4(0.11f, 0.11f, 0.11f, 1.00f);
+    // The omnibox is a hole in the chrome, not a raised field: it sits below the
+    // sheet rather than on it, and the outline says where it is.
+    constexpr ImVec4 omnibox_bg              = ImVec4(0.043f, 0.043f, 0.055f, 1.00f);
 
-    // Devtools dock is chrome, not page, so it follows the tab strip's palette.
+    // Devtools dock. It is chrome, not page, so it borrows the tab strip's palette
+    // rather than the viewport's.
     constexpr ImVec4 dt_text                 = ImVec4(0.94f, 0.94f, 0.94f, 1.00f);
     constexpr ImVec4 dt_dim                  = ImVec4(0.67f, 0.67f, 0.70f, 1.00f);
-    constexpr ImVec4 dt_accent               = ImVec4(0.73f, 0.55f, 0.96f, 1.00f);
-    constexpr ImVec4 dt_field_bg             = ImVec4(0.11f, 0.11f, 0.11f, 1.00f);
+    constexpr ImVec4 dt_accent               = ImVec4(0.55f, 0.47f, 0.96f, 1.00f);
+    constexpr ImVec4 dt_field_bg             = ImVec4(0.043f, 0.043f, 0.055f, 1.00f);
 
     #define IM_COL32_THEME(r,g,b,a) (((ImU32)(a)<<24)|((ImU32)(b)<<16)|((ImU32)(g)<<8)|((ImU32)(r)))
-    
-    constexpr ImU32 bar_bg                   = IM_COL32_THEME(24, 24, 24, 255);
-    constexpr ImU32 toolbar_bg               = IM_COL32_THEME(40, 40, 40, 255);
-    constexpr ImU32 viewport_bg              = IM_COL32_THEME(30, 30, 30, 255);
-    
-    constexpr ImU32 tab_active_bg            = IM_COL32_THEME(40, 40, 40, 255);
-    constexpr ImU32 tab_hover_bg             = IM_COL32_THEME(50, 50, 50, 255);
-    constexpr ImU32 tab_inactive_bg          = IM_COL32_THEME(28, 28, 28, 255);
-    constexpr ImU32 tab_accent_stripe        = IM_COL32_THEME(186, 140, 245, 255);
-    constexpr ImU32 tab_divider              = IM_COL32_THEME(120, 120, 120, 255);
-    
-    constexpr ImU32 plus_bg_normal           = IM_COL32_THEME(40, 40, 40, 255);
-    constexpr ImU32 plus_bg_hover            = IM_COL32_THEME(60, 60, 60, 255);
-    constexpr ImU32 plus_bg_active           = IM_COL32_THEME(75, 75, 75, 255);
-    constexpr ImU32 plus_color_normal        = IM_COL32_THEME(180, 180, 180, 255);
-    constexpr ImU32 plus_color_hover         = IM_COL32_THEME(240, 240, 240, 255);
-    
-    constexpr ImU32 border_separator         = IM_COL32_THEME(80, 80, 80, 255);
 
-    // The same three tones the window chrome uses: strip, raised tab, recessed pane.
-    constexpr ImU32 dt_bg                    = IM_COL32_THEME(24, 24, 24, 255);
-    constexpr ImU32 dt_strip_bg              = IM_COL32_THEME(28, 28, 28, 255);
-    constexpr ImU32 dt_tab_active_bg         = IM_COL32_THEME(40, 40, 40, 255);
-    constexpr ImU32 dt_tab_hover_bg          = IM_COL32_THEME(50, 50, 50, 255);
-    constexpr ImU32 dt_surface_bg            = IM_COL32_THEME(32, 32, 32, 255);
-    constexpr ImU32 dt_hairline              = IM_COL32_THEME(58, 58, 58, 255);
+    // Chrome: one flat sheet, strip and toolbar sharing the window's own colour.
+    // Deliberately not pure black, which read as a hole rather than a surface.
+    constexpr ImU32 bar_bg                   = IM_COL32_THEME(19, 19, 23, 255);
+    constexpr ImU32 toolbar_bg               = IM_COL32_THEME(19, 19, 23, 255);
+    constexpr ImU32 viewport_bg              = IM_COL32_THEME(27, 27, 32, 255);
+
+    // Border ramp: one hue at three strengths (dim/mid/bright). A control moves
+    // up the ramp instead of filling: dim at rest, mid selected, bright focused.
+    constexpr ImU32 outline_dim              = IM_COL32_THEME(27, 23, 61, 255);   // #1B173D
+    constexpr ImU32 outline_mid              = IM_COL32_THEME(60, 51, 129, 255);  // #3C3381
+    constexpr ImU32 outline_bright           = IM_COL32_THEME(73, 55, 219, 255);  // #4937DB
+
+    // Tabs
+    // An inactive tab has no box at all, so hover is the only fill in the strip.
+    constexpr ImU32 tab_hover_bg             = IM_COL32_THEME(33, 33, 39, 255);
+    constexpr ImU32 tab_text_on              = IM_COL32_THEME(214, 212, 219, 255); // #D6D4DB
+    constexpr ImU32 tab_text_off             = IM_COL32_THEME(128, 126, 134, 255);
+    constexpr ImU32 tab_close_hover_bg       = IM_COL32_THEME(60, 51, 129, 110);
+
+    constexpr ImU32 plus_bg_hover            = IM_COL32_THEME(33, 33, 39, 255);
+    constexpr ImU32 plus_bg_active           = IM_COL32_THEME(45, 43, 64, 255);
+    constexpr ImU32 plus_color_normal        = IM_COL32_THEME(214, 212, 219, 255);
+    constexpr ImU32 plus_color_hover         = IM_COL32_THEME(240, 240, 240, 255);
+
+    // Toolbar
+    constexpr ImU32 icon_normal              = IM_COL32_THEME(214, 212, 219, 255);
+    constexpr ImU32 icon_disabled            = IM_COL32_THEME(70, 70, 78, 255);
+    constexpr ImU32 lock_secure              = IM_COL32_THEME(113, 205, 132, 255); // #71CD84
+    constexpr ImU32 lock_insecure            = IM_COL32_THEME(229, 115, 115, 255);
+
+    constexpr ImU32 border_separator         = IM_COL32_THEME(38, 34, 66, 255);
+    // Kept for the devtools panel tabs, which still wear a stripe.
+    constexpr ImU32 tab_accent_stripe        = outline_bright;
+
+    // Devtools. The dock sits inside the page panel's inset, so it starts from
+    // the panel's own black rather than the old grey and separates by outline.
+    constexpr ImU32 dt_bg                    = IM_COL32_THEME(27, 27, 32, 255);
+    constexpr ImU32 dt_strip_bg              = IM_COL32_THEME(19, 19, 23, 255);
+    constexpr ImU32 dt_tab_active_bg         = IM_COL32_THEME(36, 34, 54, 255);
+    constexpr ImU32 dt_tab_hover_bg          = IM_COL32_THEME(37, 37, 44, 255);
+    constexpr ImU32 dt_surface_bg            = IM_COL32_THEME(33, 33, 39, 255);
+    // The strip behind a control row. A recessed field needs a *lighter* band
+    // behind it to read as recessed, so this sits above both the dock's own
+    // background and the fields it frames.
+    constexpr ImU32 dt_band_bg               = IM_COL32_THEME(40, 40, 47, 255);
+    constexpr ImU32 dt_hairline              = IM_COL32_THEME(38, 34, 66, 255);
     constexpr ImU32 dt_text_on               = IM_COL32_THEME(240, 240, 240, 255);
-    constexpr ImU32 dt_text_off              = IM_COL32_THEME(170, 170, 180, 255);
+    constexpr ImU32 dt_text_off              = IM_COL32_THEME(140, 138, 150, 255);
 }

@@ -154,15 +154,12 @@ def lua_line(var: str, name: str) -> str:
             f"half = {_fmt(d['half'])}, w = {_fmt(d['w'])}, h = {_fmt(d['h'])} }}\n")
 
 
-# --- lucide icons -----------------------------------------------------------
+# lucide icons
 #
 # The decorative shapes above are single open curves written by Figma, and the
 # reader for them only ever had to handle M/C. Icons are drawn by hand against a
-# 24x24 grid and use the rest of the path language -- relative commands, H/V,
-# elliptical arcs, closepath -- plus <circle> elements, so they get a full
-# reader. Each icon flattens to a list of subpaths in grid units, which is what
-# the page strokes; a closed subpath repeats its first point at the end so the
-# renderer joins the seam.
+# 24x24 grid and use the rest of the path language (relative commands, H/V,
+# elliptical arcs, closepath) plus <circle> elements, so they get a full reader.
 
 ICONS = ASSETS / "icons"
 
@@ -356,6 +353,7 @@ def icon_subpaths(name: str) -> list[list[tuple[float, float]]]:
     return out
 
 
+# Names the live search dropdowns can still pick at runtime.
 ICON_NAMES = ("house", "globe", "chart-pie", "chevron-right")
 
 

@@ -515,6 +515,8 @@ def test_hero_box_does_not_touch_the_sidebar_widget(session):
 
 
 def test_quick_search_dropdown_present_on_the_domain_and_domain_analytics_pages(session):
+    # domain_page and domain_analytics_page did not fetch the full domain list
+    # before this feature; the dropdown needs it on every shell()-wrapped page.
     post("/api/domain/add", {"token": session, "domain": "mysite"})
     res = get(f"/domain/mysite.{ZONE}?t={session}")
     assert res.status_code == 200 and 'id="qdrop"' in res.text

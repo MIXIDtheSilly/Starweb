@@ -843,10 +843,8 @@ void append_value(lua_State* L, int idx, int depth, std::string& out) {
             while (lua_next(L, idx) != 0) {
                 if (count >= 50) { out += " ..."; lua_pop(L, 2); break; }
                 out += count ? ", " : " ";
-                // On a copy: formatting a number key converts it in place, and
-                // lua_next needs the original back.
-                lua_pushvalue(L, -2);
-                append_value(L, -1, 0, out);
+                lua_pushvalue(L, -2);  // formatting a number converts it in place,
+                append_value(L, -1, 0, out);  // which would break lua_next's key
                 lua_pop(L, 1);
                 out += " = ";
                 append_value(L, -1, depth - 1, out);

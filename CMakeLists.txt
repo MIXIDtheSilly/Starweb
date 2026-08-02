@@ -90,6 +90,7 @@ set(BROWSER_SRCS
     ${SRC}/browser/fetcher.cpp
     ${SRC}/browser/media_source.cpp
     ${SRC}/browser/renderer.cpp
+    ${SRC}/browser/icons.cpp
     ${SRC}/browser/layout.cpp
     ${SRC}/browser/devtools.cpp
     ${SRC}/browser/script.cpp

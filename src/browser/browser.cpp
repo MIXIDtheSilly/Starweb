@@ -9,7 +9,6 @@
 #include <cctype>
 #include <cstring>
 #include <unordered_map>
-#include <map>
 #include <cmath>
 #include <chrono>
 
@@ -55,6 +54,41 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+
+// Window chrome metrics, halved from a design drawn at 2048 wide against this
+// window's 1024 logical default. Logical pixels; the chrome is a fixed frame.
+namespace Trim {
+    constexpr float kStripH        = 40.0f;   // tab strip
+    constexpr float kToolbarH      = 40.0f;
+    // The traffic lights own the left of the strip; tabs start clear of them.
+    constexpr float kTabsX         = 85.0f;
+    constexpr float kTabMaxW       = 175.0f;
+    constexpr float kTabMinW       = 46.0f;
+    constexpr float kTabH          = 29.0f;   // the active tab's outline, inset in the strip
+    constexpr float kTabRounding   = 4.5f;
+    constexpr float kFavicon       = 14.0f;
+    constexpr float kTabPadX       = 8.0f;    // favicon's left inset within the tab
+    constexpr float kTabGapX       = 8.0f;    // favicon to label
+    constexpr float kCloseBox      = 16.0f;   // Lucide viewBox; the glyph is half of it
+    constexpr float kCloseInset    = 14.5f;   // from the tab's right edge to the X's centre
+    constexpr float kPlusSize      = 24.0f;
+    constexpr float kPlusGap       = 10.5f;  // last tab's edge to the + button
+    constexpr float kPlusGlyph     = 12.0f;
+    constexpr float kIcon          = 16.0f;   // toolbar Lucide viewBox
+    constexpr float kIconArrow     = 21.0f;   // smaller glyph in a bigger viewBox, to match rotate-cw/lock
+    constexpr float kIconStroke    = 1.25f;   // the design strokes thinner than Lucide's 2/24
+    constexpr float kIconStep      = 31.0f;   // centre to centre along the toolbar
+    constexpr float kIconFirstX    = 22.5f;
+    constexpr float kOmniboxX      = 139.5f;
+    constexpr float kOmniboxH      = 28.0f;
+    constexpr float kOmniboxRound  = 7.0f;
+    constexpr float kOmniboxStroke = 2.0f;
+    // The page is a panel floating on the chrome, not a region of it.
+    constexpr float kPageInset     = 7.0f;
+    constexpr float kPageTopGap    = 8.0f;
+    constexpr float kPageRounding  = 8.0f;
+    constexpr float kWindowRound   = 15.0f;
+}
 
 static std::unordered_map<int, std::unique_ptr<ScriptEngine>> g_script_engines;
 
@@ -329,33 +363,6 @@ static bool LoadSvgTextureFromMemory(const unsigned char* image_data, int image_
     return true;
 }
 
-// UI icons come from their own Lucide source, rasterized at the exact device size
-// they are drawn at so the result is texel-for-pixel. Keyed on the literal's
-// address: the sources are string literals with static storage.
-unsigned int svg_icon_texture(const char* svg, int px) {
-    static std::map<std::pair<const char*, int>, unsigned int> cache;
-    auto key = std::make_pair(svg, px);
-    auto it = cache.find(key);
-    if (it != cache.end()) return it->second;
-
-    unsigned int tex = 0;
-    std::vector<char> buf(svg, svg + std::strlen(svg) + 1);
-    if (NSVGimage* image = nsvgParse(buf.data(), "px", 96.0f)) {
-        if (image->width > 0.0f && image->height > 0.0f) {
-            if (NSVGrasterizer* rast = nsvgCreateRasterizer()) {
-                std::vector<unsigned char> pixels((size_t)px * (size_t)px * 4);
-                nsvgRasterize(rast, image, 0.0f, 0.0f, px / image->width,
-                              pixels.data(), px, px, px * 4);
-                nsvgDeleteRasterizer(rast);
-                upload_rgba_texture(pixels.data(), px, px, &tex);
-            }
-        }
-        nsvgDelete(image);
-    }
-    cache[key] = tex;
-    return tex;
-}
-
 bool LoadTextureFromMemory(const unsigned char* image_data, int image_size, unsigned int* out_texture, int* out_width, int* out_height) {
     if (looks_like_svg(image_data, image_size) &&
         LoadSvgTextureFromMemory(image_data, image_size, out_texture, out_width, out_height)) {
@@ -502,11 +509,13 @@ int main() {
     ImGui::StyleColorsDark();
 
     auto& style = ImGui::GetStyle();
-    style.WindowRounding = 8.0f;
+    style.WindowRounding = Trim::kWindowRound;
     style.FrameRounding = 6.0f;
     style.GrabRounding = 6.0f;
     style.PopupRounding = 6.0f;
-    style.ChildRounding = 6.0f;
+    // The page panel's radius: the devtools footer band reads this to take the
+    // dock's bottom corner with it.
+    style.ChildRounding = Trim::kPageRounding;
 
     style.Colors[ImGuiCol_WindowBg] = Theme::window_bg;
     style.Colors[ImGuiCol_ChildBg] = Theme::child_bg;
@@ -526,6 +535,12 @@ int main() {
     style.Colors[ImGuiCol_ButtonHovered] = Theme::button_hovered;
     style.Colors[ImGuiCol_ButtonActive] = Theme::button_active;
 
+    // The scrollbar floats on the page instead of running in a channel of its
+    // own: no rail behind the grab, so nothing paints a strip down the page's
+    // right edge. The grab is a thin pill and the only part still drawn.
+    style.ScrollbarSize = 10.0f;
+    style.ScrollbarRounding = 5.0f;
+    style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
     style.Colors[ImGuiCol_ScrollbarGrab] = Theme::scrollbar_grab;
     style.Colors[ImGuiCol_ScrollbarGrabHovered] = Theme::scrollbar_grab_hovered;
     style.Colors[ImGuiCol_ScrollbarGrabActive] = Theme::scrollbar_grab_active;
@@ -554,7 +569,9 @@ int main() {
     int shot_countdown = shot_path ? 240 : -1;
     tabs.push_back(initial_tab);
     active_tab_idx = 0;
-    // A headless run takes no keys, so the panel name comes from the environment.
+    // Keys can't be injected into a headless run, so this is the only way a
+    // screenshot can capture the devtools panel itself. The value names the panel
+    // to open on.
     if (const char* dt = std::getenv("STARWEB_DEVTOOLS")) {
         devtools::set_open(initial_tab.id, true);
         devtools::set_panel(initial_tab.id, dt);
@@ -599,6 +616,22 @@ int main() {
                     tab.active_players.clear();
 
                     if (tab.active_page.success) {
+                        // Replaced only once the new one has decoded, so a page
+                        // without an icon does not blank a tab mid-navigation.
+                        if (!tab.active_page.favicon_bytes.empty()) {
+                            TextureInfo fav;
+                            if (LoadTextureFromMemory(
+                                    (const unsigned char*)tab.active_page.favicon_bytes.data(),
+                                    (int)tab.active_page.favicon_bytes.size(),
+                                    &fav.id, &fav.width, &fav.height)) {
+                                if (tab.favicon.id != 0) glDeleteTextures(1, &tab.favicon.id);
+                                tab.favicon = fav;
+                            }
+                        } else if (tab.favicon.id != 0) {
+                            glDeleteTextures(1, &tab.favicon.id);
+                            tab.favicon = TextureInfo{};
+                        }
+
                         for (const auto& [url, bytes] : tab.active_page.fetched_images) {
                             TextureInfo tex;
                             if (LoadTextureFromMemory(
@@ -628,6 +661,8 @@ int main() {
                         }
                         
                         run_page_scripts(tab);
+                        // Dev hook, alongside STARWEB_DEVTOOLS: preselects an
+                        // element so a headless shot can capture the inspector.
                         if (const char* sel = std::getenv("STARWEB_DEVTOOLS_SELECT")) {
                             devtools::select_node(tab, sel);
                         }
@@ -835,17 +870,24 @@ int main() {
 
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y));
+        // No padding or border on the shell; the page panel insets itself, and a
+        // border would trace the rounded sheet's corner. Popped right after Begin.
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
         ImGui::Begin("StarmapWorkspace", nullptr,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
-        
-        float tab_height = 34.0f;
-        float max_tab_width = 180.0f;
-        float min_tab_width = 36.0f;
-        
+        ImGui::PopStyleVar(2);
+
+        float tab_height = Trim::kStripH;
+        float max_tab_width = Trim::kTabMaxW;
+        float min_tab_width = Trim::kTabMinW;
+
         float window_avail_width = ImGui::GetContentRegionAvail().x;
-        float avail_w = window_avail_width - 140.0f; 
+        // What is left for tabs once the traffic lights and the + button have
+        // taken theirs.
+        float avail_w = window_avail_width - Trim::kTabsX - Trim::kPlusSize - 24.0f;
         float tab_width = avail_w / tabs.size();
         if (tab_width > max_tab_width) tab_width = max_tab_width;
         if (tab_width < min_tab_width) tab_width = min_tab_width;
@@ -855,18 +897,26 @@ int main() {
         
         ImVec2 bar_min = cursor_pos;
         ImVec2 bar_max = ImVec2(bar_min.x + window_avail_width, bar_min.y + tab_height);
-        draw_list->AddRectFilled(bar_min, bar_max, Theme::bar_bg);
+        // The strip is the top of the window, so it carries the window's own
+        // radius; filled square it painted a sharp corner over the rounded sheet
+        // underneath and squared off the whole top edge.
+        draw_list->AddRectFilled(bar_min, bar_max, Theme::bar_bg,
+                                 Trim::kWindowRound, ImDrawFlags_RoundCornersTop);
 
         ImVec2 tl_pos = cursor_pos;
         ImVec2 mouse_pos = ImGui::GetIO().MousePos;
         bool mouse_clicked = ImGui::IsMouseClicked(0);
         
-        bool red_hovered = (mouse_pos.x >= tl_pos.x + 12.0f && mouse_pos.x < tl_pos.x + 28.0f &&
-                            mouse_pos.y >= tl_pos.y + 9.0f && mouse_pos.y < tl_pos.y + 25.0f);
-        bool yellow_hovered = (mouse_pos.x >= tl_pos.x + 32.0f && mouse_pos.x < tl_pos.x + 48.0f &&
-                               mouse_pos.y >= tl_pos.y + 9.0f && mouse_pos.y < tl_pos.y + 25.0f);
-        bool green_hovered = (mouse_pos.x >= tl_pos.x + 52.0f && mouse_pos.x < tl_pos.x + 68.0f &&
-                              mouse_pos.y >= tl_pos.y + 9.0f && mouse_pos.y < tl_pos.y + 25.0f);
+        // Centres at 22.5 / 42.5 / 62.5, vertically centred in the strip; the hit
+        // box is the 16px square around each.
+        const float tl_cy = tl_pos.y + tab_height * 0.5f;
+        auto light_hovered = [&](float cx) {
+            return mouse_pos.x >= tl_pos.x + cx - 8.0f && mouse_pos.x < tl_pos.x + cx + 8.0f &&
+                   mouse_pos.y >= tl_cy - 8.0f && mouse_pos.y < tl_cy + 8.0f;
+        };
+        bool red_hovered    = light_hovered(22.5f);
+        bool yellow_hovered = light_hovered(42.5f);
+        bool green_hovered  = light_hovered(62.5f);
 
         if (mouse_clicked) {
             if (red_hovered) {
@@ -908,12 +958,13 @@ int main() {
             }
         }
 
-        draw_list->AddCircleFilled(ImVec2(tl_pos.x + 20.0f, tl_pos.y + 17.0f), 6.0f, red_hovered ? IM_COL32(255, 70, 70, 255) : IM_COL32(255, 95, 87, 255));
-        draw_list->AddCircleFilled(ImVec2(tl_pos.x + 40.0f, tl_pos.y + 17.0f), 6.0f, yellow_hovered ? IM_COL32(240, 170, 30, 255) : IM_COL32(255, 189, 46, 255));
-        draw_list->AddCircleFilled(ImVec2(tl_pos.x + 60.0f, tl_pos.y + 17.0f), 6.0f, green_hovered ? IM_COL32(30, 180, 50, 255) : IM_COL32(40, 201, 64, 255));
+        draw_list->AddCircleFilled(ImVec2(tl_pos.x + 22.5f, tl_cy), 6.0f, red_hovered ? IM_COL32(255, 70, 70, 255) : IM_COL32(255, 95, 87, 255));
+        draw_list->AddCircleFilled(ImVec2(tl_pos.x + 42.5f, tl_cy), 6.0f, yellow_hovered ? IM_COL32(240, 170, 30, 255) : IM_COL32(255, 189, 46, 255));
+        draw_list->AddCircleFilled(ImVec2(tl_pos.x + 62.5f, tl_cy), 6.0f, green_hovered ? IM_COL32(30, 180, 50, 255) : IM_COL32(40, 201, 64, 255));
 
-        ImVec2 clip_min = ImVec2(cursor_pos.x + 80.0f, cursor_pos.y);
-        ImVec2 clip_max = ImVec2(cursor_pos.x + window_avail_width - 36.0f, cursor_pos.y + tab_height);
+        ImVec2 clip_min = ImVec2(cursor_pos.x + Trim::kTabsX, cursor_pos.y);
+        ImVec2 clip_max = ImVec2(cursor_pos.x + window_avail_width - Trim::kPlusSize - 12.0f,
+                                 cursor_pos.y + tab_height);
         draw_list->PushClipRect(clip_min, clip_max, true);
 
         int tab_to_close = -1;
@@ -923,13 +974,16 @@ int main() {
             auto& tab = tabs[i];
             bool is_active = ((int)i == active_tab_idx);
             
-            ImVec2 tab_min = ImVec2(cursor_pos.x + i * tab_width + 80.0f, cursor_pos.y);
+            ImVec2 tab_min = ImVec2(cursor_pos.x + i * tab_width + Trim::kTabsX, cursor_pos.y);
             ImVec2 tab_max = ImVec2(tab_min.x + tab_width, tab_min.y + tab_height);
             bool tab_hovered = (mouse_pos.x >= tab_min.x && mouse_pos.x < tab_max.x &&
                                 mouse_pos.y >= tab_min.y && mouse_pos.y < tab_max.y);
-            
-            bool show_close = (tab_width >= 50.0f) || tab_hovered;
-            bool close_hovered = show_close && tab_hovered && (mouse_pos.x >= tab_max.x - 28.0f);
+
+            // Only the current tab offers a close button; the rest are a click
+            // away from being current, and a strip of them reads as clutter.
+            bool show_close = is_active && tab_width >= 60.0f;
+            bool close_hovered = show_close && tab_hovered &&
+                                 (mouse_pos.x >= tab_max.x - Trim::kCloseInset - 9.0f);
             bool click_hovered = tab_hovered && !close_hovered;
 
             if (mouse_clicked) {
@@ -940,73 +994,77 @@ int main() {
                 }
             }
 
-            float rounding = 6.0f;
-            ImU32 tab_bg_col;
+            // The box is inset in the strip rather than filling it, and it is an
+            // outline, not a fill: an inactive tab has no box at all, so hover is
+            // the only fill the strip ever shows.
+            const float pill_pad = (tab_height - Trim::kTabH) * 0.5f;
+            ImVec2 pill_min = ImVec2(tab_min.x + 0.5f, tab_min.y + pill_pad);
+            ImVec2 pill_max = ImVec2(tab_max.x - 0.5f, tab_min.y + pill_pad + Trim::kTabH);
+
             if (is_active) {
-                tab_bg_col = Theme::tab_active_bg;
+                draw_list->AddRectFilled(pill_min, pill_max, Theme::bar_bg, Trim::kTabRounding);
+                draw_list->AddRect(pill_min, pill_max, Theme::outline_mid, Trim::kTabRounding, 0, 1.0f);
             } else if (tab_hovered) {
-                tab_bg_col = Theme::tab_hover_bg;
-            } else {
-                tab_bg_col = Theme::tab_inactive_bg;
-            }
-
-            draw_list->AddRectFilled(tab_min, tab_max, tab_bg_col, rounding, ImDrawFlags_RoundCornersTop);
-
-            if (is_active) {
-                draw_list->AddRectFilled(ImVec2(tab_min.x, tab_min.y), ImVec2(tab_max.x, tab_min.y + 2.0f), Theme::tab_accent_stripe);
-            }
-
-            if (!is_active && i < tabs.size() - 1 && (int)i + 1 != active_tab_idx) {
-                draw_list->AddLine(
-                    ImVec2(tab_max.x, tab_min.y + 7.0f), 
-                    ImVec2(tab_max.x, tab_max.y - 7.0f), 
-                    Theme::tab_divider, 
-                    1.0f
-                );
+                draw_list->AddRectFilled(pill_min, pill_max, Theme::tab_hover_bg, Trim::kTabRounding);
             }
 
             float text_center_y = std::round(tab_min.y + tab_height * 0.5f);
-            if (tab_width >= 60.0f) {
+
+            // Favicon, then label. Without one the label takes the space back, so
+            // a tab that has not resolved an icon yet does not sit indented.
+            float content_x = tab_min.x + Trim::kTabPadX;
+            const TextureInfo& fav = tab.favicon;
+            if (fav.id != 0 && tab_width >= 70.0f) {
+                ImVec2 fav_min = ImVec2(std::round(content_x),
+                                        std::round(text_center_y - Trim::kFavicon * 0.5f));
+                ImVec2 fav_max = ImVec2(fav_min.x + Trim::kFavicon, fav_min.y + Trim::kFavicon);
+                draw_list->AddImage((ImTextureID)(intptr_t)fav.id, fav_min, fav_max);
+                content_x = fav_max.x + Trim::kTabGapX;
+            }
+
+            float label_right = tab_max.x - (show_close ? Trim::kCloseInset + 10.0f : Trim::kTabPadX);
+            if (tab_width >= 70.0f && label_right > content_x + 8.0f) {
                 float text_y = std::round(text_center_y - ImGui::GetFontSize() * 0.5f);
-                ImVec2 text_min = ImVec2(tab_min.x + 10.0f, text_y);
-                ImVec2 text_max = ImVec2(tab_max.x - 42.0f, text_y + ImGui::GetFontSize());
+                ImVec2 text_min = ImVec2(std::round(content_x), text_y);
+                ImVec2 text_max = ImVec2(label_right, text_y + ImGui::GetFontSize());
+                ImU32 label_col = is_active ? Theme::tab_text_on : Theme::tab_text_off;
                 draw_list->PushClipRect(text_min, text_max, true);
-                draw_list->AddText(text_min, is_active ? IM_COL32(240, 240, 240, 255) : IM_COL32(170, 170, 180, 255), tab.title.c_str());
+                draw_list->AddText(text_min, label_col, tab.title.c_str());
                 draw_list->PopClipRect();
 
-                ImVec2 mask_min = ImVec2(text_max.x - 20.0f, text_min.y);
-                ImVec2 mask_max = ImVec2(text_max.x, text_max.y);
-                ImU32 transparent_bg = tab_bg_col & 0x00FFFFFF;
+                // Fade the last few pixels rather than chopping a glyph in half.
+                // The strip is flat black behind every tab state except hover, and
+                // an outlined active tab is black inside too, so one colour serves.
+                ImU32 fade_bg = (is_active || !tab_hovered) ? Theme::bar_bg : Theme::tab_hover_bg;
+                ImU32 fade_clear = fade_bg & 0x00FFFFFF;
                 draw_list->AddRectFilledMultiColor(
-                    mask_min, mask_max,
-                    transparent_bg, tab_bg_col,
-                    tab_bg_col, transparent_bg
-                );
+                    ImVec2(text_max.x - 18.0f, text_min.y), text_max,
+                    fade_clear, fade_bg, fade_bg, fade_clear);
             }
 
             if (show_close) {
-                ImVec2 x_center = ImVec2(std::round(tab_max.x - 14.0f), text_center_y);
-                float x_size = 6.0f;
-                float half_size = x_size * 0.5f;
-                
-                ImU32 x_color = close_hovered ? IM_COL32(240, 240, 240, 255) : (is_active ? IM_COL32(180, 180, 190, 255) : IM_COL32(120, 120, 130, 255));
+                ImVec2 x_center = ImVec2(std::round(tab_max.x - Trim::kCloseInset), text_center_y);
+                ImU32 x_color = close_hovered ? IM_COL32(240, 240, 240, 255)
+                                              : (is_active ? Theme::tab_text_on : Theme::tab_text_off);
                 if (close_hovered) {
-                    draw_list->AddCircleFilled(x_center, 7.0f, IM_COL32(120, 120, 120, 70));
+                    draw_list->AddRectFilled(ImVec2(x_center.x - 9.0f, x_center.y - 9.0f),
+                                             ImVec2(x_center.x + 9.0f, x_center.y + 9.0f),
+                                             Theme::tab_close_hover_bg, 4.0f);
                 }
-                draw_list->AddLine(ImVec2(x_center.x - half_size, x_center.y - half_size), ImVec2(x_center.x + half_size, x_center.y + half_size), x_color, 1.5f);
-                draw_list->AddLine(ImVec2(x_center.x - half_size, x_center.y + half_size), ImVec2(x_center.x + half_size, x_center.y - half_size), x_color, 1.5f);
+                DrawXIcon(x_center, x_color, Trim::kCloseBox, Trim::kIconStroke);
             }
         }
 
         draw_list->PopClipRect();
 
-        float max_plus_x = cursor_pos.x + window_avail_width - 36.0f;
-        float plus_x = cursor_pos.x + tabs.size() * tab_width + 80.0f + 8.0f;
+        float max_plus_x = cursor_pos.x + window_avail_width - Trim::kPlusSize - 12.0f;
+        float plus_x = cursor_pos.x + tabs.size() * tab_width + Trim::kTabsX + Trim::kPlusGap;
         if (plus_x > max_plus_x) plus_x = max_plus_x;
 
-        ImVec2 plus_min = ImVec2(plus_x, cursor_pos.y + 6.0f);
-        ImVec2 plus_max = ImVec2(plus_min.x + 22.0f, plus_min.y + 22.0f);
-        
+        ImVec2 plus_min = ImVec2(std::round(plus_x),
+                                 std::round(cursor_pos.y + (tab_height - Trim::kPlusSize) * 0.5f));
+        ImVec2 plus_max = ImVec2(plus_min.x + Trim::kPlusSize, plus_min.y + Trim::kPlusSize);
+
         bool plus_hovered = (mouse_pos.x >= plus_min.x && mouse_pos.x < plus_max.x &&
                              mouse_pos.y >= plus_min.y && mouse_pos.y < plus_max.y);
         bool plus_active = plus_hovered && ImGui::IsMouseDown(0);
@@ -1020,13 +1078,20 @@ int main() {
             glfwSetWindowTitle(window, ("Starmap - " + tabs[active_tab_idx].title).c_str());
         }
         
-        ImU32 plus_bg = plus_active ? Theme::plus_bg_active : (plus_hovered ? Theme::plus_bg_hover : Theme::plus_bg_normal);
-        draw_list->AddRectFilled(plus_min, plus_max, plus_bg, 4.0f);
-        
+        // Outlined like the active tab but one step dimmer on the border ramp: it
+        // is an affordance sitting at rest, not the current selection.
+        if (plus_active || plus_hovered) {
+            draw_list->AddRectFilled(plus_min, plus_max,
+                                     plus_active ? Theme::plus_bg_active : Theme::plus_bg_hover,
+                                     Trim::kTabRounding);
+        }
+        draw_list->AddRect(plus_min, plus_max,
+                           plus_hovered ? Theme::outline_mid : Theme::outline_dim,
+                           Trim::kTabRounding, 0, 1.0f);
+
         ImVec2 plus_center = ImVec2((plus_min.x + plus_max.x) * 0.5f, (plus_min.y + plus_max.y) * 0.5f);
         ImU32 plus_color = plus_hovered ? Theme::plus_color_hover : Theme::plus_color_normal;
-        draw_list->AddLine(ImVec2(plus_center.x - 5.0f, plus_center.y), ImVec2(plus_center.x + 5.0f, plus_center.y), plus_color, 1.5f);
-        draw_list->AddLine(ImVec2(plus_center.x, plus_center.y - 5.0f), ImVec2(plus_center.x, plus_center.y + 5.0f), plus_color, 1.5f);
+        DrawPlusIcon(plus_center, plus_color, Trim::kPlusGlyph * 24.0f / 14.0f, Trim::kIconStroke);
 
         if (tab_to_select != -1) {
             active_tab_idx = tab_to_select;
@@ -1045,7 +1110,11 @@ int main() {
                 }
             }
             tabs[tab_to_close].page_textures.clear();
-            
+            if (tabs[tab_to_close].favicon.id != 0) {
+                glDeleteTextures(1, &tabs[tab_to_close].favicon.id);
+                tabs[tab_to_close].favicon = TextureInfo{};
+            }
+
             for (auto& [url, player] : tabs[tab_to_close].active_players) {
                 delete player;
             }
@@ -1068,21 +1137,9 @@ int main() {
             glfwSetWindowTitle(window, ("Starmap - " + tabs[active_tab_idx].title).c_str());
         }
 
-        float active_tab_min_x = cursor_pos.x + active_tab_idx * tab_width + 80.0f;
-        float active_tab_max_x = active_tab_min_x + tab_width;
-        
-        draw_list->AddLine(
-            ImVec2(cursor_pos.x, cursor_pos.y + tab_height), 
-            ImVec2(active_tab_min_x, cursor_pos.y + tab_height), 
-            Theme::border_separator,
-            1.5f
-        );
-        draw_list->AddLine(
-            ImVec2(active_tab_max_x, cursor_pos.y + tab_height), 
-            ImVec2(cursor_pos.x + window_avail_width, cursor_pos.y + tab_height), 
-            Theme::border_separator,
-            1.5f
-        );
+        // No rule under the strip: the design separates the chrome from the page
+        // with the panel's inset and corner radius instead of a line, and the
+        // active tab is a self-contained outline that owes nothing to the edge.
 
         static bool is_dragging = false;
         static double drag_start_x = 0;
@@ -1092,19 +1149,19 @@ int main() {
             ImVec2 w_pos = ImGui::GetWindowPos();
             if (m_pos.y >= w_pos.y + 6.0f && m_pos.y <= w_pos.y + tab_height && m_pos.x >= w_pos.x && m_pos.x < w_pos.x + window_avail_width) {
                 bool over_interactive = false;
-                if (m_pos.x < w_pos.x + 80.0f) over_interactive = true;
-                
+                if (m_pos.x < w_pos.x + Trim::kTabsX) over_interactive = true;
+
                 for (size_t i = 0; i < tabs.size(); ++i) {
-                    float t_min_x = w_pos.x + 80.0f + i * tab_width;
+                    float t_min_x = w_pos.x + Trim::kTabsX + i * tab_width;
                     float t_max_x = t_min_x + tab_width;
                     if (m_pos.x >= t_min_x && m_pos.x <= t_max_x) {
                         over_interactive = true;
                         break;
                     }
                 }
-                
-                float plus_start_x = w_pos.x + 80.0f + tabs.size() * tab_width + 8.0f;
-                if (m_pos.x >= plus_start_x && m_pos.x <= plus_start_x + 30.0f) {
+
+                float plus_start_x = w_pos.x + Trim::kTabsX + tabs.size() * tab_width + Trim::kPlusGap;
+                if (m_pos.x >= plus_start_x && m_pos.x <= plus_start_x + Trim::kPlusSize + 8.0f) {
                     over_interactive = true;
                 }
                 
@@ -1141,96 +1198,75 @@ int main() {
 
         Tab& active_tab = tabs[active_tab_idx];
 
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 6.0f));
-        
-        float btn_size = ImGui::GetFrameHeight();
-        float toolbar_height = btn_size + 16.0f;
-        
+        float toolbar_height = Trim::kToolbarH;
+
         ImVec2 toolbar_min = ImVec2(cursor_pos.x, cursor_pos.y + tab_height);
         ImVec2 toolbar_max = ImVec2(toolbar_min.x + window_avail_width, toolbar_min.y + toolbar_height);
         draw_list->AddRectFilled(toolbar_min, toolbar_max, Theme::toolbar_bg);
-        
-        draw_list->AddLine(
-            ImVec2(toolbar_min.x, toolbar_max.y),
-            ImVec2(toolbar_max.x, toolbar_max.y),
-            Theme::border_separator,
-            1.0f
-        );
 
-        ImGui::SetCursorScreenPos(ImVec2(toolbar_min.x + 8.0f, toolbar_min.y + 8.0f));
+        // The toolbar's controls sit at fixed centres from the design rather than
+        // flowing, so the omnibox always starts in the same place whatever the
+        // font metrics are. Each icon gets a hit box larger than its glyph.
+        const float tb_cy = toolbar_min.y + toolbar_height * 0.5f;
+        const float hit = 26.0f;
+        auto icon_slot = [&](int n) {
+            return ImVec2(toolbar_min.x + Trim::kIconFirstX + Trim::kIconStep * n, tb_cy);
+        };
+        auto icon_button = [&](const char* id, int n, bool disabled) {
+            ImVec2 c = icon_slot(n);
+            ImGui::SetCursorScreenPos(ImVec2(c.x - hit * 0.5f, c.y - hit * 0.5f));
+            if (disabled) {
+                ImGui::Dummy(ImVec2(hit, hit));
+                return false;
+            }
+            bool clicked = ImGui::InvisibleButton(id, ImVec2(hit, hit));
+            if (ImGui::IsItemHovered()) {
+                draw_list->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                         ImGui::IsItemActive() ? Theme::plus_bg_active
+                                                               : Theme::plus_bg_hover,
+                                         Trim::kTabRounding);
+            }
+            return clicked;
+        };
 
-        ImGui::BeginGroup();
-        
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Theme::btn_hover_highlight);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, Theme::btn_active_highlight);
-        
-        float rounding = btn_size * 0.5f;
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
-        
         bool back_disabled = (active_tab.history_index <= 0);
-        ImGui::BeginDisabled(back_disabled);
-        bool back_clicked = ImGui::Button("##back", ImVec2(btn_size, btn_size));
-        ImVec2 back_center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
-                                    (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
-        ImU32 back_color = back_disabled ? IM_COL32(75, 75, 75, 255) : ImGui::GetColorU32(ImGuiCol_Text);
-        DrawBackArrowIcon(back_center, back_color);
-        if (back_clicked) {
+        if (icon_button("##back", 0, back_disabled)) {
             active_tab.history_index--;
             start_async_fetch(active_tab.id, active_tab.navigation_history[active_tab.history_index], true);
         }
-        ImGui::EndDisabled();
-        
-        ImGui::SameLine();
-        
+        DrawBackArrowIcon(icon_slot(0), back_disabled ? Theme::icon_disabled : Theme::icon_normal,
+                          Trim::kIconArrow, Trim::kIconStroke);
+
         bool forward_disabled = (active_tab.history_index >= (int)active_tab.navigation_history.size() - 1 || active_tab.navigation_history.empty());
-        ImGui::BeginDisabled(forward_disabled);
-        bool forward_clicked = ImGui::Button("##forward", ImVec2(btn_size, btn_size));
-        ImVec2 forward_center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
-                                       (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
-        ImU32 forward_color = forward_disabled ? IM_COL32(75, 75, 75, 255) : ImGui::GetColorU32(ImGuiCol_Text);
-        DrawForwardArrowIcon(forward_center, forward_color);
-        if (forward_clicked) {
+        if (icon_button("##forward", 1, forward_disabled)) {
             active_tab.history_index++;
             start_async_fetch(active_tab.id, active_tab.navigation_history[active_tab.history_index], true);
         }
-        ImGui::EndDisabled();
-        
-        ImGui::SameLine();
-        
+        DrawForwardArrowIcon(icon_slot(1), forward_disabled ? Theme::icon_disabled : Theme::icon_normal,
+                             Trim::kIconArrow, Trim::kIconStroke);
+
         if (active_tab.is_fetching) {
-            ImGui::Dummy(ImVec2(btn_size, btn_size));
-            ImVec2 spinner_center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
-                                           (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
-            DrawSpinner(spinner_center, 6.0f, 2.0f, Theme::spinner);
+            icon_button("##reload", 2, true);
+            DrawSpinner(icon_slot(2), 7.0f, Trim::kIconStroke + 0.5f, Theme::spinner);
         } else {
-            bool reload_clicked = ImGui::Button("##reload", ImVec2(btn_size, btn_size));
-            ImVec2 reload_center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
-                                          (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
-            DrawReloadIcon(reload_center, 6.0f, ImGui::GetColorU32(ImGuiCol_Text));
-            if (reload_clicked) {
+            if (icon_button("##reload", 2, false)) {
                 start_async_fetch(active_tab.id, active_tab.current_url);
             }
+            DrawReloadIcon(icon_slot(2), Theme::icon_normal, Trim::kIcon, Trim::kIconStroke);
         }
-        
-        ImGui::SameLine();
 
         const FetchResult& page = active_tab.active_page;
         const bool secure = page.is_secure && page.tls.verified;
-        if (ImGui::Button("##lock", ImVec2(btn_size, btn_size))) {
+        if (icon_button("##lock", 3, false)) {
             ImGui::OpenPopup("cert_info");
         }
-        ImVec2 lock_center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
-                                    (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
-        DrawLockIcon(lock_center, secure ? IM_COL32(120, 220, 140, 255)
-                                         : IM_COL32(229, 115, 115, 255), secure);
-        if (ImGui::IsItemHovered()) {
+        bool lock_hovered = ImGui::IsItemHovered();
+        DrawLockIcon(icon_slot(3), secure ? Theme::lock_secure : Theme::lock_insecure, secure,
+                     Trim::kIcon, Trim::kIconStroke);
+        if (lock_hovered) {
             ImGui::SetTooltip(secure ? "Connection is secure (TLS 1.3)"
                                      : "Not secure - sent in plaintext");
         }
-
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(3);
 
         if (ImGui::BeginPopup("cert_info")) {
             if (secure) {
@@ -1256,41 +1292,98 @@ int main() {
             ImGui::EndPopup();
         }
 
-        ImGui::SameLine();
+        // The omnibox is a hole in the chrome, not a raised field: its fill is the
+        // toolbar's own black and the outline alone gives it an edge, climbing the
+        // border ramp to full brightness while it has focus.
+        const float omni_x = toolbar_min.x + Trim::kOmniboxX;
+        const float omni_w = window_avail_width - Trim::kOmniboxX - 8.0f;
+        const float omni_y = std::round(tb_cy - Trim::kOmniboxH * 0.5f);
 
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Trim::kOmniboxRound);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        // Vertically centre the text in a field that is taller than one line.
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            ImVec2(12.0f, (Trim::kOmniboxH - ImGui::GetFontSize()) * 0.5f));
         ImGui::PushStyleColor(ImGuiCol_FrameBg, Theme::omnibox_bg);
-        
-        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - 8.0f);
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, Theme::omnibox_bg);
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Theme::omnibox_bg);
+
+        ImGui::SetCursorScreenPos(ImVec2(omni_x, omni_y));
+        ImGui::PushItemWidth(omni_w);
         if (ImGui::InputText("##url", active_tab.url_input, IM_ARRAYSIZE(active_tab.url_input), ImGuiInputTextFlags_EnterReturnsTrue)) {
             start_async_fetch(active_tab.id, active_tab.url_input);
         }
+        const bool omni_focused = ImGui::IsItemActive();
+        const bool omni_hovered = ImGui::IsItemHovered();
         ImGui::PopItemWidth();
-        
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar();
-        
-        ImGui::EndGroup();
-        
-        ImGui::PopStyleVar();
-        
-        ImGui::SetCursorScreenPos(ImVec2(toolbar_min.x, toolbar_max.y + 4.0f));
+
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar(3);
+
+        // Drawn after the field so the outline is not painted over by its fill.
+        draw_list->AddRect(ImVec2(omni_x, omni_y), ImVec2(omni_x + omni_w, omni_y + Trim::kOmniboxH),
+                           omni_focused ? Theme::outline_bright
+                                        : (omni_hovered ? Theme::outline_mid : Theme::outline_dim),
+                           Trim::kOmniboxRound, 0,
+                           omni_focused ? Trim::kOmniboxStroke : 1.0f);
+
+        // The page is a panel floating on the chrome: inset on three sides, with a
+        // gap under the toolbar, and rounded on all four corners. Nothing rules it
+        // off from the chrome: the inset is the separation.
+        ImGui::SetCursorScreenPos(ImVec2(toolbar_min.x + Trim::kPageInset,
+                                         toolbar_max.y + Trim::kPageTopGap));
 
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_InputTextCursor, ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
         // No padding of its own: a full-bleed element needs to reach the edge,
         // and the page insets itself via body margin. Popped right after
         // Begin reads it.
-        // The dock eats into the page from the right. vw/vh and canvas auto-fit
-        // all measure against this child, so they follow the narrowed viewport.
-        const ImVec2 shell_avail = ImGui::GetContentRegionAvail();
+        // The devtools dock eats into the page from the right. Everything the page
+        // measures itself against comes from GetContentRegionAvail inside this
+        // child, so vw/vh and canvas auto-fit follow the narrowed viewport.
+        const ImVec2 shell_avail = ImVec2(window_avail_width - Trim::kPageInset * 2.0f,
+                                          ImGui::GetContentRegionAvail().y - Trim::kPageInset);
         const float dt_splitter_w = 4.0f;
         const float dt_w = devtools::dock_width(active_tab.id, shell_avail.x);
         const bool dt_open = dt_w > 0.0f;
-        const float page_w = dt_open ? shell_avail.x - dt_w - dt_splitter_w : 0.0f;
+        // Sized explicitly rather than left at 0: "fill the parent" would run to
+        // the window edge and eat the panel's right inset, since the shell has no
+        // padding of its own to stop at.
+        const float page_w = dt_open ? shell_avail.x - dt_w - dt_splitter_w : shell_avail.x;
+
+        // Painted on the shell, not inside the child: a child clips to its inner
+        // rect (short of the scrollbar), which left a bare strip down the edge.
+        // The child's own background goes transparent so this shows through.
+        {
+            ImVec2 panel_min = ImGui::GetCursorScreenPos();
+            ImVec2 panel_max = ImVec2(panel_min.x + page_w, panel_min.y + shell_avail.y);
+            // The panel floats clear of every window edge, so all four of its
+            // corners are its own. With the dock open the right pair are the dock's.
+            const ImDrawFlags vp_corners = dt_open ? ImDrawFlags_RoundCornersLeft
+                                                   : ImDrawFlags_RoundCornersAll;
+            ImDrawList* shell_draw_list = ImGui::GetWindowDrawList();
+            auto body_it = active_tab.css_classes.find("body");
+            const CssStyle* body_style = body_it != active_tab.css_classes.end()
+                                       ? &body_it->second : nullptr;
+            if (body_style && body_style->has_gradient) {
+                ImU32 col_start = ImGui::ColorConvertFloat4ToU32(body_style->gradient_start);
+                ImU32 col_end = ImGui::ColorConvertFloat4ToU32(body_style->gradient_end);
+                shell_draw_list->AddRectFilledMultiColor(panel_min, panel_max, col_start, col_start, col_end, col_end);
+            } else {
+                ImU32 fill = (body_style && body_style->has_bg)
+                           ? ImGui::ColorConvertFloat4ToU32(body_style->bg_color)
+                           : Theme::viewport_bg;
+                shell_draw_list->AddRectFilled(panel_min, panel_max, fill,
+                                               Trim::kPageRounding, vp_corners);
+            }
+        }
 
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        ImGui::BeginChild("RenderViewport", ImVec2(page_w, 0), false, 0);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        // Explicit height: 0 would fill to the parent's content edge and eat the
+        // panel's bottom inset.
+        ImGui::BeginChild("RenderViewport", ImVec2(page_w, shell_avail.y), false, 0);
+        ImGui::PopStyleColor();
         ImGui::PopStyleVar();
         if (active_tab.reset_scroll_next_frame) {
             ImGui::SetScrollY(0.0f);
@@ -1305,31 +1398,6 @@ int main() {
         if (page_viewport_h < 1.0f) page_viewport_h = 1.0f;
         page_viewport_w_full = vp_avail.x;
         page_viewport_h_full = vp_avail.y > 1.0f ? vp_avail.y : 1.0f;
-
-        auto body_it = active_tab.css_classes.find("body");
-        ImDrawList* vp_draw_list = ImGui::GetWindowDrawList();
-        ImVec2 min_p = ImGui::GetWindowPos();
-        ImVec2 max_p = ImVec2(min_p.x + ImGui::GetWindowWidth(), min_p.y + ImGui::GetWindowHeight());
-        
-        float inner_radius = ImGui::GetStyle().ChildRounding;
-        // With the dock open the window's bottom-right corner belongs to it.
-        const ImDrawFlags vp_corners = dt_open ? ImDrawFlags_RoundCornersBottomLeft
-                                               : ImDrawFlags_RoundCornersBottom;
-
-        if (body_it != active_tab.css_classes.end()) {
-            const auto& body_style = body_it->second;
-            if (body_style.has_gradient) {
-                ImU32 col_start = ImGui::ColorConvertFloat4ToU32(body_style.gradient_start);
-                ImU32 col_end = ImGui::ColorConvertFloat4ToU32(body_style.gradient_end);
-                vp_draw_list->AddRectFilledMultiColor(min_p, max_p, col_start, col_start, col_end, col_end);
-            } else if (body_style.has_bg) {
-                vp_draw_list->AddRectFilled(min_p, max_p, ImGui::ColorConvertFloat4ToU32(body_style.bg_color), inner_radius, vp_corners);
-            } else {
-                vp_draw_list->AddRectFilled(min_p, max_p, Theme::viewport_bg, inner_radius, vp_corners);
-            }
-        } else {
-            vp_draw_list->AddRectFilled(min_p, max_p, Theme::viewport_bg, inner_radius, vp_corners);
-        }
 
         // Vector art is drawn in logical pixels and scaled up to the framebuffer,
         // which stretches the anti-aliasing fringe with it: a hairline stroke on a
@@ -1366,7 +1434,8 @@ int main() {
 
         float vp_h = ImGui::GetWindowHeight();
         float vp_w = ImGui::GetWindowWidth();
-        // Width too: opening the dock reflows the page, so the slack is stale.
+        // Width matters as well as height: opening the dock reflows the page, so
+        // what the wrappers around a vh box cost has to be measured again.
         if (vp_h != active_tab.vp_last_h || vp_w != active_tab.vp_last_w) {
             active_tab.vp_slack = 0.0f;
             active_tab.vp_last_h = vp_h;
@@ -1411,13 +1480,15 @@ int main() {
 
             ImGui::SameLine(0.0f, 0.0f);
             // The dock never scrolls as a whole; each panel scrolls its own panes.
-            ImGui::BeginChild("DevTools", ImVec2(0, 0), false, ImGuiWindowFlags_NoScrollbar);
+            // Sized explicitly for the same reason the page is: it has to stop at
+            // the panel's right inset, not at the window edge.
+            ImGui::BeginChild("DevTools", ImVec2(dt_w, shell_avail.y), false, ImGuiWindowFlags_NoScrollbar);
             ImGui::GetWindowDrawList()->AddRectFilled(
                 ImGui::GetWindowPos(),
                 ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowWidth(),
                        ImGui::GetWindowPos().y + ImGui::GetWindowHeight()),
-                Theme::dt_bg, ImGui::GetStyle().ChildRounding,
-                ImDrawFlags_RoundCornersBottomRight);
+                Theme::dt_bg, Trim::kPageRounding,
+                ImDrawFlags_RoundCornersRight);
             devtools::draw(active_tab);
             ImGui::EndChild();
         }
@@ -1449,7 +1520,9 @@ int main() {
 
         ImGui::Render();
         glViewport(0, 0, display_w, display_h);
-        glClearColor(0.07f, 0.09f, 0.15f, 0.0f);
+        // Transparent black: the compositor is premultiplied, so any colour left
+        // here at alpha 0 still tints the wedges outside the window's rounded corners.
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -1482,6 +1555,10 @@ int main() {
             }
         }
         tab.page_textures.clear();
+        if (tab.favicon.id != 0) {
+            glDeleteTextures(1, &tab.favicon.id);
+            tab.favicon = TextureInfo{};
+        }
         for (auto& [url, player] : tab.active_players) {
             delete player;
         }

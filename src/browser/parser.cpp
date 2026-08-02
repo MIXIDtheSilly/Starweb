@@ -588,6 +588,8 @@ DomNode parse_html_to_dom(const std::string& html, std::string& css_content,
                     child.onclick = attr_val;
                 } else if (attr_name == "href") {
                     child.href = attr_val;
+                } else if (attr_name == "rel") {
+                    child.rel = attr_val;
                 } else if (attr_name == "src") {
                     child.src = attr_val;
                 } else if (attr_name == "id") {

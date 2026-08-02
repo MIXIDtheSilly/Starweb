@@ -39,3 +39,5 @@ void find_images_in_dom(const DomNode& node, std::vector<std::string>& srcs);
 FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_resource = true,
                           RequestOptions opt = {});
 void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_nav = false);
+// The page's <link rel="icon"> href, unresolved. Empty if it declared none.
+void find_favicon_in_dom(const DomNode& node, std::string& href);

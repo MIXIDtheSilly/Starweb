@@ -2,9 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cmath>
 #include <cstdarg>
-#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <mutex>
@@ -32,8 +30,6 @@ struct LogEntry {
 struct NodeBox {
     std::uint64_t node_id;
     ImVec2 min, max;
-    // Left, top, right, bottom, as the layout used them. See note_box.
-    ImVec4 pad;
 };
 
 // Per tab, owned by the render thread. Anything a worker thread produces arrives
@@ -158,9 +154,10 @@ DomNode* find_node(DomNode& root, std::uint64_t id, std::vector<DomNode*>* chain
 constexpr float kStripH = 30.0f;
 // Where the first panel tab starts. The panes below run edge to edge.
 constexpr float kTabInset = 8.0f;
+// Breathing room above and below a toolbar row, applied symmetrically.
 constexpr float kBandPad = 6.0f;
-// Shared by every control in the dock. Squarer than the window chrome's 6, which
-// suits an address bar but not a pane of inspector controls.
+// Every control in the dock shares this: squarer than the window chrome's
+// FrameRounding of 6, which suits an address bar but not an inspector panel.
 constexpr float kDtRounding = 3.0f;
 
 // Rounded-top tab, the same shape and tones as a page tab.
@@ -268,9 +265,8 @@ void chip_toggle(const char* label, bool* value, ImU32 tint,
                 *value ? Theme::dt_text_on : Theme::dt_text_off, label);
 }
 
-// A control row sits on a lighter band, the way the omnibox sits on the toolbar,
-// or a recessed field ends up darker than its own background. The height isn't
-// known until the controls are laid out, so the band goes on a second channel.
+// A control row sits on a lighter band, like the omnibox on the toolbar. Height
+// isn't known until the controls are laid out, so it's painted on a second channel.
 struct ToolbarBand {
     ImDrawListSplitter splitter;
     float top = 0.0f;
@@ -297,7 +293,7 @@ struct ToolbarBand {
         splitter.SetCurrentChannel(dl, 0);
         // A footer sits on the dock's bottom edge, so it takes the corner with
         // it; a square fill would paint past the rounding onto the border.
-        dl->AddRectFilled(ImVec2(x0, top), ImVec2(x1, bottom), Theme::toolbar_bg,
+        dl->AddRectFilled(ImVec2(x0, top), ImVec2(x1, bottom), Theme::dt_band_bg,
                           footer ? ImGui::GetStyle().ChildRounding : 0.0f,
                           ImDrawFlags_RoundCornersBottomRight);
         dl->AddLine(ImVec2(x0, edge), ImVec2(x1, edge), Theme::dt_hairline, 1.0f);
@@ -308,8 +304,8 @@ struct ToolbarBand {
     }
 };
 
-// Squared off, not a pill like the omnibox: a column of pills in a properties
-// pane reads as noise.
+// The omnibox is a pill because it is the one address bar; a column of pills in
+// a properties pane just reads as noise.
 bool field_input(const char* id, const char* hint, char* buf, std::size_t cap) {
     ImGui::PushStyleColor(ImGuiCol_FrameBg, Theme::dt_field_bg);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
@@ -452,9 +448,9 @@ bool capturing(int tab_id) {
     return st && st->open && st->panel == Panel::Elements;
 }
 
-void note_box(int tab_id, std::uint64_t node_id, ImVec2 min, ImVec2 max, ImVec4 used_padding) {
+void note_box(int tab_id, std::uint64_t node_id, ImVec2 min, ImVec2 max) {
     TabState* st = find(tab_id);
-    if (st) st->boxes_next.push_back({node_id, min, max, used_padding});
+    if (st) st->boxes_next.push_back({node_id, min, max});
 }
 
 void begin_frame(int tab_id) {
@@ -631,13 +627,6 @@ void style_row(const char* name, const char* fmt, ...) {
     va_end(args);
 }
 
-// CssStyle spells "unset" as a negative, and printing that raw reads as a real
-// size. Report what the layout would fall back to instead.
-void style_row_size(const char* name, float v) {
-    if (v < 0.0f) style_row(name, "auto");
-    else          style_row(name, "%.1f", v);
-}
-
 void draw_box_model(const CssStyle& s, const NodeBox* box) {
     const float row = ImGui::GetTextLineHeight();
     const ImVec2 origin = ImGui::GetCursorScreenPos();
@@ -645,24 +634,14 @@ void draw_box_model(const CssStyle& s, const NodeBox* box) {
     const float h = row * 7.5f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    // What the layout inset the content by, which is not always what the CSS asked
-    // for. Only the renderer knows, so a node it never painted falls back to the
-    // declared values.
-    const float pl = box ? box->pad.x : s.padding_left;
-    const float pt = box ? box->pad.y : s.padding_top;
-    const float pr = box ? box->pad.z : s.padding_right;
-    const float pb = box ? box->pad.w : s.padding_bottom;
-
-    // The border ring is drawn for the shape a box model is expected to have, but
-    // it is a zero-width one here: the renderer strokes the border on the padding
-    // box's own edge, so it never displaces the content.
     struct Ring { const char* label; ImU32 col; float l, r, t, b; };
     const Ring rings[] = {
         {"margin",  IM_COL32(120, 92, 48, 255),  s.margin_left,  s.margin_right,
                                                  s.margin_top,   s.margin_bottom},
         {"border",  IM_COL32(92, 92, 62, 255),   s.border_width, s.border_width,
                                                  s.border_width, s.border_width},
-        {"padding", IM_COL32(60, 96, 72, 255),   pl, pr, pt, pb},
+        {"padding", IM_COL32(60, 96, 72, 255),   s.padding_left, s.padding_right,
+                                                 s.padding_top,  s.padding_bottom},
     };
 
     ImVec2 mn = origin, mx = ImVec2(origin.x + w, origin.y + h);
@@ -686,8 +665,10 @@ void draw_box_model(const CssStyle& s, const NodeBox* box) {
     dl->AddRect(mn, mx, IM_COL32(0, 0, 0, 90));
     char content[48];
     if (box) {
-        float cw = (box->max.x - box->min.x) - pl - pr;
-        float ch = (box->max.y - box->min.y) - pt - pb;
+        float cw = (box->max.x - box->min.x) - s.padding_left - s.padding_right
+                 - 2.0f * s.border_width;
+        float ch = (box->max.y - box->min.y) - s.padding_top - s.padding_bottom
+                 - 2.0f * s.border_width;
         std::snprintf(content, sizeof content, "%.0f x %.0f", std::max(cw, 0.0f),
                       std::max(ch, 0.0f));
     } else {
@@ -713,19 +694,15 @@ void draw_styles_pane(Tab& tab, TabState& st, DomNode& node, std::vector<DomNode
     CssStyle computed;
     computed.color = ImVec4(0.95f, 0.95f, 0.95f, 1.0f);
     computed.has_color = true;
-    // Resolving a vh-sized node opts the page into the viewport-slack convergence,
-    // and the dock draws after the flag is read and cleared for the frame. Merely
-    // inspecting one must not arm it for the next.
-    const bool fit_used = tab.vp_fit_used;
     for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
         computed = merge_node_style(**it, computed, tab);
     }
-    tab.vp_fit_used = fit_used;
 
     const NodeBox* box = nullptr;
     for (const NodeBox& b : st.boxes)
         if (b.node_id == node.node_id) { box = &b; break; }
 
+    // Header: what is selected, in the same colours the tree uses.
     if (mono_font) ImGui::PushFont(mono_font);
     ImGui::PushStyleColor(ImGuiCol_Text, Theme::dt_accent);
     ImGui::TextWrapped("%s", node_label(node).c_str());
@@ -807,21 +784,18 @@ void draw_styles_pane(Tab& tab, TabState& st, DomNode& node, std::vector<DomNode
                 if (computed.has_bg)
                     style_row("background", "%.2f %.2f %.2f %.2f", computed.bg_color.x,
                               computed.bg_color.y, computed.bg_color.z, computed.bg_color.w);
-                // The heading scale is folded in at paint time, not by the cascade,
-                // so the inherited multiplier on its own would report an h1 at 1x.
-                style_row("font-size", "%.2fx", computed.font_size * heading_font_scale(node.tag));
+                style_row("font-size", "%.2fx", computed.font_size);
                 if (!computed.font_family.empty())
                     style_row("font-family", "%s", computed.font_family.c_str());
                 style_row("text-align", "%s", computed.text_align.c_str());
-                style_row_size("width", computed.width);
-                style_row_size("height", computed.height);
+                style_row("width", "%.1f", computed.width);
+                style_row("height", "%.1f", computed.height);
                 style_row("padding", "%.0f %.0f %.0f %.0f", computed.padding_top,
                           computed.padding_right, computed.padding_bottom, computed.padding_left);
                 style_row("margin", "%.0f %.0f %.0f %.0f", computed.margin_top,
                           computed.margin_right, computed.margin_bottom, computed.margin_left);
                 style_row("border", "%.1f", computed.border_width);
-                if (computed.border_radius < 0.0f) style_row("border-radius", "none");
-                else style_row("border-radius", "%.1f", computed.border_radius);
+                style_row("border-radius", "%.1f", computed.border_radius);
                 if (!computed.display.empty()) style_row("display", "%s", computed.display.c_str());
                 if (!computed.position.empty()) {
                     style_row("position", "%s", computed.position.c_str());
@@ -830,29 +804,14 @@ void draw_styles_pane(Tab& tab, TabState& st, DomNode& node, std::vector<DomNode
                               computed.pos_top.resolve(page_viewport_w_full, page_viewport_h_full));
                 }
                 if (computed.display == "flex" || !computed.flex_direction.empty()) {
-                    // Unset properties are shown as the value the layout falls back
-                    // to, not as the empty string the cascade left behind.
-                    auto or_default = [](const std::string& v, const char* d) {
-                        return v.empty() ? d : v.c_str();
-                    };
-                    style_row("flex-direction", "%s", or_default(computed.flex_direction, "row"));
-                    style_row("justify-content", "%s",
-                              or_default(computed.justify_content, "flex-start"));
-                    style_row("align-items", "%s", or_default(computed.align_items, "stretch"));
-                    style_row("gap", "%.0f / %.0f", std::max(0.0f, computed.row_gap),
-                              std::max(0.0f, computed.column_gap));
+                    style_row("flex-direction", "%s", computed.flex_direction.c_str());
+                    style_row("justify-content", "%s", computed.justify_content.c_str());
+                    style_row("align-items", "%s", computed.align_items.c_str());
+                    style_row("gap", "%.0f / %.0f", computed.row_gap, computed.column_gap);
                 }
-                if (computed.flex_grow >= 0.0f || computed.flex_shrink >= 0.0f ||
-                    computed.flex_basis >= 0.0f) {
-                    // Yoga's web defaults, which is what an unset field leaves in place.
-                    char basis[24];
-                    if (computed.flex_basis >= 0.0f) {
-                        std::snprintf(basis, sizeof basis, "%.1f", computed.flex_basis);
-                    } else {
-                        std::snprintf(basis, sizeof basis, "auto");
-                    }
-                    style_row("flex", "%.1f %.1f %s", std::max(0.0f, computed.flex_grow),
-                              computed.flex_shrink < 0.0f ? 1.0f : computed.flex_shrink, basis);
+                if (computed.flex_grow >= 0.0f || computed.flex_basis >= 0.0f) {
+                    style_row("flex", "%.1f %.1f %.1f", computed.flex_grow, computed.flex_shrink,
+                              computed.flex_basis);
                 }
                 ImGui::EndTable();
             }
@@ -972,6 +931,7 @@ void submit_console(TabState& st, int tab_id) {
     st.input[0] = '\0';
     st.history_pos = -1;
     st.focus_input = true;
+    // Trim; an empty prompt is just a keystroke, not a command.
     auto not_space = [](unsigned char c) { return !std::isspace(c); };
     auto b = std::find_if(cmd.begin(), cmd.end(), not_space);
     auto e = std::find_if(cmd.rbegin(), cmd.rend(), not_space).base();
@@ -1012,9 +972,8 @@ void draw_console(Tab& tab, TabState& st) {
     field_input("##dt_filter", "Filter", st.filter, IM_ARRAYSIZE(st.filter));
     band.end();
 
-    // The prompt band costs two pads plus the spacing above it. Measured in mono,
-    // the font the row is drawn in, or the reservation is off by the difference
-    // and the dock either grows a scrollbar or stops short of its bottom edge.
+    // Measured in mono (a point smaller than the UI font, what the row draws in):
+    // mismatched and the band either falls short of the dock's edge or overflows it.
     if (mono_font) ImGui::PushFont(mono_font);
     const float prompt_h = ImGui::GetFrameHeight() + 2.0f * kBandPad +
                            ImGui::GetStyle().ItemSpacing.y;

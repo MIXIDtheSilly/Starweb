@@ -108,6 +108,8 @@ struct DomNode {
     std::string id;
     std::string onclick;
     std::string href;
+    // <link>'s relationship. Only read to tell a stylesheet from a favicon.
+    std::string rel;
     std::string src;
     std::string text_content;
     std::string type;
@@ -157,6 +159,9 @@ struct FetchResult {
     std::unordered_map<std::string, CssStyle> css_classes;
     std::unordered_map<std::string, std::string> fetched_images;
     std::vector<PageScript> scripts;
+    // The tab's icon, already fetched. Empty if the page declared none or the
+    // fetch failed; the tab strip then just leaves the space to the label.
+    std::string favicon_bytes;
 };
 
 struct TextureInfo {
@@ -189,6 +194,9 @@ struct Tab {
     // Radio-button group state: form control name -> selected node address.
     std::unordered_map<std::string, uintptr_t> radio_selection;
     std::unordered_map<std::string, TextureInfo> page_textures;
+    // Kept apart from page_textures because it outlives the page: the strip still
+    // draws it while the next navigation is in flight.
+    TextureInfo favicon;
     std::unordered_map<std::string, class VideoPlayer*> active_players;
 
     // Viewport-fitting slack. An auto-height <canvas> or a `vh` length wants to

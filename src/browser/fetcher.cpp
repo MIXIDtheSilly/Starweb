@@ -116,14 +116,31 @@ std::string find_title_in_dom(const DomNode& node) {
     return "";
 }
 
+// True for `icon`, `shortcut icon` and the like: rel is a space-separated set,
+// so a substring test on the whole attribute is what the spec asks for.
+static bool rel_is_icon(const std::string& rel) {
+    return rel.find("icon") != std::string::npos;
+}
+
 void find_stylesheets_in_dom(const DomNode& node, std::vector<std::string>& hrefs) {
-    if (node.tag == "link") {
-        if (!node.href.empty()) {
-            hrefs.push_back(node.href);
-        }
+    // A <link> with no rel at all is treated as a stylesheet, which is what this
+    // did before rel was parsed at all; only an explicit icon is excluded.
+    if (node.tag == "link" && !node.href.empty() && !rel_is_icon(node.rel)) {
+        hrefs.push_back(node.href);
     }
     for (const auto& child : node.children) {
         find_stylesheets_in_dom(child, hrefs);
+    }
+}
+
+// The last icon wins, matching how browsers take the most specific declaration
+// when a page lists several.
+void find_favicon_in_dom(const DomNode& node, std::string& href) {
+    if (node.tag == "link" && !node.href.empty() && rel_is_icon(node.rel)) {
+        href = node.href;
+    }
+    for (const auto& child : node.children) {
+        find_favicon_in_dom(child, href);
     }
 }
 
@@ -610,6 +627,22 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                 }
 
                 parse_css(css_content, res.css_classes);
+
+                // The tab icon. Fetched here with the rest of the subresources so
+                // the strip has it the moment the page swaps in, and skipped
+                // silently on failure: a missing icon is not a page error.
+                std::string favicon_href;
+                find_favicon_in_dom(res.dom, favicon_href);
+                if (!favicon_href.empty()) {
+                    std::string fav_url = resolve_url(final_url, favicon_href);
+                    if (is_mixed_content(page_secure, fav_url)) {
+                        devtools::log(tab_id, devtools::Level::Warn,
+                                      "blocked mixed-content favicon " + fav_url);
+                    } else {
+                        FetchResult fav_res = perform_fetch(tab_id, fav_url, false);
+                        if (fav_res.success) res.favicon_bytes = std::move(fav_res.body);
+                    }
+                }
 
                 std::vector<std::string> img_srcs;
                 find_images_in_dom(res.dom, img_srcs);

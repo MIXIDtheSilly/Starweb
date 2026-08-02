@@ -43,13 +43,8 @@ bool pick_active(int tab_id);
 
 // render_node reports each element's painted box here. `capturing` is a plain bool
 // read so a page with the panel closed pays one branch per element.
-//
-// `used_padding` is left/top/right/bottom as the layout actually applied it, which
-// the CSS values alone do not give: an inline run gets no top pad, and a form
-// control's padding lives inside the frame it draws for itself. Borders are not in
-// it because they take no layout space here, they are stroked on the box edge.
 bool capturing(int tab_id);
-void note_box(int tab_id, std::uint64_t node_id, ImVec2 min, ImVec2 max, ImVec4 used_padding);
+void note_box(int tab_id, std::uint64_t node_id, ImVec2 min, ImVec2 max);
 void begin_frame(int tab_id);
 
 // The Metrics panel animates, so it asks the idle loop to keep drawing.

@@ -83,7 +83,7 @@ static float widget_fill_width(const CssStyle& merged, float parent_accumulated_
 // The surrounding UI is dark, but native <input> widgets in Chrome render with a
 // light "form control" skin, so these helpers reproduce that look and store widget
 // state back on the DomNode so it survives across frames.
-namespace Chrome {
+namespace FormSkin {
     static ImU32 accent()      { return ImGui::ColorConvertFloat4ToU32(Theme::form_accent); }
     static ImU32 accentHover() { return ImGui::ColorConvertFloat4ToU32(Theme::form_accent_hover); }
     static const ImU32 kBorder      = IM_COL32(118, 118, 118, 255);
@@ -205,8 +205,8 @@ namespace Chrome {
         bool hovered = ImGui::IsItemHovered();
         ImVec2 c(pos.x + box * 0.5f, pos.y + box * 0.5f);
         ImU32 col = hovered ? accent() : IM_COL32(70, 70, 70, 255);
-        if (forward) DrawForwardArrowIcon(c, col, 2.0f);
-        else         DrawBackArrowIcon(c, col, 2.0f);
+        if (forward) DrawForwardArrowIcon(c, col, 24.0f, 2.0f);
+        else         DrawBackArrowIcon(c, col, 24.0f, 2.0f);
         ImGui::PopID();
         return clicked;
     }
@@ -342,8 +342,8 @@ namespace Chrome {
     }
 }
 
-struct ChromeFieldGuard {
-    ChromeFieldGuard(const CssStyle& m) {
+struct FieldGuard {
+    FieldGuard(const CssStyle& m) {
         float rounding = m.border_radius >= 0.0f ? m.border_radius : 2.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, m.has_border_width ? m.border_width : 1.0f);
@@ -362,7 +362,7 @@ struct ChromeFieldGuard {
         ImGui::PushStyleColor(ImGuiCol_Border, m.has_border_color ? m.border_color : ImVec4(0.46f, 0.46f, 0.46f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_InputTextCursor, ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
     }
-    ~ChromeFieldGuard() {
+    ~FieldGuard() {
         ImGui::PopStyleColor(7);
         ImGui::PopStyleVar(3);
     }
@@ -715,16 +715,7 @@ static float inline_text_width(const DomNode& node, float scale) {
 
 // Draws one inline text node with its tag decoration, leaving it as the last item so
 // the caller can chain the next sibling with SameLine.
-static void draw_inline_item(const DomNode& node, const CssStyle& merged, float scale,
-                             bool trim_leading, int tab_id) {
-    // These never reach render_node, so the box they report is their own. Inline
-    // text takes no padding, hence the zero quad.
-    auto note = [&](ImVec2 mn, ImVec2 mx) {
-        if (devtools::capturing(tab_id)) {
-            devtools::note_box(tab_id, node.node_id, mn, mx, ImVec4(0, 0, 0, 0));
-        }
-    };
-
+static void draw_inline_item(const DomNode& node, const CssStyle& merged, float scale, bool trim_leading) {
     std::string text = collapse_inline(node.text_content, trim_leading);
     if (text.empty()) { ImGui::Dummy(ImVec2(0.0f, 0.0f)); return; }
 
@@ -754,7 +745,6 @@ static void draw_inline_item(const DomNode& node, const CssStyle& merged, float 
         if (shrink) ImGui::SetWindowFontScale(scale);
         if (use_mono) ImGui::PopFont();
         ImGui::Dummy(ImVec2(sz.x, full_h));
-        note(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
         return;
     }
 
@@ -798,7 +788,6 @@ static void draw_inline_item(const DomNode& node, const CssStyle& merged, float 
 
     if (shrink) ImGui::SetWindowFontScale(scale);
     if (use_mono) ImGui::PopFont();
-    note(r_min, r_max);
 }
 
 // Inline flow: consecutive inline nodes share a line and wrap; block children break the
@@ -840,7 +829,7 @@ void render_flow_children(DomNode& parent, const CssStyle& merged, Tab& tab,
                 }
             }
             if (text_inline) {
-                draw_inline_item(child, merged, scale, !prev_inline, tab.id);
+                draw_inline_item(child, merged, scale, !prev_inline);
             } else {
                 bool child_flow = false;
                 render_node(child, merged, child_flow, tab, -1, right_offset);
@@ -919,15 +908,6 @@ bool is_positioned(const CssStyle& style) {
     return style.position == "absolute" || style.position == "fixed";
 }
 
-float heading_font_scale(const std::string& tag) {
-    if (tag == "h1") return 1.8f;
-    if (tag == "h2") return 1.4f;
-    if (tag == "h3") return 1.2f;
-    if (tag == "h4") return 1.1f;
-    if (tag == "h6") return 0.9f;
-    return 1.0f;
-}
-
 // Top-left for a positioned box, in screen coordinates. `right` and `bottom`
 // measure from the far edge of the viewport, which needs the box's own size, so
 // an element sized only by its content can anchor to the left and top only.
@@ -960,25 +940,14 @@ void render_flex_container(DomNode& node, const CssStyle& merged, Tab& tab, floa
     ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::SetWindowFontScale(1.0f); // measure children in absolute pixels
 
-    // `width` is the box that gets painted, padding included, so the children lay
-    // out inside what is left of it. Handing them the full width instead put every
-    // padded flex container's contents through its own edge.
-    float content_w = merged.width > 0.0f
-                          ? merged.width - merged.padding_left - merged.padding_right
-                          : ImGui::GetContentRegionAvail().x - right_offset;
+    float content_w = merged.width > 0.0f ? merged.width
+                                          : ImGui::GetContentRegionAvail().x - right_offset;
     if (content_w < 1.0f) content_w = 1.0f;
-
-    // Same for the cross axis, which Yoga reads off the style rather than the arg.
-    CssStyle flex_style = merged;
-    if (flex_style.height > 0.0f) {
-        flex_style.height = std::max(0.0f, flex_style.height - merged.padding_top
-                                                            - merged.padding_bottom);
-    }
 
     std::vector<DomNode*> kids;
     std::vector<FlexRect> rects;
     float total_w = 0.0f, total_h = 0.0f;
-    compute_flex_layout(node, flex_style, content_w, tab, kids, rects, total_w, total_h);
+    compute_flex_layout(node, merged, content_w, tab, kids, rects, total_w, total_h);
 
     for (size_t i = 0; i < kids.size(); ++i) {
         const FlexRect& r = rects[i];
@@ -994,8 +963,7 @@ void render_flex_container(DomNode& node, const CssStyle& merged, Tab& tab, floa
 
     ImGui::SetWindowFontScale(merged.font_size);
     ImGui::SetCursorScreenPos(origin);
-    // The content extent, not the box: render_node adds the padding back on.
-    ImGui::Dummy(ImVec2(merged.width > 0.0f ? content_w : total_w, total_h));
+    ImGui::Dummy(ImVec2(merged.width > 0.0f ? merged.width : total_w, total_h));
 }
 
 void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_flow, Tab& tab, int li_index, float parent_accumulated_right) {
@@ -1006,10 +974,6 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         std::string cleaned = collapse_whitespace(node.text_content);
         if (!cleaned.empty()) {
             ImGui::TextColored(parent_style.color, "%s", cleaned.c_str());
-            if (devtools::capturing(tab.id)) {
-                devtools::note_box(tab.id, node.node_id, ImGui::GetItemRectMin(),
-                                   ImGui::GetItemRectMax(), ImVec4(0, 0, 0, 0));
-            }
         }
         return;
     }
@@ -1036,7 +1000,11 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         is_inline_flow = false;
     }
 
-    bool draw_bg = (merged.has_bg || merged.has_gradient || (merged.border_width > 0.0f)) &&
+    // The body's background belongs to the viewport, which paints it rounded to
+    // the panel's corners; painting it again here would square them off.
+    const bool bg_owned_by_viewport = (node.tag == "body");
+    bool draw_bg = (((merged.has_bg || merged.has_gradient) && !bg_owned_by_viewport) ||
+                    (merged.border_width > 0.0f)) &&
                    (node.tag != "input" && node.tag != "textarea" && node.tag != "select" && node.tag != "button" && node.tag != "a");
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     ImDrawListSplitter splitter;
@@ -1044,15 +1012,13 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
     ImVec2 content_start = start_pos;
     float block_avail_w = -1.0f;
 
-    // A form control draws its own frame and carries its padding inside it, so the
-    // cursor is never moved for one here and its box needs no trailing pad either.
-    const bool is_widget = (node.tag == "input" || node.tag == "textarea" ||
-                            node.tag == "select" || node.tag == "button");
-    // Padding as actually applied, left/top/right/bottom. Reported to the inspector,
-    // which has no way to derive it from the CSS: the branches below skip parts of it.
-    ImVec4 used_pad(0.0f, 0.0f, 0.0f, 0.0f);
-
-    float base_font_scale = merged.font_size * heading_font_scale(node.tag);
+    float base_font_scale = merged.font_size;
+    if (node.tag == "h1") base_font_scale *= 1.8f;
+    else if (node.tag == "h2") base_font_scale *= 1.4f;
+    else if (node.tag == "h3") base_font_scale *= 1.2f;
+    else if (node.tag == "h4") base_font_scale *= 1.1f;
+    else if (node.tag == "h5") base_font_scale *= 1.0f;
+    else if (node.tag == "h6") base_font_scale *= 0.9f;
 
     if (base_font_scale != 1.0f) {
         ImGui::SetWindowFontScale(base_font_scale);
@@ -1080,18 +1046,18 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
         if (!is_inline_flow && merged.padding_top > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.padding_top);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.padding_left);
-        used_pad = ImVec4(merged.padding_left, is_inline_flow ? 0.0f : merged.padding_top,
-                          merged.padding_right, merged.padding_bottom);
-
+        
         splitter.Split(draw_list, 2);
         splitter.SetCurrentChannel(draw_list, 1);
     } else {
+        bool is_widget = (node.tag == "input" || node.tag == "textarea" || node.tag == "select" || node.tag == "button");
         if (!is_inline_flow && merged.margin_top > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.margin_top);
         if (merged.margin_left > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.margin_left);
 
         content_start = ImGui::GetCursorScreenPos();
-        // Same block-fill as above. An element with no background needs it too,
-        // or the inspector's box only reaches as far as the text.
+        // Same block-fill as above, which an element with no background still
+        // needs: the group only measures as far as the text, so a centred line
+        // left the inspector's box hanging off to one side of it.
         if (!is_inline) {
             block_avail_w = ImGui::GetContentRegionAvail().x
                           - (parent_accumulated_right + merged.margin_right);
@@ -1099,35 +1065,11 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
         if (!is_widget && !is_inline_flow && merged.padding_top > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.padding_top);
         if (!is_widget && merged.padding_left > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + merged.padding_left);
-
-        if (is_widget) {
-            // What the frame insets its own content by: InputStyleGuard's
-            // FramePadding, or ImGui's plus the button's fixed side gap. Symmetric,
-            // as FramePadding is, whatever the CSS asked for.
-            const float wx = node.tag == "button"
-                                 ? 18.0f
-                                 : (merged.padding_left > 0.0f ? merged.padding_left : kFieldPadX);
-            const float wy = node.tag == "button"
-                                 ? ImGui::GetStyle().FramePadding.y
-                                 : (merged.padding_top > 0.0f ? merged.padding_top : kFieldPadY);
-            used_pad = ImVec4(wx, wy, wx, wy);
-        } else {
-            used_pad = ImVec4(merged.padding_left, is_inline_flow ? 0.0f : merged.padding_top,
-                              merged.padding_right, merged.padding_bottom);
-        }
     }
 
     ImGui::BeginGroup();
 
     float child_accumulated_right = parent_accumulated_right + merged.margin_right + merged.padding_right;
-    // A box with a width of its own is what its children fill, not the window.
-    // Without this they measure against the viewport and paint straight through
-    // the edge of the box drawn around them. Never loosens an ancestor's limit.
-    if (merged.width > 0.0f) {
-        const float inner = std::max(0.0f, merged.width - used_pad.x - used_pad.z);
-        child_accumulated_right = std::max(child_accumulated_right,
-                                           ImGui::GetContentRegionAvail().x - inner);
-    }
     if (merged.display == "flex" && !node.children.empty()) {
         render_flex_container(node, merged, tab, child_accumulated_right);
     } else if (node.tag == "div") {
@@ -1199,9 +1141,8 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             if (node.tag != "span") ImGui::Spacing();
         }
     } else if (is_inline_text_tag(node.tag)) {
-        // inline tag rendered on its own (e.g. inside a table cell). No tab id: this
-        // one came through render_node, which reports the fuller box itself below.
-        draw_inline_item(node, merged, base_font_scale, true, -1);
+        // inline tag rendered on its own (e.g. inside a table cell)
+        draw_inline_item(node, merged, base_font_scale, true);
         bool child_inline_flow = true;
         for (auto& child : node.children) {
             if (child.tag == "#text") continue;
@@ -1528,7 +1469,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         if (type == "hidden") {
             // Not rendered, matching Chrome.
         } else if (type == "checkbox") {
-            if (Chrome::Checkbox(input_label, &node.checked)) {
+            if (FormSkin::Checkbox(input_label, &node.checked)) {
                 node.value = node.checked ? "on" : "";
             }
         } else if (type == "radio") {
@@ -1539,11 +1480,11 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                 }
                 auto it = tab.radio_selection.find(node.name);
                 bool active = (it != tab.radio_selection.end() && it->second == self);
-                if (Chrome::Radio(input_label, active)) {
+                if (FormSkin::Radio(input_label, active)) {
                     tab.radio_selection[node.name] = self;
                 }
             } else {
-                if (Chrome::Radio(input_label, node.checked)) {
+                if (FormSkin::Radio(input_label, node.checked)) {
                     node.checked = !node.checked;
                 }
             }
@@ -1554,7 +1495,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             }
             float w = merged.width  > 0.0f ? merged.width  : 0.0f;
             float h = merged.height > 0.0f ? merged.height : 0.0f;
-            if (Chrome::Button(label, input_label, ImVec2(w, h)) &&
+            if (FormSkin::Button(label, input_label, ImVec2(w, h)) &&
                 !devtools::pick_active(tab.id)) {
                 if (type == "reset") {
                     reset_form_controls(tab.page_dom);
@@ -1570,7 +1511,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                 }
             }
         } else if (type == "file") {
-            bool open = Chrome::Button("Choose File", input_label + "_btn", ImVec2(0, 0));
+            bool open = FormSkin::Button("Choose File", input_label + "_btn", ImVec2(0, 0));
             ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.78f, 0.78f, 0.78f, 1.0f));
             ImGui::TextUnformatted(node.value.empty()
@@ -1699,7 +1640,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             float total = widget_fill_width(merged, parent_accumulated_right, 160.0f);
             ImGui::PushItemWidth(total - 19.0f);
             {
-                ChromeFieldGuard style_guard(merged);
+                FieldGuard style_guard(merged);
                 if (ImGui::InputTextWithHint(input_label.c_str(), node.placeholder.c_str(), buf, sizeof(buf),
                         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_CharsScientific)) {
                     node.value = buf;
@@ -1709,7 +1650,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             ImGui::PopItemWidth();
             float fieldH = ImGui::GetItemRectSize().y;
             ImGui::SameLine(0, 2);
-            int spin = Chrome::Spinner(input_label + "_sp", fieldH);
+            int spin = FormSkin::Spinner(input_label + "_sp", fieldH);
             if (spin) {
                 double cur = node.value.empty() ? 0.0 : std::strtod(node.value.c_str(), nullptr);
                 cur += spin * step;
@@ -1739,21 +1680,21 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             float rowH = ImGui::GetFontSize() + 8.0f;
             std::string pop = "datepop##" + uid;
             const char* ph = withTime ? "mm/dd/yyyy --:-- --" : "mm/dd/yyyy";
-            bool clickedField = Chrome::ValueField(input_label, has ? shown : ph, !has, width - 19.0f);
+            bool clickedField = FormSkin::ValueField(input_label, has ? shown : ph, !has, width - 19.0f);
             ImVec2 fmin = ImGui::GetItemRectMin(), fmax = ImGui::GetItemRectMax();
             ImGui::SameLine(0, 2);
-            int spin = Chrome::Spinner(input_label + "_sp", rowH);
+            int spin = FormSkin::Spinner(input_label + "_sp", rowH);
             if (spin) {
                 int yy = has ? sy : 2026, mm = has ? sm : 1, dd = has ? sd : 1;
-                Chrome::addDays(yy, mm, dd, spin);
+                FormSkin::addDays(yy, mm, dd, spin);
                 char v[32];
                 if (withTime) std::snprintf(v, sizeof v, "%04d-%02d-%02dT%02d:%02d", yy, mm, dd, has ? sh : 9, has ? smin : 0);
                 else          std::snprintf(v, sizeof v, "%04d-%02d-%02d", yy, mm, dd);
                 node.value = v;
             }
             if (clickedField) {
-                Chrome::viewYear()[uid] = has ? sy : 2026;
-                Chrome::viewMon()[uid]  = has ? sm : 1;
+                FormSkin::viewYear()[uid] = has ? sy : 2026;
+                FormSkin::viewMon()[uid]  = has ? sm : 1;
                 ImGui::OpenPopup(pop.c_str());
             }
             ImGui::SetNextWindowPos(ImVec2(fmin.x, fmax.y + 2));
@@ -1761,12 +1702,12 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.12f,0.12f,0.12f,1));
             if (ImGui::BeginPopup(pop.c_str())) {
                 int oy=sy, om=sm, od=sd;
-                bool dchanged = Chrome::CalendarGrid(uid, sy, sm, sd, oy, om, od);
+                bool dchanged = FormSkin::CalendarGrid(uid, sy, sm, sd, oy, om, od);
                 int hh = has ? sh : sh, mn = has ? smin : smin;
                 bool tchanged = false;
                 if (withTime) {
                     ImGui::Separator();
-                    tchanged = Chrome::ClockPicker(hh, mn);
+                    tchanged = FormSkin::ClockPicker(hh, mn);
                 }
                 if (dchanged || tchanged) {
                     int yy = dchanged ? oy : (has ? sy : 2026);
@@ -1793,10 +1734,10 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             float width = merged.width > 0.0f ? merged.width : 130.0f;
             float rowH = ImGui::GetFontSize() + 8.0f;
             std::string pop = "timepop##" + uid;
-            bool clickedField = Chrome::ValueField(input_label, has ? shown : "--:-- --", !has, width - 19.0f);
+            bool clickedField = FormSkin::ValueField(input_label, has ? shown : "--:-- --", !has, width - 19.0f);
             ImVec2 fmin = ImGui::GetItemRectMin(), fmax = ImGui::GetItemRectMax();
             ImGui::SameLine(0, 2);
-            int spin = Chrome::Spinner(input_label + "_sp", rowH);
+            int spin = FormSkin::Spinner(input_label + "_sp", rowH);
             if (spin) {
                 int total = (has ? hh : 9) * 60 + (has ? mn : 0) + spin;
                 total = (total % 1440 + 1440) % 1440;
@@ -1808,7 +1749,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(1,1,1,1));
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.12f,0.12f,0.12f,1));
             if (ImGui::BeginPopup(pop.c_str())) {
-                if (Chrome::ClockPicker(hh, mn)) {
+                if (FormSkin::ClockPicker(hh, mn)) {
                     char v[8]; std::snprintf(v, sizeof v, "%02d:%02d", hh, mn);
                     node.value = v;
                 }
@@ -1819,15 +1760,15 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             int sy=0, sm=0;
             bool has = (std::sscanf(node.value.c_str(), "%d-%d", &sy, &sm) == 2);
             char shown[24];
-            if (has) std::snprintf(shown, sizeof shown, "%s %d", Chrome::monthName(sm), sy);
+            if (has) std::snprintf(shown, sizeof shown, "%s %d", FormSkin::monthName(sm), sy);
             float width = merged.width > 0.0f ? merged.width : 160.0f;
             float rowH = ImGui::GetFontSize() + 8.0f;
             std::string pop = "monthpop##" + uid;
             static std::unordered_map<std::string,int> monthViewY;
-            bool clickedField = Chrome::ValueField(input_label, has ? shown : "Month yyyy", !has, width - 19.0f);
+            bool clickedField = FormSkin::ValueField(input_label, has ? shown : "Month yyyy", !has, width - 19.0f);
             ImVec2 fmin = ImGui::GetItemRectMin(), fmax = ImGui::GetItemRectMax();
             ImGui::SameLine(0, 2);
-            int spin = Chrome::Spinner(input_label + "_sp", rowH);
+            int spin = FormSkin::Spinner(input_label + "_sp", rowH);
             if (spin) {
                 int yy = has ? sy : 2026, mm = has ? sm : 1;
                 mm += spin;
@@ -1846,7 +1787,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             if (ImGui::BeginPopup(pop.c_str())) {
                 int& vy = monthViewY[uid];
                 float navBox = ImGui::GetFontSize() + 6.0f;
-                if (Chrome::NavArrow("my_prev", false, navBox)) vy--;
+                if (FormSkin::NavArrow("my_prev", false, navBox)) vy--;
                 ImGui::SameLine();
                 char yl[8]; std::snprintf(yl, sizeof yl, "%d", vy);
                 float tw = ImGui::CalcTextSize(yl).x;
@@ -1855,17 +1796,17 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                 ImGui::TextUnformatted(yl);
                 ImGui::SameLine();
                 ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - navBox);
-                if (Chrome::NavArrow("my_next", true, navBox)) vy++;
+                if (FormSkin::NavArrow("my_next", true, navBox)) vy++;
                 for (int m = 1; m <= 12; m++) {
                     bool sel = has && sy == vy && sm == m;
                     if (sel) { ImGui::PushStyleColor(ImGuiCol_Button, Theme::form_accent);
                                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1,1,1,1)); }
-                    else Chrome::styleAccentButtons();
-                    if (ImGui::Button((std::string(Chrome::monthName(m)).substr(0,3) + "##m" + std::to_string(m)).c_str(), ImVec2(56, 26))) {
+                    else FormSkin::styleAccentButtons();
+                    if (ImGui::Button((std::string(FormSkin::monthName(m)).substr(0,3) + "##m" + std::to_string(m)).c_str(), ImVec2(56, 26))) {
                         char v[16]; std::snprintf(v, sizeof v, "%04d-%02d", vy, m);
                         node.value = v; ImGui::CloseCurrentPopup();
                     }
-                    if (sel) ImGui::PopStyleColor(2); else Chrome::unstyleAccentButtons();
+                    if (sel) ImGui::PopStyleColor(2); else FormSkin::unstyleAccentButtons();
                     if (m % 3 != 0) ImGui::SameLine();
                 }
                 ImGui::EndPopup();
@@ -1880,10 +1821,10 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             float rowH = ImGui::GetFontSize() + 8.0f;
             std::string pop = "weekpop##" + uid;
             static std::unordered_map<std::string,int> weekY, weekW;
-            bool clickedField = Chrome::ValueField(input_label, has ? shown : "Week --, yyyy", !has, width - 19.0f);
+            bool clickedField = FormSkin::ValueField(input_label, has ? shown : "Week --, yyyy", !has, width - 19.0f);
             ImVec2 fmin = ImGui::GetItemRectMin(), fmax = ImGui::GetItemRectMax();
             ImGui::SameLine(0, 2);
-            int spin = Chrome::Spinner(input_label + "_sp", rowH);
+            int spin = FormSkin::Spinner(input_label + "_sp", rowH);
             if (spin) {
                 int yy = has ? sy : 2026, ww = has ? sw : 1;
                 ww += spin;
@@ -1904,19 +1845,19 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                 int& vy = weekY[uid]; int& vw = weekW[uid];
                 float navBox = ImGui::GetFontSize() + 6.0f;
                 ImGui::AlignTextToFramePadding(); ImGui::Text("Year"); ImGui::SameLine();
-                if (Chrome::NavArrow("wy_p", false, navBox)) vy--; ImGui::SameLine();
+                if (FormSkin::NavArrow("wy_p", false, navBox)) vy--; ImGui::SameLine();
                 ImGui::AlignTextToFramePadding(); ImGui::Text("%d", vy); ImGui::SameLine();
-                if (Chrome::NavArrow("wy_n", true, navBox)) vy++; ImGui::SameLine();
+                if (FormSkin::NavArrow("wy_n", true, navBox)) vy++; ImGui::SameLine();
                 ImGui::AlignTextToFramePadding(); ImGui::Text("Week"); ImGui::SameLine();
-                if (Chrome::NavArrow("ww_p", false, navBox)) { if (--vw < 1) vw = 53; } ImGui::SameLine();
+                if (FormSkin::NavArrow("ww_p", false, navBox)) { if (--vw < 1) vw = 53; } ImGui::SameLine();
                 ImGui::AlignTextToFramePadding(); ImGui::Text("%02d", vw); ImGui::SameLine();
-                if (Chrome::NavArrow("ww_n", true, navBox)) { if (++vw > 53) vw = 1; }
-                Chrome::styleAccentButtons();
+                if (FormSkin::NavArrow("ww_n", true, navBox)) { if (++vw > 53) vw = 1; }
+                FormSkin::styleAccentButtons();
                 if (ImGui::Button("Set##week")) {
                     char v[16]; std::snprintf(v, sizeof v, "%04d-W%02d", vy, vw);
                     node.value = v; ImGui::CloseCurrentPopup();
                 }
-                Chrome::unstyleAccentButtons();
+                FormSkin::unstyleAccentButtons();
                 ImGui::EndPopup();
             }
             ImGui::PopStyleColor(2);
@@ -1936,7 +1877,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             if (hint.empty() && type == "url")   hint = "star://";
 
             {
-                ChromeFieldGuard style_guard(merged);
+                FieldGuard style_guard(merged);
                 if (ImGui::InputTextWithHint(input_label.c_str(), hint.c_str(), buf, sizeof(buf), flags)) {
                     node.value = buf;
                     script_dispatch_input(tab.id, node.node_id);
@@ -2202,28 +2143,21 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
     ImGui::EndGroup();
 
-    // The border box: padding included, margins not. The border itself is stroked
-    // on this edge rather than outside it, so it adds nothing.
+    // The border box, margins excluded, in both branches now.
     ImVec2 min_p = content_start;
     ImVec2 max_p = ImGui::GetItemRectMax();
 
-    // Trailing padding, which the group cannot have measured. A widget's frame
-    // already contains it, and adding it again would report a box wider and taller
-    // than the control that was drawn.
-    if (!is_widget) {
-        max_p.x += merged.padding_right;
-        max_p.y += merged.padding_bottom;
-    }
+    max_p.x += merged.padding_right;
+    max_p.y += merged.padding_bottom;
 
     if (merged.width > 0.0f) max_p.x = min_p.x + merged.width;
     else if (block_avail_w > 0.0f) max_p.x = std::max(max_p.x, min_p.x + block_avail_w);
     if (merged.height > 0.0f) max_p.y = min_p.y + merged.height;
 
-    // Handed to the inspector rather than recomputed there, so it gets the box
-    // the page actually painted, corrections and all.
-    if (devtools::capturing(tab.id)) {
-        devtools::note_box(tab.id, node.node_id, min_p, max_p, used_pad);
-    }
+    // The element's painted box, reported here rather than recomputed by the
+    // inspector: this is the rectangle the page actually occupies, after the
+    // width/height and block-fill corrections above.
+    if (devtools::capturing(tab.id)) devtools::note_box(tab.id, node.node_id, min_p, max_p);
 
     // Clicks on a box that registered a handler. <button> and the form widgets
     // report their own presses; this is what lets a whole row or card be the
@@ -2242,7 +2176,9 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         splitter.SetCurrentChannel(draw_list, 0);
         
         float rounding = merged.border_radius;
-        if (merged.has_gradient) {
+        if (bg_owned_by_viewport) {
+            // Border only; the fill was the viewport's.
+        } else if (merged.has_gradient) {
             ImU32 col_start = ImGui::ColorConvertFloat4ToU32(merged.gradient_start);
             ImU32 col_end = ImGui::ColorConvertFloat4ToU32(merged.gradient_end);
             draw_list->AddRectFilledMultiColor(min_p, max_p, col_start, col_start, col_end, col_end);
@@ -2259,6 +2195,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         ImGui::SetCursorScreenPos(ImVec2(start_pos.x, max_p.y + merged.margin_bottom));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     } else {
+        bool is_widget = (node.tag == "input" || node.tag == "textarea" || node.tag == "select" || node.tag == "button");
         if (!is_inline && !is_widget && merged.padding_bottom > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.padding_bottom);
         if (!is_inline && merged.margin_bottom > 0.0f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + merged.margin_bottom);
         // For inline elements, leave the group as the last item so the next inline
@@ -2278,6 +2215,14 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
     }
 }
 
+// Lucide strokes with round caps and joins; ImGui's are butt-capped, so a disc at
+// each end is what keeps a 1-unit dash from reading as a sliver.
+static void RoundStroke(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 color, float thickness) {
+    dl->AddLine(a, b, color, thickness);
+    dl->AddCircleFilled(a, thickness * 0.5f, color);
+    dl->AddCircleFilled(b, thickness * 0.5f, color);
+}
+
 void DrawSpinner(ImVec2 center, float radius, float thickness, const ImVec4& color) {
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     int num_segments = 30;
@@ -2287,106 +2232,12 @@ void DrawSpinner(ImVec2 center, float radius, float thickness, const ImVec4& col
     draw_list->PathStroke(ImGui::ColorConvertFloat4ToU32(color), 0, thickness);
 }
 
-void DrawBackArrowIcon(ImVec2 center, ImU32 color, float thickness) {
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    draw_list->AddLine(ImVec2(center.x + 7.0f, center.y), ImVec2(center.x - 7.0f, center.y), color, thickness);
-    draw_list->PathClear();
-    draw_list->PathLineTo(ImVec2(center.x, center.y + 7.0f));
-    draw_list->PathLineTo(ImVec2(center.x - 7.0f, center.y));
-    draw_list->PathLineTo(ImVec2(center.x, center.y - 7.0f));
-    draw_list->PathStroke(color, 0, thickness);
-}
+// The chrome's set (arrow-left, arrow-right, rotate-cw, plus, x, lock) and the
+// console's (ban, scroll, triangle-alert, circle-x) are rasterized from the
+// real Lucide SVG source in icons.cpp. The two below are still traced by hand.
 
-void DrawForwardArrowIcon(ImVec2 center, ImU32 color, float thickness) {
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    draw_list->AddLine(ImVec2(center.x - 7.0f, center.y), ImVec2(center.x + 7.0f, center.y), color, thickness);
-    draw_list->PathClear();
-    draw_list->PathLineTo(ImVec2(center.x, center.y - 7.0f));
-    draw_list->PathLineTo(ImVec2(center.x + 7.0f, center.y));
-    draw_list->PathLineTo(ImVec2(center.x, center.y + 7.0f));
-    draw_list->PathStroke(color, 0, thickness);
-}
-
-// Lucide "lock" / "lock-open", in their 24x24 viewBox coordinates.
-void DrawLockIcon(ImVec2 center, ImU32 color, bool closed, float size) {
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    const float PI = 3.14159265f;
-    const float s = size / 24.0f;
-    const float thickness = 2.0f * s;
-
-    // viewBox point -> screen, box centred on `center`.
-    auto P = [&](float x, float y) {
-        return ImVec2(center.x + (x - 12.0f) * s, center.y + (y - 12.0f) * s);
-    };
-
-    draw_list->AddRect(P(3, 11), P(21, 22), color, 2.0f * s, 0, thickness);
-
-    draw_list->PathClear();
-    draw_list->PathLineTo(P(7, 11));
-    draw_list->PathArcTo(P(12, 7), 5.0f * s, PI, closed ? 2.0f * PI : 1.94f * PI, 20);
-    if (closed) draw_list->PathLineTo(P(17, 11));
-    draw_list->PathStroke(color, 0, thickness);
-}
-
-// Lucide icons, rasterized from their own source rather than retraced into
-// ImDrawList calls: nanosvg solves the arcs and strokes the round caps and joins,
-// which is what these were getting wrong at 14px.
-namespace {
-
-// White, so AddImage's tint carries the colour.
-#define LUCIDE_SVG(body)                                                       \
-    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" "     \
-    "viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#ffffff\" stroke-width=\"2\" "\
-    "stroke-linecap=\"round\" stroke-linejoin=\"round\">" body "</svg>"
-
-const char* const kBanSvg = LUCIDE_SVG(
-    "<circle cx=\"12\" cy=\"12\" r=\"10\"/>"
-    "<path d=\"M4.929 4.929 19.07 19.071\"/>");
-
-const char* const kCircleXSvg = LUCIDE_SVG(
-    "<circle cx=\"12\" cy=\"12\" r=\"10\"/>"
-    "<path d=\"m15 9-6 6\"/><path d=\"m9 9 6 6\"/>");
-
-const char* const kTriangleAlertSvg = LUCIDE_SVG(
-    "<path d=\"m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3\"/>"
-    "<path d=\"M12 9v4\"/><path d=\"M12 17h.01\"/>");
-
-const char* const kScrollSvg = LUCIDE_SVG(
-    "<path d=\"M19 17V5a2 2 0 0 0-2-2H4\"/>"
-    "<path d=\"M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0"
-    "V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3\"/>");
-
-const char* const kChevronRightSvg = LUCIDE_SVG("<path d=\"m9 18 6-6-6-6\"/>");
-
-#undef LUCIDE_SVG
-
-// Rasterized at the size it lands on the framebuffer, so the texture maps one
-// texel per device pixel. The centre is rounded for the same reason.
-void draw_svg_icon(const char* svg, ImVec2 center, ImU32 color, float size) {
-    const float dpr = ImGui::GetIO().DisplayFramebufferScale.y;
-    const int px = (int)std::lround(size * (dpr > 0.0f ? dpr : 1.0f));
-    if (px <= 0) return;
-    unsigned int tex = svg_icon_texture(svg, px);
-    if (!tex) return;
-    const float half = size * 0.5f;
-    const ImVec2 c(std::round(center.x), std::round(center.y));
-    ImGui::GetWindowDrawList()->AddImage(
-        (ImTextureID)(intptr_t)tex, ImVec2(c.x - half, c.y - half),
-        ImVec2(c.x + half, c.y + half), ImVec2(0, 0), ImVec2(1, 1), color);
-}
-
-}  // namespace
-
-// ImGui lines are butt-capped where Lucide's are round, so a disc at each end is
-// what keeps a 1-unit dash from reading as a sliver.
-static void RoundStroke(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 color, float thickness) {
-    dl->AddLine(a, b, color, thickness);
-    dl->AddCircleFilled(a, thickness * 0.5f, color);
-    dl->AddCircleFilled(b, thickness * 0.5f, color);
-}
-
-// Lucide "square-dashed-mouse-pointer": three rounded corners and six dashes,
-// with the cursor breaking out of the fourth.
+// Lucide "square-dashed-mouse-pointer", traced from its 24x24 viewBox: three
+// rounded corners and six dashes, with the cursor breaking out of the fourth.
 void DrawInspectIcon(ImVec2 center, ImU32 color, float size) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float PI = 3.14159265f;
@@ -2396,7 +2247,7 @@ void DrawInspectIcon(ImVec2 center, ImU32 color, float size) {
         return ImVec2(center.x + (x - 12.0f) * s, center.y + (y - 12.0f) * s);
     };
 
-    // The r=2 corners: M5 3 a2 2 0 0 0-2 2, and its two mirrors.
+    // The r=2 corner arcs: M5 3 a2 2 0 0 0-2 2, and its two mirrors.
     const float arcs[][4] = {
         {5.0f,  5.0f,  -PI * 0.5f, -PI},    // top-left
         {19.0f, 5.0f,  -PI * 0.5f, 0.0f},   // top-right
@@ -2423,37 +2274,23 @@ void DrawInspectIcon(ImVec2 center, ImU32 color, float size) {
     dl->AddPolyline(pointer, 8, color, ImDrawFlags_Closed, th);
 }
 
+// Lucide "chevron-right": m9 18 6-6-6-6.
 void DrawChevronRightIcon(ImVec2 center, ImU32 color, float size) {
-    draw_svg_icon(kChevronRightSvg, center, color, size);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float s = size / 24.0f;
+    const float th = 2.0f * s;
+    auto P = [&](float x, float y) {
+        return ImVec2(center.x + (x - 12.0f) * s, center.y + (y - 12.0f) * s);
+    };
+    ImVec2 a = P(9, 18), b = P(15, 12), c = P(9, 6);
+    dl->PathClear();
+    dl->PathLineTo(a);
+    dl->PathLineTo(b);
+    dl->PathLineTo(c);
+    dl->PathStroke(color, 0, th);
+    dl->AddCircleFilled(a, th * 0.5f, color);
+    dl->AddCircleFilled(b, th * 0.5f, color);
+    dl->AddCircleFilled(c, th * 0.5f, color);
 }
 
-void DrawBanIcon(ImVec2 center, ImU32 color, float size) {
-    draw_svg_icon(kBanSvg, center, color, size);
-}
 
-void DrawScrollIcon(ImVec2 center, ImU32 color, float size) {
-    draw_svg_icon(kScrollSvg, center, color, size);
-}
-
-void DrawTriangleAlertIcon(ImVec2 center, ImU32 color, float size) {
-    draw_svg_icon(kTriangleAlertSvg, center, color, size);
-}
-
-void DrawCircleXIcon(ImVec2 center, ImU32 color, float size) {
-    draw_svg_icon(kCircleXSvg, center, color, size);
-}
-
-void DrawReloadIcon(ImVec2 center, float radius, ImU32 color, float thickness) {
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    const float PI = 3.14159265f;
-    float s = radius / 9.0f;
-    
-    draw_list->PathArcTo(center, radius, 0.0f, 1.85f * PI, 32);
-    draw_list->PathStroke(color, 0, thickness);
-    
-    draw_list->PathClear();
-    draw_list->PathLineTo(ImVec2(center.x + radius, center.y - radius));
-    draw_list->PathLineTo(ImVec2(center.x + radius, center.y - 4.0f * s));
-    draw_list->PathLineTo(ImVec2(center.x + 4.0f * s, center.y - 4.0f * s));
-    draw_list->PathStroke(color, 0, thickness);
-}
