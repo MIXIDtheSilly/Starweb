@@ -9,6 +9,7 @@
 #include "../common/conn.hpp"
 #include "../common/tls.hpp"
 #include <thread>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <cstdlib>
@@ -173,6 +174,11 @@ void find_media_in_dom(const DomNode& node, std::vector<std::string>& srcs) {
 
 FetchResult perform_request(const std::string& url_str, const RequestOptions& opt) {
     FetchResult result;
+    const auto t_start = std::chrono::steady_clock::now();
+    auto stamp = [t_start] {
+        return std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - t_start).count();
+    };
     auto opt_parsed = parse_url(url_str);
     if (!opt_parsed) {
         result.error_message = "Invalid URL format.";
@@ -196,6 +202,7 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
                                  : resolve_err);
         return result;
     }
+    result.timing.resolved = stamp();
 
     net::socket_t socket_fd = net::kInvalidSocket;
     bool connected = false;
@@ -225,6 +232,7 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
         result.error_message = "Connection failed to " + parsed.host + ":" + port_str;
         return result;
     }
+    result.timing.connected = stamp();
 
     std::unique_ptr<Conn> conn;
     if (use_tls) {
@@ -236,6 +244,7 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
             if (tconn) {
                 result.is_secure = true;
                 result.tls = tconn->info();
+                result.timing.secured = stamp();
                 conn = std::move(tconn);
             }
         }
@@ -263,12 +272,16 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
         req.headers["Content-Length"] = std::to_string(opt.body.size());
     }
 
+    result.request_headers.assign(req.headers.begin(), req.headers.end());
+    std::sort(result.request_headers.begin(), result.request_headers.end());
+
     std::string serialized_req = req.serialize();
     if (!write_all(*conn, serialized_req.data(), serialized_req.size())) {
         result.error_message = "Failed to send request.";
         if (opt.on_socket_done) opt.on_socket_done(socket_fd);
         return result;
     }
+    result.timing.sent = stamp();
 
     std::string raw_response;
     char recv_buf[65536];
@@ -302,6 +315,7 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
             break;
         }
         if (n == 0) break;
+        if (result.timing.first_byte < 0.0) result.timing.first_byte = stamp();
         raw_response.append(recv_buf, n);
     }
 
@@ -356,6 +370,9 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
             result.status_code = head_msg.status_code;
             result.status_text = head_msg.status_text;
             result.headers = head_msg.headers;
+            result.timing.complete = stamp();
+            // A streamed body never lands in result.body, so this is the only size record.
+            result.streamed_bytes = written;
         } else if (result.error_message.empty()) {
             result.error_message = "Body transfer incomplete.";
         }
@@ -402,6 +419,7 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
     result.status_text = res_msg.status_text;
     result.headers = res_msg.headers;
     result.body = res_msg.body;
+    result.timing.complete = stamp();
     return result;
 }
 
@@ -423,7 +441,7 @@ static bool looks_like_media(const std::string& content_type, const std::string&
 }
 
 FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_resource,
-                          RequestOptions opt) {
+                          RequestOptions opt, const char* initiator) {
     opt.on_socket = [tab_id, &url_str, is_main_resource](net::socket_t fd) {
         std::lock_guard<std::mutex> lock(fetch_mutex);
         Tab* tab = find_tab_by_id(tab_id);
@@ -439,7 +457,9 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
         if (tab && tab->active_socket_fd == fd) tab->active_socket_fd = net::kInvalidSocket;
     };
 
+    const std::uint64_t rec = devtools::net_begin(tab_id, url_str, opt.method, initiator);
     FetchResult result = perform_request(url_str, opt);
+    devtools::net_end(rec, result, result.body.size());
     if (!result.success && result.error_message == "Cancelled") {
         // Distinguishes a closed tab from a superseded navigation for the caller.
         std::lock_guard<std::mutex> lock(fetch_mutex);
@@ -462,6 +482,8 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
         std::string path = opt_url->path;
         final_url = scheme + "://" + format_host(host) + port_suffix(scheme, port) + path;
     }
+
+    devtools::on_navigation_start(tab_id);
 
     std::lock_guard<std::mutex> lock(fetch_mutex);
     Tab* tab = find_tab_by_id(tab_id);
@@ -515,7 +537,7 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
             return [](const char*, std::size_t) { return false; };  // stop the transfer
         };
 
-        FetchResult res = perform_fetch(tab_id, final_url, true, opt);
+        FetchResult res = perform_fetch(tab_id, final_url, true, opt, "document");
 
         if (media_nav) {
             res.success = true;
@@ -618,9 +640,11 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                         std::cerr << "[mixed-content] blocked stylesheet " << sheet_url << "\n";
                         devtools::log(tab_id, devtools::Level::Warn,
                                       "blocked mixed-content stylesheet " + sheet_url);
+                        devtools::net_blocked(tab_id, sheet_url, "stylesheet",
+                                              "blocked: mixed content");
                         continue;
                     }
-                    FetchResult sheet_res = perform_fetch(tab_id, sheet_url, false);
+                    FetchResult sheet_res = perform_fetch(tab_id, sheet_url, false, {}, "stylesheet");
                     if (sheet_res.success) {
                         css_content += "\n" + sheet_res.body;
                     }
@@ -638,8 +662,10 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                     if (is_mixed_content(page_secure, fav_url)) {
                         devtools::log(tab_id, devtools::Level::Warn,
                                       "blocked mixed-content favicon " + fav_url);
+                        devtools::net_blocked(tab_id, fav_url, "favicon",
+                                              "blocked: mixed content");
                     } else {
-                        FetchResult fav_res = perform_fetch(tab_id, fav_url, false);
+                        FetchResult fav_res = perform_fetch(tab_id, fav_url, false, {}, "favicon");
                         if (fav_res.success) res.favicon_bytes = std::move(fav_res.body);
                     }
                 }
@@ -652,9 +678,11 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                         std::cerr << "[mixed-content] blocked image " << img_url << "\n";
                         devtools::log(tab_id, devtools::Level::Warn,
                                       "blocked mixed-content image " + img_url);
+                        devtools::net_blocked(tab_id, img_url, "image",
+                                              "blocked: mixed content");
                         continue;
                     }
-                    FetchResult img_res = perform_fetch(tab_id, img_url, false);
+                    FetchResult img_res = perform_fetch(tab_id, img_url, false, {}, "image");
                     if (img_res.success) {
                         res.fetched_images[img_url] = img_res.body;
                     }
@@ -671,6 +699,8 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                         std::cerr << "[mixed-content] blocked media " << media_url << "\n";
                         devtools::log(tab_id, devtools::Level::Warn,
                                       "blocked mixed-content media " + media_url);
+                        devtools::net_blocked(tab_id, media_url, "media-probe",
+                                              "blocked: mixed content");
                     }
                 }
 
@@ -684,9 +714,11 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                         std::cerr << "[mixed-content] blocked script " << script.src << "\n";
                         devtools::log(tab_id, devtools::Level::Warn,
                                       "blocked mixed-content script " + script.src);
+                        devtools::net_blocked(tab_id, script.src, "script",
+                                              "blocked: mixed content");
                         continue;
                     }
-                    FetchResult script_res = perform_fetch(tab_id, script.src, false);
+                    FetchResult script_res = perform_fetch(tab_id, script.src, false, {}, "script");
                     if (script_res.success && script_res.status_code == 200) {
                         script.source = std::move(script_res.body);
                     } else {

@@ -1,10 +1,12 @@
 #include "script_fetch.hpp"
 #include "script.hpp"
 #include "fetcher.hpp"
+#include "devtools.hpp"
 #include "../common/url_parser.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -432,12 +434,17 @@ struct PendingFetch {
     std::string url;
     std::string origin;
     bool        needs_cors = false;
+    // Only so the network panel can file the row under the right tab.
+    int         tab_id = 0;
     RequestOptions opt;
 };
 
 void run_worker(std::shared_ptr<FetchInbox> inbox, PendingFetch pf, int ref) {
     std::thread([inbox = std::move(inbox), pf = std::move(pf), ref]() {
+        const std::uint64_t rec =
+            devtools::net_begin(pf.tab_id, pf.url, pf.opt.method, "fetch");
         FetchResult res = perform_request(pf.url, pf.opt);
+        devtools::net_end(rec, res, res.body.size());
 
         FetchDone d;
         d.ref = ref;
@@ -519,6 +526,7 @@ int l_fetch(lua_State* L) {
     pf.url = url;
     pf.origin = origin_of(*page);
     pf.needs_cors = origin_of(*target) != pf.origin;
+    pf.tab_id = eng->tab_id();
 
     pf.opt.max_response_bytes = kMaxResponse;
     pf.opt.headers.emplace_back("Origin", pf.origin);

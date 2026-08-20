@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <cstddef>
 #include <cstdint>
 #include "imgui.h"
 #include "../common/net.hpp"
@@ -144,11 +145,28 @@ struct PageScript {
     std::string source;
 };
 
+// Milliseconds from the moment perform_request was entered, stamped at each stage
+// boundary. -1 means the request never got that far.
+struct RequestTiming {
+    double resolved = -1.0;    // DNS answer in hand
+    double connected = -1.0;   // TCP established
+    double secured = -1.0;     // TLS handshake done; star:// only
+    double sent = -1.0;        // request bytes written
+    double first_byte = -1.0;  // first byte of the response read
+    double complete = -1.0;    // body finished
+};
+
 struct FetchResult {
     bool success = false;
     int status_code = 0;
     std::string status_text;
     std::unordered_map<std::string, std::string> headers;
+    // What actually went on the wire, including the headers perform_request adds
+    // itself (Host, User-Agent, Connection).
+    std::vector<std::pair<std::string, std::string>> request_headers;
+    RequestTiming timing;
+    // Set instead of `body` when a sink streamed the response past us (media).
+    std::size_t streamed_bytes = 0;
     std::string body;
     std::string error_message;
     // star:// only. tls_error gets an interstitial, not the generic error page.

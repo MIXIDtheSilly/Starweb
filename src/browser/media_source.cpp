@@ -88,7 +88,7 @@ bool MediaSource::probe_and_open() {
     RequestOptions probe;
     probe.timeout_secs = 10;
     probe.headers.push_back({"Range", "bytes=0-0"});
-    FetchResult r = perform_fetch(tab_id_, url_, false, probe);
+    FetchResult r = perform_fetch(tab_id_, url_, false, probe, "media-probe");
     if (!r.success || r.status_code != 206) return false;
 
     auto ct = r.headers.find("content-type");
@@ -406,7 +406,7 @@ bool MediaSource::fetch_chunks(int64_t first_chunk, int64_t count) {
         return true;
     };
 
-    FetchResult r = perform_fetch(tab_id_, url_, false, opt);
+    FetchResult r = perform_fetch(tab_id_, url_, false, opt, "media");
     if (!r.success || r.status_code != 206) return false;
 
     const int64_t written = write_pos - start;

@@ -20,6 +20,10 @@ void log(int tab_id, Level lvl, std::string text, std::string source = {}, int l
 std::uint64_t net_begin(int tab_id, const std::string& url, const std::string& method,
                         const char* initiator);
 void net_end(std::uint64_t rec, const FetchResult& res, std::size_t body_bytes);
+// A request that was never issued. Without a row of its own a blocked subresource
+// leaves no trace in the panel at all.
+void net_blocked(int tab_id, const std::string& url, const char* initiator,
+                 const std::string& reason);
 
 // Render thread only.
 void toggle(int tab_id);
@@ -29,6 +33,11 @@ float dock_width(int tab_id, float shell_avail_w);
 void drag_dock(float delta_x);
 void draw(Tab& tab);
 void draw_overlay(Tab& tab, ImVec2 vp_min, ImVec2 vp_max);
+// Any thread. Called when a navigation is dispatched, which is where the console
+// and network log clear: subresource fetches all happen before the page swaps in.
+void on_navigation_start(int tab_id);
+// Render thread. Called when the new page swaps in, to drop state keyed on node
+// ids; the parse reassigns them.
 void on_navigate(int tab_id);
 void on_tab_closed(int tab_id);
 void set_open(int tab_id, bool open);
@@ -36,6 +45,9 @@ void set_open(int tab_id, bool open);
 void set_panel(int tab_id, const std::string& name);
 // Selects a node the way the picker would, by "#id", ".class" or tag name.
 void select_node(Tab& tab, const std::string& query);
+// Selects a network row whose URL contains `query`, optionally followed by
+// ",headers" / ",response" / ",timing" / ",security" to open a detail tab with it.
+bool select_request(int tab_id, const std::string& query);
 
 // True while the picker is armed: a page click selects a node instead of reaching
 // the page.

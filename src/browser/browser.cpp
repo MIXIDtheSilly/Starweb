@@ -731,6 +731,13 @@ int main() {
         if (active_tab_idx >= 0 && active_tab_idx < (int)tabs.size()) {
             const int tid = tabs[active_tab_idx].id;
             devtools::begin_frame(tid);
+            // Dev hook: names a request by any part of its URL. Retried because
+            // records only reach the store on the drain above.
+            static bool net_pick_pending = std::getenv("STARWEB_DEVTOOLS_NET") != nullptr;
+            if (net_pick_pending) {
+                net_pick_pending =
+                    !devtools::select_request(tid, std::getenv("STARWEB_DEVTOOLS_NET"));
+            }
             const bool cmd = io.KeySuper || io.KeyCtrl;
             if (ImGui::IsKeyPressed(ImGuiKey_F12, false) ||
                 (cmd && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_I, false))) {

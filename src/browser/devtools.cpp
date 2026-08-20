@@ -1,12 +1,16 @@
 #include "devtools.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "globals.hpp"
@@ -30,6 +34,39 @@ struct LogEntry {
 struct NodeBox {
     std::uint64_t node_id;
     ImVec2 min, max;
+};
+
+using Clock = std::chrono::steady_clock;
+
+// One request. Opened and closed on a worker thread, read only on the render
+// thread; the two halves travel through the pending queue below.
+struct NetRecord {
+    std::uint64_t id = 0;
+    std::string url;
+    std::string method = "GET";
+    const char* initiator = "other";  // always a literal, see fetcher.hpp
+    Clock::time_point start;
+    Clock::time_point finish;
+
+    bool done = false;
+    bool success = false;
+    // Never went out at all (mixed content), as opposed to a failure.
+    bool blocked = false;
+    int status = 0;
+    std::string status_text;
+    std::string error;
+    std::string content_type;
+    std::size_t size = 0;
+    double ms = 0.0;
+    double offset_ms = 0.0;  // from the navigation that owns this row
+    RequestTiming timing;
+    bool secure = false;
+    TlsInfo tls;
+    std::vector<std::pair<std::string, std::string>> req_headers;
+    std::vector<std::pair<std::string, std::string>> res_headers;
+    std::string preview;      // text bodies only, capped
+    bool preview_truncated = false;
+    bool preview_binary = false;
 };
 
 // Per tab, owned by the render thread. Anything a worker thread produces arrives
@@ -62,6 +99,20 @@ struct TabState {
 
     int detail_tab = 0;  // Styles / Computed / Node
 
+    // Network.
+    std::vector<NetRecord> nets;
+    Clock::time_point net_epoch = Clock::now();
+    char net_filter[128] = "";
+    int net_kind = 0;              // index into kKinds; 0 is All
+    bool net_preserve = false;
+    std::uint64_t net_selected = 0;
+    float net_split = 0.5f;
+    int net_detail_tab = 0;        // Headers / Response / Timing / Security
+    bool net_scroll_to_end = false;
+    // Set while a row is still in flight, so the idle loop keeps drawing until it
+    // lands. Recomputed by every draw of the panel.
+    bool net_wants_frames = false;
+
     // Edit buffers, refilled whenever the selection changes.
     std::uint64_t edit_for = 0;
     char edit_text[1024] = "";
@@ -71,8 +122,15 @@ struct TabState {
 };
 
 constexpr std::size_t kMaxLogs = 2000;
+constexpr std::size_t kMaxNets = 200;
+constexpr std::size_t kMaxMediaNets = 60;
+// Enough to read a stylesheet or a JSON reply without 200 rows of them adding up.
+constexpr std::size_t kMaxPreview = 32u * 1024u;
 
 std::unordered_map<int, TabState> g_tabs;
+// Closed tabs. A fetch can outlive its tab, and its record would otherwise fault
+// a fresh TabState into existence that nothing draws or clears.
+std::unordered_set<int> g_dead_tabs;
 float g_dock_w = 380.0f;
 double g_idle_wait = 0.0;
 
@@ -82,8 +140,20 @@ std::mutex g_mux;
 struct PendingLog {
     int tab_id;
     LogEntry entry;
+    // A navigation's clear travels the queue too, to stay ordered with the messages.
+    bool reset = false;
 };
 std::vector<PendingLog> g_pending_logs;
+
+// Network events stay in one queue so their order survives the crossing: a reset
+// must not wipe records that were opened after it.
+struct PendingNet {
+    enum class Kind { Begin, End, Reset } kind;
+    int tab_id = 0;
+    NetRecord rec;
+};
+std::vector<PendingNet> g_pending_nets;
+std::atomic<std::uint64_t> g_next_net_id{1};
 
 TabState& state(int tab_id) { return g_tabs[tab_id]; }
 
@@ -114,22 +184,109 @@ const char* level_prefix(Level l) {
 
 void drain() {
     std::vector<PendingLog> logs;
+    std::vector<PendingNet> nets;
     {
         std::lock_guard<std::mutex> lk(g_mux);
         logs.swap(g_pending_logs);
+        nets.swap(g_pending_nets);
     }
     for (auto& p : logs) {
+        if (g_dead_tabs.count(p.tab_id)) continue;
         TabState& st = state(p.tab_id);
+        if (p.reset) {
+            st.logs.clear();
+            continue;
+        }
         st.logs.push_back(std::move(p.entry));
         if (st.logs.size() > kMaxLogs) {
             st.logs.erase(st.logs.begin(), st.logs.begin() + (st.logs.size() - kMaxLogs));
         }
         st.scroll_to_end = true;
     }
+    for (auto& p : nets) {
+        // An End carries no tab id: its owner is whichever tab the Begin was folded
+        // into, so a record for a tab that has since closed disappears on its own.
+        if (p.kind == PendingNet::Kind::End) {
+            for (auto& [tid, ts] : g_tabs) {
+                (void)tid;
+                bool hit = false;
+                // From the back: the request that just finished is a recent one.
+                for (auto it = ts.nets.rbegin(); it != ts.nets.rend(); ++it) {
+                    if (it->id != p.rec.id) continue;
+                    NetRecord& r = *it;
+                    NetRecord& in = p.rec;
+                    r.done = true;
+                    r.finish = in.finish;
+                    r.ms = std::chrono::duration<double, std::milli>(in.finish - r.start).count();
+                    r.success = in.success;
+                    r.status = in.status;
+                    r.status_text = std::move(in.status_text);
+                    r.error = std::move(in.error);
+                    r.content_type = std::move(in.content_type);
+                    r.size = in.size;
+                    r.timing = in.timing;
+                    r.secure = in.secure;
+                    r.tls = std::move(in.tls);
+                    r.req_headers = std::move(in.req_headers);
+                    r.res_headers = std::move(in.res_headers);
+                    r.preview = std::move(in.preview);
+                    r.preview_truncated = in.preview_truncated;
+                    r.preview_binary = in.preview_binary;
+                    hit = true;
+                    break;
+                }
+                if (hit) break;
+            }
+            continue;
+        }
+
+        if (g_dead_tabs.count(p.tab_id)) continue;
+        TabState& st = state(p.tab_id);
+        switch (p.kind) {
+            case PendingNet::Kind::Reset:
+                st.net_epoch = p.rec.start;
+                if (!st.net_preserve) {
+                    st.nets.clear();
+                    st.net_selected = 0;
+                }
+                break;
+            case PendingNet::Kind::End:
+                break;  // handled above
+            case PendingNet::Kind::Begin: {
+                NetRecord rec = std::move(p.rec);
+                rec.offset_ms =
+                    std::chrono::duration<double, std::milli>(rec.start - st.net_epoch).count();
+                const bool is_media = std::strcmp(rec.initiator, "media") == 0;
+                st.nets.push_back(std::move(rec));
+                // Media gets its own, tighter cap: 64 KiB chunks add up to hundreds
+                // of requests that would evict everything else.
+                if (is_media) {
+                    std::size_t media = 0;
+                    for (const NetRecord& r : st.nets)
+                        if (std::strcmp(r.initiator, "media") == 0) media++;
+                    if (media > kMaxMediaNets) {
+                        for (auto it = st.nets.begin(); it != st.nets.end(); ++it) {
+                            if (std::strcmp(it->initiator, "media") == 0) {
+                                st.nets.erase(it);
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (st.nets.size() > kMaxNets) {
+                    st.nets.erase(st.nets.begin(),
+                                  st.nets.begin() + (st.nets.size() - kMaxNets));
+                }
+                st.net_scroll_to_end = true;
+                break;
+            }
+        }
+    }
 }
 
 void draw_console(Tab& tab, TabState& st);
 void draw_elements(Tab& tab, TabState& st);
+void draw_network(Tab& tab, TabState& st);
 void draw_placeholder(const char* name);
 
 // Depth-first search for a node by id, plus the chain of ancestors above it.
@@ -359,8 +516,100 @@ void log(int tab_id, Level lvl, std::string text, std::string source, int line) 
     g_pending_logs.push_back({tab_id, LogEntry{lvl, std::move(text), std::move(source), line}});
 }
 
-std::uint64_t net_begin(int, const std::string&, const std::string&, const char*) { return 0; }
-void net_end(std::uint64_t, const FetchResult&, std::size_t) {}
+std::uint64_t net_begin(int tab_id, const std::string& url, const std::string& method,
+                        const char* initiator) {
+    PendingNet p;
+    p.kind = PendingNet::Kind::Begin;
+    p.tab_id = tab_id;
+    p.rec.id = g_next_net_id.fetch_add(1);
+    p.rec.url = url;
+    p.rec.method = method.empty() ? "GET" : method;
+    p.rec.initiator = initiator ? initiator : "other";
+    p.rec.start = Clock::now();
+    const std::uint64_t id = p.rec.id;
+    std::lock_guard<std::mutex> lk(g_mux);
+    g_pending_nets.push_back(std::move(p));
+    return id;
+}
+
+void net_blocked(int tab_id, const std::string& url, const char* initiator,
+                 const std::string& reason) {
+    PendingNet p;
+    p.kind = PendingNet::Kind::Begin;
+    p.tab_id = tab_id;
+    p.rec.id = g_next_net_id.fetch_add(1);
+    p.rec.url = url;
+    p.rec.initiator = initiator ? initiator : "other";
+    p.rec.start = p.rec.finish = Clock::now();
+    // Arrives already closed: there is no second half to wait for.
+    p.rec.done = true;
+    p.rec.success = false;
+    p.rec.blocked = true;
+    p.rec.error = reason;
+    std::lock_guard<std::mutex> lk(g_mux);
+    g_pending_nets.push_back(std::move(p));
+}
+
+void net_end(std::uint64_t rec, const FetchResult& res, std::size_t body_bytes) {
+    if (rec == 0) return;
+    PendingNet p;
+    p.kind = PendingNet::Kind::End;
+    // No tab id: End is matched by record id in whichever tab the Begin created.
+    p.rec.id = rec;
+    p.rec.finish = Clock::now();
+    p.rec.done = true;
+    p.rec.success = res.success;
+    p.rec.status = res.status_code;
+    p.rec.status_text = res.status_text;
+    p.rec.error = res.error_message;
+    p.rec.timing = res.timing;
+    p.rec.secure = res.is_secure;
+    p.rec.tls = res.tls;
+    p.rec.req_headers = res.request_headers;
+    p.rec.res_headers.assign(res.headers.begin(), res.headers.end());
+    std::sort(p.rec.res_headers.begin(), p.rec.res_headers.end());
+
+    auto ct = res.headers.find("content-type");
+    if (ct != res.headers.end()) p.rec.content_type = ct->second;
+
+    // A streamed body never lands in res.body, so fall back to what the transport
+    // counted and then to what the server declared.
+    p.rec.size = body_bytes;
+    if (p.rec.size == 0) p.rec.size = res.streamed_bytes;
+    if (p.rec.size == 0) {
+        auto cl = res.headers.find("content-length");
+        if (cl != res.headers.end()) {
+            try { p.rec.size = (std::size_t)std::stoull(cl->second); } catch (...) {}
+        }
+    }
+
+    // Only text is worth a copy; an image preview is megabytes the pane cannot render.
+    if (!res.body.empty()) {
+        std::string lower = p.rec.content_type;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        const bool textual =
+            lower.rfind("text/", 0) == 0 || lower.find("json") != std::string::npos ||
+            lower.find("javascript") != std::string::npos ||
+            lower.find("xml") != std::string::npos || lower.empty();
+        if (textual) {
+            const std::size_t take = std::min(res.body.size(), kMaxPreview);
+            // An empty content-type is not a promise of text; check before trusting it.
+            const bool has_nul = res.body.find('\0', 0) < take;
+            if (has_nul) {
+                p.rec.preview_binary = true;
+            } else {
+                p.rec.preview.assign(res.body, 0, take);
+                p.rec.preview_truncated = take < res.body.size();
+            }
+        } else {
+            p.rec.preview_binary = true;
+        }
+    }
+
+    std::lock_guard<std::mutex> lk(g_mux);
+    g_pending_nets.push_back(std::move(p));
+}
 
 void toggle(int tab_id) {
     TabState& st = state(tab_id);
@@ -424,19 +673,56 @@ void select_node(Tab& tab, const std::string& query) {
     }
 }
 
+bool select_request(int tab_id, const std::string& query) {
+    if (query.empty()) return true;
+    TabState& st = state(tab_id);
+    std::string url = query, want_tab;
+    if (const std::size_t comma = query.find(','); comma != std::string::npos) {
+        url = query.substr(0, comma);
+        want_tab = query.substr(comma + 1);
+    }
+    const std::pair<const char*, int> names[] = {
+        {"headers", 0}, {"response", 1}, {"timing", 2}, {"security", 3},
+    };
+    for (const auto& [name, idx] : names)
+        if (want_tab == name) st.net_detail_tab = idx;
+
+    for (const NetRecord& r : st.nets) {
+        if (r.url.find(url) != std::string::npos) {
+            st.net_selected = r.id;
+            return true;
+        }
+    }
+    return false;
+}
+
+void on_navigation_start(int tab_id) {
+    PendingNet p;
+    p.kind = PendingNet::Kind::Reset;
+    p.tab_id = tab_id;
+    p.rec.start = Clock::now();  // the epoch every row's offset is measured from
+    std::lock_guard<std::mutex> lk(g_mux);
+    // Queued rather than applied here: warnings for the previous page may still be
+    // in flight, and the reset has to land in order with them.
+    g_pending_nets.push_back(std::move(p));
+    g_pending_logs.push_back({tab_id, LogEntry{}, true});
+}
+
 void on_navigate(int tab_id) {
     TabState* st = find(tab_id);
     if (!st) return;
-    st->logs.clear();
     // Node ids are reassigned by the parse, so a selection from the old page would
-    // point at an unrelated element.
+    // point at an unrelated element. on_navigation_start clears the logs instead.
     st->selected = st->hovered = st->edit_for = 0;
     st->picking = false;
     st->boxes.clear();
     st->boxes_next.clear();
 }
 
-void on_tab_closed(int tab_id) { g_tabs.erase(tab_id); }
+void on_tab_closed(int tab_id) {
+    g_tabs.erase(tab_id);
+    g_dead_tabs.insert(tab_id);
+}
 
 bool pick_active(int tab_id) {
     TabState* st = find(tab_id);
@@ -465,7 +751,9 @@ void begin_frame(int tab_id) {
 
 bool wants_frames(int tab_id) {
     TabState* st = find(tab_id);
-    return st && st->open && st->panel == Panel::Metrics;
+    if (!st || !st->open) return false;
+    return st->panel == Panel::Metrics ||
+           (st->panel == Panel::Network && st->net_wants_frames);
 }
 
 void note_idle_wait(double seconds) { g_idle_wait = seconds; }
@@ -566,7 +854,7 @@ void draw(Tab& tab) {
     switch (st.panel) {
         case Panel::Console:  draw_console(tab, st); break;
         case Panel::Elements: draw_elements(tab, st); break;
-        case Panel::Network:  draw_placeholder("Network"); break;
+        case Panel::Network:  draw_network(tab, st); break;
         case Panel::Sources:  draw_placeholder("Sources"); break;
         case Panel::Metrics:  draw_placeholder("Metrics"); break;
     }
@@ -895,6 +1183,467 @@ void draw_elements(Tab& tab, TabState& st) {
         draw_styles_pane(tab, st, *node, chain);
     }
     end_surface();
+}
+
+// Network.
+
+// The chip row. `All` excludes media, whose 64 KiB range requests would bury the
+// document; media-probe stays in, since there is only one per file.
+struct NetKind { const char* label; const char* tip; };
+const NetKind kKinds[] = {
+    {"All",   "Everything except media range requests"},
+    {"Doc",   "The page itself"},
+    {"CSS",   "Stylesheets"},
+    {"JS",    "External scripts"},
+    {"Img",   "Images and the favicon"},
+    {"Media", "Video and audio: the probe and every range request"},
+    {"Fetch", "Requests the page's Lua made with fetch()"},
+};
+constexpr int kNumKinds = (int)(sizeof(kKinds) / sizeof(kKinds[0]));
+
+// Which chip a row belongs to, or -1 for one only `All` shows.
+int kind_of(const NetRecord& r) {
+    const char* i = r.initiator;
+    if (std::strcmp(i, "document") == 0)   return 1;
+    if (std::strcmp(i, "stylesheet") == 0) return 2;
+    if (std::strcmp(i, "script") == 0)     return 3;
+    if (std::strcmp(i, "image") == 0 || std::strcmp(i, "favicon") == 0) return 4;
+    if (std::strcmp(i, "media") == 0 || std::strcmp(i, "media-probe") == 0) return 5;
+    if (std::strcmp(i, "fetch") == 0)      return 6;
+    return -1;
+}
+
+bool hidden_from_all(const NetRecord& r) {
+    return std::strcmp(r.initiator, "media") == 0;
+}
+
+bool net_passes(const TabState& st, const NetRecord& r) {
+    if (st.net_kind == 0) {
+        if (hidden_from_all(r)) return false;
+    } else if (kind_of(r) != st.net_kind) {
+        return false;
+    }
+    if (st.net_filter[0] == '\0') return true;
+    return r.url.find(st.net_filter) != std::string::npos;
+}
+
+// The last path segment, which is what identifies a row at this width. Falls back
+// to the host for a request at the site root.
+std::string short_name(const std::string& url) {
+    std::size_t start = url.find("://");
+    start = (start == std::string::npos) ? 0 : start + 3;
+    std::size_t slash = url.find('/', start);
+    if (slash == std::string::npos) return url.substr(start);
+    std::string path = url.substr(slash);
+    const std::size_t q = path.find_first_of("?#");
+    if (q != std::string::npos) path.resize(q);
+    const std::size_t last = path.find_last_of('/');
+    std::string name = (last == std::string::npos) ? path : path.substr(last + 1);
+    if (name.empty()) return url.substr(start, slash - start);
+    return name;
+}
+
+// Three significant figures at most: the Size column is fixed, and "336.3 KB"
+// is one character wider than it can hold.
+std::string fmt_bytes(std::size_t n) {
+    char b[32];
+    const double kb = (double)n / 1024.0;
+    const double mb = kb / 1024.0;
+    if (n < 1024)          std::snprintf(b, sizeof b, "%zu B", n);
+    else if (kb < 100.0)   std::snprintf(b, sizeof b, "%.1f KB", kb);
+    else if (kb < 1024.0)  std::snprintf(b, sizeof b, "%.0f KB", kb);
+    else if (mb < 100.0)   std::snprintf(b, sizeof b, "%.1f MB", mb);
+    else                   std::snprintf(b, sizeof b, "%.0f MB", mb);
+    return b;
+}
+
+std::string fmt_ms(double ms) {
+    char b[32];
+    if (ms < 0.0) std::snprintf(b, sizeof b, "-");
+    else if (ms < 1.0) std::snprintf(b, sizeof b, "%.2f ms", ms);
+    else if (ms < 1000.0) std::snprintf(b, sizeof b, "%.0f ms", ms);
+    else std::snprintf(b, sizeof b, "%.2f s", ms / 1000.0);
+    return b;
+}
+
+ImVec4 status_color(const NetRecord& r) {
+    if (!r.done)                       return Theme::dt_dim;
+    if (!r.success || r.status >= 400) return ImVec4(0.95f, 0.45f, 0.45f, 1.0f);
+    if (r.status >= 300)               return ImVec4(0.60f, 0.75f, 0.95f, 1.0f);
+    return ImVec4(0.55f, 0.80f, 0.60f, 1.0f);
+}
+
+// Text-only sibling of chip_toggle: one choice out of seven, so each chip carries
+// a word rather than a glyph. Same fills, so the two rows read alike.
+bool filter_chip(const char* label, bool active) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    const float h = ImGui::GetFrameHeight();
+    const float w = ts.x + 16.0f;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(label, ImVec2(w, h));
+    const bool hovered = ImGui::IsItemHovered();
+
+    if (active) {
+        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), IM_COL32(255, 255, 255, 22), kDtRounding);
+    } else if (hovered) {
+        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), IM_COL32(255, 255, 255, 12), kDtRounding);
+    }
+    dl->AddText(ImVec2(std::round(p.x + (w - ts.x) * 0.5f), std::round(p.y + (h - ts.y) * 0.5f)),
+                active ? Theme::dt_text_on : Theme::dt_text_off, label);
+    return ImGui::IsItemClicked();
+}
+
+void kv_row(const char* key, const std::string& value) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextColored(Theme::dt_dim, "%s", key);
+    ImGui::TableNextColumn();
+    ImGui::TextWrapped("%s", value.c_str());
+}
+
+void header_table(const char* id, const std::vector<std::pair<std::string, std::string>>& hs) {
+    if (hs.empty()) {
+        ImGui::TextDisabled("  none");
+        return;
+    }
+    if (ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthStretch, 0.42f);
+        ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch, 0.58f);
+        for (const auto& [k, v] : hs) kv_row(k.c_str(), v);
+        ImGui::EndTable();
+    }
+}
+
+// The phase breakdown. Each stage is the gap between two of perform_request's
+// stamps, so a missing stamp stops the chart rather than inventing an empty bar.
+void draw_timing(const NetRecord& r) {
+    struct Stage { const char* label; double from, to; };
+    const RequestTiming& t = r.timing;
+    const double after_connect = t.secured >= 0.0 ? t.secured : t.connected;
+    const Stage stages[] = {
+        {"Resolve",  0.0,             t.resolved},
+        {"Connect",  t.resolved,      t.connected},
+        {"TLS",      t.connected,     t.secured},
+        {"Send",     after_connect,   t.sent},
+        {"Wait",     t.sent,          t.first_byte},
+        {"Download", t.first_byte,    t.complete},
+    };
+
+    double span = t.complete;
+    for (const Stage& s : stages) span = std::max(span, s.to);
+    if (span <= 0.0) {
+        ImGui::TextDisabled("No timing: the request failed before it reached the network.");
+        return;
+    }
+
+    // Measured, not guessed: "Download" overruns any round number that fits the
+    // rest, and the dock's font is not fixed at build time.
+    float label_w = 0.0f;
+    for (const Stage& s : stages) label_w = std::max(label_w, ImGui::CalcTextSize(s.label).x);
+    label_w += 8.0f;
+    const float value_w = ImGui::CalcTextSize("000.00 ms").x + 6.0f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float bar_h = std::max(6.0f, ImGui::GetTextLineHeight() - 5.0f);
+
+    for (const Stage& s : stages) {
+        if (s.from < 0.0 || s.to < 0.0 || s.to < s.from) continue;
+        ImGui::TextColored(Theme::dt_dim, "%s", s.label);
+        ImGui::SameLine(label_w);
+
+        const float track_w = std::max(40.0f, ImGui::GetContentRegionAvail().x - value_w);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float y = std::round(p.y + (ImGui::GetTextLineHeight() - bar_h) * 0.5f);
+        dl->AddRectFilled(ImVec2(p.x, y), ImVec2(p.x + track_w, y + bar_h),
+                          ImGui::ColorConvertFloat4ToU32(Theme::dt_field_bg), 2.0f);
+        const float x0 = p.x + track_w * (float)(s.from / span);
+        // A sub-millisecond stage is still a stage; keep it visible.
+        const float x1 = std::max(x0 + 2.0f, p.x + track_w * (float)(s.to / span));
+        dl->AddRectFilled(ImVec2(x0, y), ImVec2(std::min(x1, p.x + track_w), y + bar_h),
+                          ImGui::ColorConvertFloat4ToU32(Theme::dt_accent), 2.0f);
+
+        ImGui::Dummy(ImVec2(track_w, ImGui::GetTextLineHeight()));
+        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::TextColored(Theme::dt_dim, "%s", fmt_ms(s.to - s.from).c_str());
+    }
+
+    ImGui::Spacing();
+    ImGui::Text("Total. %s", fmt_ms(r.ms).c_str());
+    if (t.complete >= 0.0) {
+        // The gap is the queueing either side of perform_request, worth showing.
+        ImGui::TextColored(Theme::dt_dim, "On the wire. %s", fmt_ms(t.complete).c_str());
+    }
+    ImGui::TextColored(Theme::dt_dim, "Started. +%s", fmt_ms(r.offset_ms).c_str());
+}
+
+void draw_net_selected(const NetRecord& r, TabState& st) {
+    if (mono_font) ImGui::PushFont(mono_font);
+    ImGui::PushStyleColor(ImGuiCol_Text, Theme::dt_accent);
+    ImGui::TextWrapped("%s %s", r.method.c_str(), short_name(r.url).c_str());
+    ImGui::PopStyleColor();
+    if (mono_font) ImGui::PopFont();
+
+    const char* names[] = {"Headers", "Response", "Timing", "Security"};
+    // Same order as the Elements detail row: the rule goes down first, so each
+    // tab's underline paints over its own span of it rather than being sliced.
+    const ImVec2 row = ImGui::GetCursorScreenPos();
+    const float rule_y = row.y + ImGui::GetFrameHeight() - 1.0f;
+    ImGui::GetWindowDrawList()->AddLine(
+        ImVec2(row.x, rule_y), ImVec2(row.x + ImGui::GetContentRegionAvail().x, rule_y),
+        Theme::dt_hairline, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 0.0f));
+    for (int i = 0; i < 4; i++) {
+        if (i) ImGui::SameLine();
+        if (sub_tab(names[i], st.net_detail_tab == i)) st.net_detail_tab = i;
+    }
+    ImGui::PopStyleVar();
+    ImGui::Spacing();
+
+    switch (st.net_detail_tab) {
+        case 0: {
+            section_label("General");
+            if (ImGui::BeginTable("##dt_net_general", 2,
+                                  ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+                ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthStretch, 0.42f);
+                ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch, 0.58f);
+                kv_row("URL", r.url);
+                kv_row("Method", r.method);
+                kv_row("Initiator", r.initiator);
+                if (!r.done) {
+                    kv_row("Status", "in flight");
+                } else if (r.blocked) {
+                    kv_row("Status", r.error);
+                } else if (!r.success) {
+                    kv_row("Status", r.error.empty() ? "failed" : r.error);
+                } else {
+                    kv_row("Status", std::to_string(r.status) + " " + r.status_text);
+                }
+                if (!r.content_type.empty()) kv_row("Type", r.content_type);
+                if (r.done && !r.blocked) kv_row("Size", fmt_bytes(r.size));
+                kv_row("Transport", r.secure ? "star:// (TLS)" : "moon:// (plaintext)");
+                ImGui::EndTable();
+            }
+            section_label("Request headers");
+            header_table("##dt_net_req", r.req_headers);
+            section_label("Response headers");
+            header_table("##dt_net_res", r.res_headers);
+            break;
+        }
+        case 1: {
+            if (!r.done) {
+                ImGui::TextDisabled("Still in flight.");
+            } else if (r.blocked) {
+                ImGui::TextDisabled("%s", r.error.c_str());
+            } else if (r.preview_binary) {
+                ImGui::TextDisabled("Binary body, %s. Not shown.", fmt_bytes(r.size).c_str());
+            } else if (r.preview.empty()) {
+                ImGui::TextDisabled("Empty body.");
+            } else {
+                if (r.preview_truncated) {
+                    ImGui::TextColored(Theme::dt_dim, "First %s of %s",
+                                       fmt_bytes(r.preview.size()).c_str(),
+                                       fmt_bytes(r.size).c_str());
+                }
+                if (mono_font) ImGui::PushFont(mono_font);
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextUnformatted(r.preview.c_str(),
+                                       r.preview.c_str() + r.preview.size());
+                ImGui::PopTextWrapPos();
+                if (mono_font) ImGui::PopFont();
+            }
+            break;
+        }
+        case 2:
+            if (!r.done)        ImGui::TextDisabled("Still in flight.");
+            else if (r.blocked) ImGui::TextDisabled("%s", r.error.c_str());
+            else                draw_timing(r);
+            break;
+        case 3: {
+            if (!r.secure) {
+                ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.35f, 1.0f), "Plaintext");
+                ImGui::TextWrapped("moon:// carries no TLS, so this request was readable "
+                                   "and alterable in transit.");
+                break;
+            }
+            if (ImGui::BeginTable("##dt_net_tls", 2,
+                                  ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+                ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthStretch, 0.42f);
+                ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch, 0.58f);
+                kv_row("Protocol", r.tls.version);
+                kv_row("Cipher", r.tls.cipher);
+                kv_row("ALPN", r.tls.alpn);
+                kv_row("Certificate", r.tls.peer_subject);
+                kv_row("Issuer", r.tls.peer_issuer);
+                kv_row("Valid from", r.tls.not_before);
+                kv_row("Valid to", r.tls.not_after);
+                kv_row("Verified", r.tls.verified ? "yes" : "no");
+                kv_row("Session", r.tls.resumed ? "resumed" : "new handshake");
+                ImGui::EndTable();
+            }
+            break;
+        }
+    }
+}
+
+void draw_network(Tab&, TabState& st) {
+    ToolbarBand band;
+    band.begin();
+    if (tool_icon_button("##dt_net_clear", DrawBanIcon, false)) {
+        st.nets.clear();
+        st.net_selected = 0;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear the network log");
+    ImGui::SameLine(0.0f, 10.0f);
+    if (filter_chip("Preserve", st.net_preserve)) st.net_preserve = !st.net_preserve;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keep the log across navigations");
+    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::PushItemWidth(-1.0f);
+    field_input("##dt_net_filter", "Filter by URL", st.net_filter, IM_ARRAYSIZE(st.net_filter));
+    ImGui::PopItemWidth();
+
+    // The chips wrap rather than overflow: the dock is resizable down to 280.
+    const float row_right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    for (int i = 0; i < kNumKinds; i++) {
+        if (i) {
+            const float w = ImGui::CalcTextSize(kKinds[i].label).x + 16.0f;
+            if (ImGui::GetItemRectMax().x + 4.0f + w < row_right) ImGui::SameLine(0.0f, 4.0f);
+        }
+        if (filter_chip(kKinds[i].label, st.net_kind == i)) st.net_kind = i;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kKinds[i].tip);
+    }
+    band.end();
+
+    // Reserved for the summary footer, measured the same way the console's prompt is.
+    const float footer_h = ImGui::GetTextLineHeight() + 2.0f * kBandPad +
+                           ImGui::GetStyle().ItemSpacing.y;
+    const float avail_h = std::max(1.0f, ImGui::GetContentRegionAvail().y - footer_h);
+    const float table_h = std::max(70.0f, avail_h * st.net_split - 4.0f);
+
+    std::size_t shown = 0, total_bytes = 0, hidden_media = 0;
+    double slowest_end = 0.0;
+    bool any_pending = false;
+
+    begin_surface("##dt_net_table", ImVec2(0, table_h));
+    if (mono_font) ImGui::PushFont(mono_font);
+    // No column rules: they would run the full height of the table, drawing a
+    // grid through the empty space under the last row.
+    const ImGuiTableFlags tf = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY;
+    if (ImGui::BeginTable("##dt_nets", 4, tf, ImVec2(0, 0))) {
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("St", ImGuiTableColumnFlags_WidthFixed, 34.0f);
+        ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 64.0f);
+        ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 54.0f);
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+
+        for (const NetRecord& r : st.nets) {
+            if (!r.done) any_pending = true;
+            if (st.net_kind == 0 && hidden_from_all(r)) hidden_media++;
+            if (!net_passes(st, r)) continue;
+            shown++;
+            total_bytes += r.size;
+            slowest_end = std::max(slowest_end, r.offset_ms + r.ms);
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            // GET is the default; naming it on every row only costs name column width.
+            std::string name = r.method == "GET" ? std::string() : r.method + " ";
+            name += short_name(r.url);
+            // The selectable spans every column, so its label is not clipped to the
+            // Name column. Trim from the front: the tail carries the extension.
+            const float name_w = ImGui::GetContentRegionAvail().x;
+            if (ImGui::CalcTextSize(name.c_str()).x > name_w) {
+                while (name.size() > 2 &&
+                       ImGui::CalcTextSize((".." + name).c_str()).x > name_w) {
+                    name.erase(0, 1);
+                }
+                name.insert(0, "..");
+            }
+            char label[512];
+            std::snprintf(label, sizeof label, "%s##net%llu", name.c_str(),
+                          (unsigned long long)r.id);
+            if (ImGui::Selectable(label, st.net_selected == r.id,
+                                  ImGuiSelectableFlags_SpanAllColumns)) {
+                st.net_selected = r.id;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%s", r.url.c_str(), r.initiator);
+
+            ImGui::TableNextColumn();
+            ImGui::PushStyleColor(ImGuiCol_Text, status_color(r));
+            if (!r.done)            ImGui::TextUnformatted("...");
+            else if (r.blocked)     ImGui::TextUnformatted("blk");
+            else if (!r.success)    ImGui::TextUnformatted("err");
+            else                    ImGui::Text("%d", r.status);
+            ImGui::PopStyleColor();
+
+            // A blocked row has no size and no duration; 0 would read as a measurement.
+            ImGui::TableNextColumn();
+            if (r.done && !r.blocked) ImGui::TextUnformatted(fmt_bytes(r.size).c_str());
+            else                      ImGui::TextDisabled("-");
+
+            ImGui::TableNextColumn();
+            if (r.done && !r.blocked) ImGui::TextUnformatted(fmt_ms(r.ms).c_str());
+            else                      ImGui::TextDisabled("-");
+        }
+        if (st.net_scroll_to_end) {
+            ImGui::SetScrollHereY(1.0f);
+            st.net_scroll_to_end = false;
+        }
+        ImGui::EndTable();
+    }
+    if (mono_font) ImGui::PopFont();
+    if (shown == 0) {
+        ImGui::TextDisabled(st.nets.empty() ? "No requests recorded. Reload the page."
+                                            : "Nothing matches this filter.");
+    }
+    end_surface();
+
+    ImGui::InvisibleButton("##dt_net_split", ImVec2(-1.0f, 7.0f));
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    }
+    if (ImGui::IsItemActive() && avail_h > 1.0f) {
+        st.net_split = std::clamp(st.net_split + ImGui::GetIO().MouseDelta.y / avail_h,
+                                  0.15f, 0.85f);
+    }
+    {
+        ImVec2 gm = ImGui::GetItemRectMin(), gx = ImGui::GetItemRectMax();
+        float y = std::round((gm.y + gx.y) * 0.5f);
+        float cx = (gm.x + gx.x) * 0.5f;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(cx - 14.0f, y), ImVec2(cx + 14.0f, y),
+                                            Theme::dt_hairline, 1.0f);
+    }
+
+    begin_surface("##dt_net_detail", ImVec2(0, -footer_h));
+    const NetRecord* sel = nullptr;
+    for (const NetRecord& r : st.nets)
+        if (r.id == st.net_selected) { sel = &r; break; }
+    if (!sel) {
+        ImGui::TextDisabled("Select a request.");
+    } else {
+        draw_net_selected(*sel, st);
+    }
+    end_surface();
+
+    ToolbarBand footer;
+    footer.begin();
+    char summary[192];
+    if (hidden_media > 0) {
+        std::snprintf(summary, sizeof summary, "%zu requests. %s. %s.  (%zu media hidden)",
+                      shown, fmt_bytes(total_bytes).c_str(), fmt_ms(slowest_end).c_str(),
+                      hidden_media);
+    } else {
+        std::snprintf(summary, sizeof summary, "%zu requests. %s. %s", shown,
+                      fmt_bytes(total_bytes).c_str(), fmt_ms(slowest_end).c_str());
+    }
+    ImGui::Indent(8.0f);
+    ImGui::TextColored(Theme::dt_dim, "%s", summary);
+    ImGui::Unindent(8.0f);
+    footer.end(true);
+
+    // The idle loop would otherwise sleep through a request completing, leaving a
+    // row reading "..." until something else happened to wake the window.
+    st.net_wants_frames = any_pending;
 }
 
 bool passes_filter(const TabState& st, const LogEntry& e) {
