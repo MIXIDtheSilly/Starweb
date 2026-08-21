@@ -2215,14 +2215,6 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
     }
 }
 
-// Lucide strokes with round caps and joins; ImGui's are butt-capped, so a disc at
-// each end is what keeps a 1-unit dash from reading as a sliver.
-static void RoundStroke(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 color, float thickness) {
-    dl->AddLine(a, b, color, thickness);
-    dl->AddCircleFilled(a, thickness * 0.5f, color);
-    dl->AddCircleFilled(b, thickness * 0.5f, color);
-}
-
 void DrawSpinner(ImVec2 center, float radius, float thickness, const ImVec4& color) {
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     int num_segments = 30;
@@ -2232,65 +2224,5 @@ void DrawSpinner(ImVec2 center, float radius, float thickness, const ImVec4& col
     draw_list->PathStroke(ImGui::ColorConvertFloat4ToU32(color), 0, thickness);
 }
 
-// The chrome's set (arrow-left, arrow-right, rotate-cw, plus, x, lock) and the
-// console's (ban, scroll, triangle-alert, circle-x) are rasterized from the
-// real Lucide SVG source in icons.cpp. The two below are still traced by hand.
-
-// Lucide "square-dashed-mouse-pointer", traced from its 24x24 viewBox: three
-// rounded corners and six dashes, with the cursor breaking out of the fourth.
-void DrawInspectIcon(ImVec2 center, ImU32 color, float size) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float PI = 3.14159265f;
-    const float s = size / 24.0f;
-    const float th = 2.0f * s;
-    auto P = [&](float x, float y) {
-        return ImVec2(center.x + (x - 12.0f) * s, center.y + (y - 12.0f) * s);
-    };
-
-    // The r=2 corner arcs: M5 3 a2 2 0 0 0-2 2, and its two mirrors.
-    const float arcs[][4] = {
-        {5.0f,  5.0f,  -PI * 0.5f, -PI},    // top-left
-        {19.0f, 5.0f,  -PI * 0.5f, 0.0f},   // top-right
-        {5.0f,  19.0f,  PI * 0.5f,  PI},    // bottom-left
-    };
-    for (const auto& a : arcs) {
-        dl->PathClear();
-        dl->PathArcTo(P(a[0], a[1]), 2.0f * s, a[2], a[3], 12);
-        dl->PathStroke(color, 0, th);
-    }
-
-    const float dashes[][4] = {
-        { 9,  3, 10,  3}, {14,  3, 15,  3},
-        { 3,  9,  3, 10}, { 3, 14,  3, 15},
-        {21,  9, 21, 11}, { 9, 21, 11, 21},
-    };
-    for (const auto& d : dashes) RoundStroke(dl, P(d[0], d[1]), P(d[2], d[3]), color, th);
-
-    // Outlined, not filled: the source path is stroked with fill="none".
-    const ImVec2 pointer[] = {
-        P(12.03f, 12.68f), P(12.68f, 12.03f), P(21.68f, 15.53f), P(21.65f, 16.48f),
-        P(18.20f, 17.55f), P(17.54f, 18.21f), P(16.48f, 21.65f), P(15.53f, 21.68f),
-    };
-    dl->AddPolyline(pointer, 8, color, ImDrawFlags_Closed, th);
-}
-
-// Lucide "chevron-right": m9 18 6-6-6-6.
-void DrawChevronRightIcon(ImVec2 center, ImU32 color, float size) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float s = size / 24.0f;
-    const float th = 2.0f * s;
-    auto P = [&](float x, float y) {
-        return ImVec2(center.x + (x - 12.0f) * s, center.y + (y - 12.0f) * s);
-    };
-    ImVec2 a = P(9, 18), b = P(15, 12), c = P(9, 6);
-    dl->PathClear();
-    dl->PathLineTo(a);
-    dl->PathLineTo(b);
-    dl->PathLineTo(c);
-    dl->PathStroke(color, 0, th);
-    dl->AddCircleFilled(a, th * 0.5f, color);
-    dl->AddCircleFilled(b, th * 0.5f, color);
-    dl->AddCircleFilled(c, th * 0.5f, color);
-}
 
 

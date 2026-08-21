@@ -1,7 +1,7 @@
 // The chrome's icons, drawn from their real Lucide SVG source rather than from
 // hand-traced ImGui paths. Each one is rasterized once by nanosvg at the exact
 // device-pixel size it will be drawn at, uploaded as an alpha-carrying texture,
-// and tinted at draw time — so the geometry is whatever the SVG says, and only
+// and tinted at draw time, so the geometry is whatever the SVG says and only
 // the colour is ours.
 #include "renderer.hpp"
 
@@ -62,6 +62,12 @@ const char* const kTriangleAlert =
 
 const char* const kCircleX =
     R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>)";
+
+const char* const kSquareDashedMousePointer =
+    R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.034 12.681a.498.498 0 0 1 .647-.647l9 3.5a.5.5 0 0 1-.033.943l-3.444 1.068a1 1 0 0 0-.66.66l-1.067 3.443a.5.5 0 0 1-.943.033z"/><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h2"/><path d="M14 3h1"/><path d="M3 9v1"/><path d="M21 9v2"/><path d="M3 14v1"/></svg>)";
+
+const char* const kChevronRight =
+    R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>)";
 
 // A round cap and a mitre reach past the viewBox edge, so the raster is grown by
 // a unit on every side and the drawn box grows with it.
@@ -189,20 +195,29 @@ void DrawLockIcon(ImVec2 center, ImU32 color, bool closed, float size, float thi
     DrawSvgIcon(closed ? kLock : kLockOpen, center, color, size, thickness);
 }
 
-// The devtools set strokes at Lucide's own 2/24 rather than the chrome's
-// thinner 1.25: these sit on the dock's own surfaces, not on the black sheet.
+// The chrome's stroke weight, not Lucide's own 2/24.
+constexpr float kDtStroke = 1.25f;
+
 void DrawBanIcon(ImVec2 center, ImU32 color, float size) {
-    DrawSvgIcon(kBan, center, color, size, 0.0f);
+    DrawSvgIcon(kBan, center, color, size, kDtStroke);
 }
 
 void DrawScrollIcon(ImVec2 center, ImU32 color, float size) {
-    DrawSvgIcon(kScroll, center, color, size, 0.0f);
+    DrawSvgIcon(kScroll, center, color, size, kDtStroke);
 }
 
 void DrawTriangleAlertIcon(ImVec2 center, ImU32 color, float size) {
-    DrawSvgIcon(kTriangleAlert, center, color, size, 0.0f);
+    DrawSvgIcon(kTriangleAlert, center, color, size, kDtStroke);
 }
 
 void DrawCircleXIcon(ImVec2 center, ImU32 color, float size) {
-    DrawSvgIcon(kCircleX, center, color, size, 0.0f);
+    DrawSvgIcon(kCircleX, center, color, size, kDtStroke);
+}
+
+void DrawInspectIcon(ImVec2 center, ImU32 color, float size) {
+    DrawSvgIcon(kSquareDashedMousePointer, center, color, size, kDtStroke);
+}
+
+void DrawChevronRightIcon(ImVec2 center, ImU32 color, float size) {
+    DrawSvgIcon(kChevronRight, center, color, size, kDtStroke);
 }

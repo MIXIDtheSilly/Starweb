@@ -513,8 +513,6 @@ int main() {
     style.FrameRounding = 6.0f;
     style.GrabRounding = 6.0f;
     style.PopupRounding = 6.0f;
-    // The page panel's radius: the devtools footer band reads this to take the
-    // dock's bottom corner with it.
     style.ChildRounding = Trim::kPageRounding;
 
     style.Colors[ImGuiCol_WindowBg] = Theme::window_bg;
@@ -1350,7 +1348,8 @@ int main() {
         // child, so vw/vh and canvas auto-fit follow the narrowed viewport.
         const ImVec2 shell_avail = ImVec2(window_avail_width - Trim::kPageInset * 2.0f,
                                           ImGui::GetContentRegionAvail().y - Trim::kPageInset);
-        const float dt_splitter_w = 4.0f;
+        // The gap between the two panels is the page's own inset.
+        const float dt_splitter_w = Trim::kPageInset;
         const float dt_w = devtools::dock_width(active_tab.id, shell_avail.x);
         const bool dt_open = dt_w > 0.0f;
         // Sized explicitly rather than left at 0: "fill the parent" would run to
@@ -1364,10 +1363,7 @@ int main() {
         {
             ImVec2 panel_min = ImGui::GetCursorScreenPos();
             ImVec2 panel_max = ImVec2(panel_min.x + page_w, panel_min.y + shell_avail.y);
-            // The panel floats clear of every window edge, so all four of its
-            // corners are its own. With the dock open the right pair are the dock's.
-            const ImDrawFlags vp_corners = dt_open ? ImDrawFlags_RoundCornersLeft
-                                                   : ImDrawFlags_RoundCornersAll;
+            const ImDrawFlags vp_corners = ImDrawFlags_RoundCornersAll;
             ImDrawList* shell_draw_list = ImGui::GetWindowDrawList();
             auto body_it = active_tab.css_classes.find("body");
             const CssStyle* body_style = body_it != active_tab.css_classes.end()
@@ -1479,11 +1475,15 @@ int main() {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
             }
             if (ImGui::IsItemActive()) devtools::drag_dock(-io.MouseDelta.x);
-            ImVec2 sp_min = ImGui::GetItemRectMin();
-            ImGui::GetWindowDrawList()->AddLine(
-                ImVec2(sp_min.x + dt_splitter_w * 0.5f, sp_min.y),
-                ImVec2(sp_min.x + dt_splitter_w * 0.5f, sp_min.y + shell_avail.y),
-                Theme::border_separator, 1.0f);
+            // Nothing at rest; a short grab handle under the cursor.
+            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+                ImVec2 sp_min = ImGui::GetItemRectMin();
+                float cx = std::round(sp_min.x + dt_splitter_w * 0.5f);
+                float cy = sp_min.y + shell_avail.y * 0.5f;
+                ImGui::GetWindowDrawList()->AddLine(
+                    ImVec2(cx, cy - 16.0f), ImVec2(cx, cy + 16.0f),
+                    ImGui::IsItemActive() ? Theme::outline_bright : Theme::outline_mid, 2.0f);
+            }
 
             ImGui::SameLine(0.0f, 0.0f);
             // The dock never scrolls as a whole; each panel scrolls its own panes.
@@ -1494,8 +1494,7 @@ int main() {
                 ImGui::GetWindowPos(),
                 ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowWidth(),
                        ImGui::GetWindowPos().y + ImGui::GetWindowHeight()),
-                Theme::dt_bg, Trim::kPageRounding,
-                ImDrawFlags_RoundCornersRight);
+                Theme::dt_bg, Trim::kPageRounding, ImDrawFlags_RoundCornersAll);
             devtools::draw(active_tab);
             ImGui::EndChild();
         }

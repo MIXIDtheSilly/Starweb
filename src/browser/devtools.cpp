@@ -305,76 +305,87 @@ DomNode* find_node(DomNode& root, std::uint64_t id, std::vector<DomNode*>* chain
 }
 
 // ---- Chrome shared by the panels -------------------------------------------
-// Drawn to match the window's own toolbar rather than left as stock ImGui: flat
-// tabs with a top accent stripe, transparent buttons that tint purple on hover.
 
-constexpr float kStripH = 30.0f;
-// Where the first panel tab starts. The panes below run edge to edge.
+constexpr float kStripH = 34.0f;
+constexpr float kTabH = 24.0f;
+// Also how far a control row is held off the dock's edges; panes run edge to edge.
 constexpr float kTabInset = 8.0f;
-// Breathing room above and below a toolbar row, applied symmetrically.
 constexpr float kBandPad = 6.0f;
-// Every control in the dock shares this: squarer than the window chrome's
-// FrameRounding of 6, which suits an address bar but not an inspector panel.
-constexpr float kDtRounding = 3.0f;
+constexpr float kDtRounding = 4.5f;
 
-// Rounded-top tab, the same shape and tones as a page tab.
+// Nothing at rest, hover fill under the cursor, recessed fill in an outline
+// once selected.
+void control_box(ImDrawList* dl, ImVec2 mn, ImVec2 mx, bool active, bool hovered,
+                 bool held = false) {
+    if (active) {
+        dl->AddRectFilled(mn, mx, Theme::dt_recess, kDtRounding);
+        dl->AddRect(mn, mx, Theme::outline_mid, kDtRounding, 0, 1.0f);
+    } else if (held) {
+        dl->AddRectFilled(mn, mx, Theme::dt_press_bg, kDtRounding);
+    } else if (hovered) {
+        dl->AddRectFilled(mn, mx, Theme::dt_hover_bg, kDtRounding);
+    }
+}
+
+void outline_field(bool focused, bool hovered) {
+    ImGui::GetWindowDrawList()->AddRect(
+        ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+        focused ? Theme::outline_bright
+                : (hovered ? Theme::outline_mid : Theme::outline_dim),
+        kDtRounding, 0, focused ? 2.0f : 1.0f);
+}
+
 bool strip_tab(const char* label, bool active, float w) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton(label, ImVec2(w, kStripH));
     const bool hovered = ImGui::IsItemHovered();
     const bool clicked = ImGui::IsItemClicked();
-    ImVec2 mn = p, mx = ImVec2(p.x + w, p.y + kStripH);
 
-    if (active) {
-        dl->AddRectFilled(mn, mx, Theme::dt_tab_active_bg, kDtRounding, ImDrawFlags_RoundCornersTop);
-        dl->AddRectFilled(mn, ImVec2(mx.x, mn.y + 2.0f), Theme::tab_accent_stripe);
-    } else if (hovered) {
-        dl->AddRectFilled(mn, mx, Theme::dt_tab_hover_bg, kDtRounding, ImDrawFlags_RoundCornersTop);
-    }
+    const float pad = (kStripH - kTabH) * 0.5f;
+    ImVec2 mn(p.x + 0.5f, p.y + pad), mx(p.x + w - 0.5f, p.y + pad + kTabH);
+    control_box(dl, mn, mx, active, hovered);
 
     ImVec2 ts = ImGui::CalcTextSize(label);
-    dl->AddText(ImVec2(std::round(mn.x + (w - ts.x) * 0.5f),
-                       std::round(mn.y + (kStripH - ts.y) * 0.5f)),
-                active ? Theme::dt_text_on : Theme::dt_text_off, label);
+    dl->AddText(ImVec2(std::round(p.x + (w - ts.x) * 0.5f),
+                       std::round(p.y + (kStripH - ts.y) * 0.5f)),
+                active ? Theme::tab_text_on : Theme::tab_text_off, label);
     return clicked;
 }
 
 // Transparent until hovered, like the back/forward/reload buttons.
 bool tool_button(const char* label, bool active = false) {
-    ImGui::PushStyleColor(ImGuiCol_Button,
-                          active ? Theme::btn_active_highlight : ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Theme::btn_hover_highlight);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, Theme::btn_active_highlight);
-    ImGui::PushStyleColor(ImGuiCol_Text, active ? Theme::dt_accent : Theme::dt_text);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kDtRounding);
-    bool hit = ImGui::Button(label);
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(4);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    const ImVec2 pad = ImGui::GetStyle().FramePadding;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 size(ts.x + pad.x * 2.0f, ImGui::GetFrameHeight());
+    // Fires on release, as ImGui's own button does. The selection pills below
+    // take the press instead.
+    const bool hit = ImGui::InvisibleButton(label, size);
+
+    ImVec2 mn = p, mx = ImVec2(p.x + size.x, p.y + size.y);
+    control_box(dl, mn, mx, active, ImGui::IsItemHovered(), ImGui::IsItemActive());
+    dl->AddText(ImVec2(std::round(p.x + pad.x), std::round(p.y + (size.y - ts.y) * 0.5f)),
+                active ? Theme::dt_text_on : Theme::tab_text_on, label);
     return hit;
 }
 
-// Icon-only variant. Square rather than round: a round button reads as browser
-// chrome, and this row is an inspector's.
+// Icon-only variant.
 bool tool_icon_button(const char* id, void (*icon)(ImVec2, ImU32, float), bool active) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
     const float side = ImGui::GetFrameHeight();
-    ImGui::PushStyleColor(ImGuiCol_Button,
-                          active ? Theme::btn_active_highlight : ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Theme::btn_hover_highlight);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, Theme::btn_active_highlight);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kDtRounding);
-    bool hit = ImGui::Button(id, ImVec2(side, side));
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(3);
-    ImVec2 c((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
-             (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
-    icon(c, active ? ImGui::ColorConvertFloat4ToU32(Theme::dt_accent) : Theme::dt_text_on,
-         side - 6.0f);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool hit = ImGui::InvisibleButton(id, ImVec2(side, side));
+
+    control_box(dl, p, ImVec2(p.x + side, p.y + side), active, ImGui::IsItemHovered(),
+                ImGui::IsItemActive());
+    icon(ImVec2(std::round(p.x + side * 0.5f), std::round(p.y + side * 0.5f)),
+         active ? Theme::plus_color_hover : Theme::icon_normal, side - 8.0f);
     return hit;
 }
 
-// Sub-tab inside a panel. The dock's tabs wear their accent stripe on top, so
-// this row wears it underneath and the two never read as the same control.
+// Sub-tab inside a panel.
 bool sub_tab(const char* label, bool active) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float h = ImGui::GetFrameHeight();
@@ -384,18 +395,14 @@ bool sub_tab(const char* label, bool active) {
     ImGui::InvisibleButton(label, ImVec2(w, h));
     const bool hovered = ImGui::IsItemHovered();
 
+    control_box(dl, p, ImVec2(p.x + w, p.y + h), active, hovered);
     dl->AddText(ImVec2(std::round(p.x + (w - ts.x) * 0.5f),
                        std::round(p.y + (h - ts.y) * 0.5f)),
                 (active || hovered) ? Theme::dt_text_on : Theme::dt_text_off, label);
-    if (active) {
-        dl->AddRectFilled(ImVec2(p.x, p.y + h - 2.0f), ImVec2(p.x + w, p.y + h),
-                          ImGui::ColorConvertFloat4ToU32(Theme::dt_accent));
-    }
     return ImGui::IsItemClicked();
 }
 
-// Level filter chip. Neutral fill when on, with the level's glyph and colour
-// doing the signalling, so it never shouts louder than the log it filters.
+// Level filter chip. The glyph carries the level's colour.
 constexpr float kChipIcon = 14.0f;
 
 void chip_toggle(const char* label, bool* value, ImU32 tint,
@@ -407,14 +414,9 @@ void chip_toggle(const char* label, bool* value, ImU32 tint,
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton(label, ImVec2(w, h));
     if (ImGui::IsItemClicked()) *value = !*value;
-    const bool hovered = ImGui::IsItemHovered();
 
     const ImVec2 mn = p, mx = ImVec2(p.x + w, p.y + h);
-    if (*value) {
-        dl->AddRectFilled(mn, mx, IM_COL32(255, 255, 255, 22), kDtRounding);
-    } else if (hovered) {
-        dl->AddRectFilled(mn, mx, IM_COL32(255, 255, 255, 12), kDtRounding);
-    }
+    control_box(dl, mn, mx, *value, ImGui::IsItemHovered());
     icon(ImVec2(std::round(mn.x + 7.0f + kChipIcon * 0.5f), std::round(mn.y + h * 0.5f)),
          *value ? tint : (tint & 0x00FFFFFF) | 0x70000000, kChipIcon);
     dl->AddText(ImVec2(std::round(mn.x + 7.0f + kChipIcon + 5.0f),
@@ -422,63 +424,53 @@ void chip_toggle(const char* label, bool* value, ImU32 tint,
                 *value ? Theme::dt_text_on : Theme::dt_text_off, label);
 }
 
-// A control row sits on a lighter band, like the omnibox on the toolbar. Height
-// isn't known until the controls are laid out, so it's painted on a second channel.
-struct ToolbarBand {
-    ImDrawListSplitter splitter;
-    float top = 0.0f;
-
+struct ControlRow {
     void begin() {
-        ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        top = p.y;
-        splitter.Split(dl, 2);
-        splitter.SetCurrentChannel(dl, 1);
         ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + kBandPad));
+        ImGui::Indent(kTabInset);
     }
 
-    // `footer` puts the hairline on top instead, for the band under the panel.
-    void end(bool footer = false) {
-        ImDrawList* dl = ImGui::GetWindowDrawList();
+    void end() {
+        ImGui::Unindent(kTabInset);
         const ImVec2 p = ImGui::GetCursorScreenPos();
         // The cursor already carries one ItemSpacing past the last control; take
-        // that back before adding the pad or the row sits high in its band.
-        const float bottom = p.y - ImGui::GetStyle().ItemSpacing.y + kBandPad;
-        const float x0 = ImGui::GetWindowPos().x;
-        const float x1 = x0 + ImGui::GetWindowWidth();
-        const float edge = footer ? top + 0.5f : bottom - 0.5f;
-        splitter.SetCurrentChannel(dl, 0);
-        // A footer sits on the dock's bottom edge, so it takes the corner with
-        // it; a square fill would paint past the rounding onto the border.
-        dl->AddRectFilled(ImVec2(x0, top), ImVec2(x1, bottom), Theme::dt_band_bg,
-                          footer ? ImGui::GetStyle().ChildRounding : 0.0f,
-                          ImDrawFlags_RoundCornersBottomRight);
-        dl->AddLine(ImVec2(x0, edge), ImVec2(x1, edge), Theme::dt_hairline, 1.0f);
-        splitter.Merge(dl);
-        ImGui::SetCursorScreenPos(ImVec2(p.x, bottom));
+        // that back before adding the pad or the row sits high in its space.
+        ImGui::SetCursorScreenPos(
+            ImVec2(p.x, p.y - ImGui::GetStyle().ItemSpacing.y + kBandPad));
         // ImGui only grows a window to items, not to a moved cursor.
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     }
 };
 
-// The omnibox is a pill because it is the one address bar; a column of pills in
-// a properties pane just reads as noise.
-bool field_input(const char* id, const char* hint, char* buf, std::size_t cap) {
+// `right_inset` is the row inset on a toolbar row, where the field has to stop
+// where the row started. Inside a pane the pane's own padding does that, so 1.
+bool field_input(const char* id, const char* hint, char* buf, std::size_t cap,
+                 float right_inset = kTabInset) {
     ImGui::PushStyleColor(ImGuiCol_FrameBg, Theme::dt_field_bg);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, Theme::dt_field_bg);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Theme::dt_field_bg);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(8.0f, ImGui::GetStyle().FramePadding.y));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kDtRounding);
-    ImGui::PushItemWidth(-1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::PushItemWidth(-right_inset);
     bool changed = ImGui::InputTextWithHint(id, hint, buf, cap);
+    const bool focused = ImGui::IsItemActive();
+    const bool hovered = ImGui::IsItemHovered();
     ImGui::PopItemWidth();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(3);
+    // After the field, so its fill does not paint over the outline.
+    outline_field(focused, hovered);
     return changed;
 }
 
-// A recessed pane, matching the viewport's rounding and the chrome's tones.
+// A recessed pane, held off the dock's edges by the control rows' inset.
 void begin_surface(const char* id, ImVec2 size) {
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(Theme::dt_surface_bg));
+    ImGui::Indent(kTabInset);
+    if (size.x <= 0.0f) size.x += ImGui::GetContentRegionAvail().x - kTabInset;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(Theme::dt_recess));
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kDtRounding);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
     ImGui::BeginChild(id, size, true);
@@ -488,6 +480,7 @@ void end_surface() {
     ImGui::EndChild();
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor();
+    ImGui::Unindent(kTabInset);
 }
 
 void section_label(const char* text) {
@@ -795,8 +788,8 @@ void draw_overlay(Tab& tab, ImVec2 vp_min, ImVec2 vp_max) {
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     dl->PushClipRect(vp_min, vp_max, true);
-    dl->AddRectFilled(box->min, box->max, IM_COL32(111, 168, 220, 60));
-    dl->AddRect(box->min, box->max, IM_COL32(111, 168, 220, 220));
+    dl->AddRectFilled(box->min, box->max, IM_COL32(140, 120, 245, 55));
+    dl->AddRect(box->min, box->max, IM_COL32(140, 120, 245, 225));
 
     std::vector<DomNode*> chain;
     DomNode* node = find_node(tab.page_dom, target, &chain);
@@ -809,9 +802,10 @@ void draw_overlay(Tab& tab, ImVec2 vp_min, ImVec2 vp_max) {
         float y = box->min.y - sz.y - 6.0f;
         if (y < vp_min.y) y = box->min.y + 2.0f;
         ImVec2 p(box->min.x, y);
-        dl->AddRectFilled(p, ImVec2(p.x + sz.x + 10.0f, p.y + sz.y + 6.0f),
-                          IM_COL32(28, 28, 32, 240), 3.0f);
-        dl->AddText(ImVec2(p.x + 5.0f, p.y + 3.0f), IM_COL32(235, 235, 240, 255), chip);
+        ImVec2 cmx(p.x + sz.x + 10.0f, p.y + sz.y + 6.0f);
+        dl->AddRectFilled(p, cmx, IM_COL32(19, 19, 23, 240), kDtRounding);
+        dl->AddRect(p, cmx, Theme::outline_mid, kDtRounding, 0, 1.0f);
+        dl->AddText(ImVec2(p.x + 5.0f, p.y + 3.0f), Theme::dt_text_on, chip);
     }
     dl->PopClipRect();
 }
@@ -834,7 +828,6 @@ void draw(Tab& tab) {
 
     ImVec2 strip = ImGui::GetCursorScreenPos();
     const float strip_w = ImGui::GetContentRegionAvail().x;
-    dl->AddRectFilled(strip, ImVec2(strip.x + strip_w, strip.y + kStripH), Theme::dt_strip_bg);
 
     const float tab_w = std::max(52.0f, std::min(88.0f, (strip_w - 2.0f * kTabInset) / 5.0f));
     ImGui::SetCursorScreenPos(ImVec2(strip.x + kTabInset, strip.y));
@@ -846,11 +839,17 @@ void draw(Tab& tab) {
         }
     }
     ImGui::PopStyleVar();
-    dl->AddLine(ImVec2(strip.x, strip.y + kStripH - 0.5f),
-                ImVec2(strip.x + strip_w, strip.y + kStripH - 0.5f), Theme::dt_hairline, 1.0f);
-    ImGui::Spacing();
 
     ImGui::PushStyleColor(ImGuiCol_Text, Theme::dt_text);
+    ImGui::PushStyleColor(ImGuiCol_Header, ImGui::ColorConvertU32ToFloat4(Theme::dt_row_selected));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::ColorConvertU32ToFloat4(Theme::dt_row_hover));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImGui::ColorConvertU32ToFloat4(Theme::dt_row_selected));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(Theme::outline_dim));
+    ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImGui::ColorConvertU32ToFloat4(Theme::dt_bg));
+    ImGui::PushStyleColor(ImGuiCol_TableBorderLight, ImGui::ColorConvertU32ToFloat4(Theme::outline_dim));
+    ImGui::PushStyleColor(ImGuiCol_TableBorderStrong, ImGui::ColorConvertU32ToFloat4(Theme::outline_dim));
+    ImGui::PushStyleColor(ImGuiCol_TableRowBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, ImVec4(1.0f, 1.0f, 1.0f, 0.03f));
     switch (st.panel) {
         case Panel::Console:  draw_console(tab, st); break;
         case Panel::Elements: draw_elements(tab, st); break;
@@ -858,7 +857,7 @@ void draw(Tab& tab) {
         case Panel::Sources:  draw_placeholder("Sources"); break;
         case Panel::Metrics:  draw_placeholder("Metrics"); break;
     }
-    ImGui::PopStyleColor();
+    ImGui::PopStyleColor(10);
 }
 
 namespace {
@@ -998,13 +997,6 @@ void draw_styles_pane(Tab& tab, TabState& st, DomNode& node, std::vector<DomNode
     if (mono_font) ImGui::PopFont();
 
     const char* detail_names[] = {"Styles", "Computed", "Node"};
-    // The rule goes down first so each tab's underline paints over its own span
-    // of it rather than being sliced by it.
-    const ImVec2 row = ImGui::GetCursorScreenPos();
-    const float rule_y = row.y + ImGui::GetFrameHeight() - 1.0f;
-    ImGui::GetWindowDrawList()->AddLine(
-        ImVec2(row.x, rule_y), ImVec2(row.x + ImGui::GetContentRegionAvail().x, rule_y),
-        Theme::dt_hairline, 1.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 0.0f));
     for (int i = 0; i < 3; i++) {
         if (i) ImGui::SameLine();
@@ -1019,22 +1011,23 @@ void draw_styles_pane(Tab& tab, TabState& st, DomNode& node, std::vector<DomNode
 
             if (node.tag != "#text") {
                 ImGui::TextColored(Theme::dt_dim, "id");
-                if (field_input("##dt_e_id", "none", st.edit_id, IM_ARRAYSIZE(st.edit_id))) {
+                if (field_input("##dt_e_id", "none", st.edit_id, IM_ARRAYSIZE(st.edit_id), 1.0f)) {
                     node.id = st.edit_id;
                 }
                 ImGui::TextColored(Theme::dt_dim, "class");
-                if (field_input("##dt_e_cls", "none", st.edit_class, IM_ARRAYSIZE(st.edit_class))) {
+                if (field_input("##dt_e_cls", "none", st.edit_class, IM_ARRAYSIZE(st.edit_class), 1.0f)) {
                     node.class_name = st.edit_class;
                 }
             }
             ImGui::TextColored(Theme::dt_dim, "text");
-            if (field_input("##dt_e_txt", "empty", st.edit_text, IM_ARRAYSIZE(st.edit_text))) {
+            if (field_input("##dt_e_txt", "empty", st.edit_text, IM_ARRAYSIZE(st.edit_text),
+                            1.0f)) {
                 node.text_content = st.edit_text;
                 if (node.tag != "#text") node.children.clear();  // as textContent does
             }
             ImGui::TextColored(Theme::dt_dim, "style");
             if (field_input("##dt_e_sty", "color: red; padding: 8",
-                           st.edit_style, IM_ARRAYSIZE(st.edit_style))) {
+                            st.edit_style, IM_ARRAYSIZE(st.edit_style), 1.0f)) {
                 // Same path el.style.x = y takes, so an edit behaves like a script's.
                 node.inline_style = st.edit_style;
                 node.parsed_inline_style = CssStyle();
@@ -1130,7 +1123,7 @@ void draw_styles_pane(Tab& tab, TabState& st, DomNode& node, std::vector<DomNode
 }
 
 void draw_elements(Tab& tab, TabState& st) {
-    ToolbarBand band;
+    ControlRow band;
     band.begin();
     if (tool_icon_button("##dt_pick", DrawInspectIcon, st.picking)) st.picking = !st.picking;
     if (ImGui::IsItemHovered()) {
@@ -1144,7 +1137,7 @@ void draw_elements(Tab& tab, TabState& st) {
     float right = ImGui::GetContentRegionAvail().x;
     char count[32];
     std::snprintf(count, sizeof count, "%d boxes", (int)st.boxes.size());
-    ImGui::SameLine(0.0f, std::max(8.0f, right - ImGui::CalcTextSize(count).x - 4.0f));
+    ImGui::SameLine(0.0f, std::max(8.0f, right - ImGui::CalcTextSize(count).x - kTabInset));
     ImGui::TextColored(Theme::dt_dim, "%s", count);
     band.end();
 
@@ -1171,7 +1164,7 @@ void draw_elements(Tab& tab, TabState& st) {
         float y = std::round((gm.y + gx.y) * 0.5f);
         float cx = (gm.x + gx.x) * 0.5f;
         ImGui::GetWindowDrawList()->AddLine(ImVec2(cx - 14.0f, y), ImVec2(cx + 14.0f, y),
-                                            Theme::dt_hairline, 1.0f);
+                                            Theme::dt_grip, 1.0f);
     }
 
     begin_surface("##dt_detail", ImVec2(0, 0));
@@ -1194,7 +1187,7 @@ const NetKind kKinds[] = {
     {"All",   "Everything except media range requests"},
     {"Doc",   "The page itself"},
     {"CSS",   "Stylesheets"},
-    {"JS",    "External scripts"},
+    {"Lua",   "External scripts"},
     {"Img",   "Images and the favicon"},
     {"Media", "Video and audio: the probe and every range request"},
     {"Fetch", "Requests the page's Lua made with fetch()"},
@@ -1284,11 +1277,7 @@ bool filter_chip(const char* label, bool active) {
     ImGui::InvisibleButton(label, ImVec2(w, h));
     const bool hovered = ImGui::IsItemHovered();
 
-    if (active) {
-        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), IM_COL32(255, 255, 255, 22), kDtRounding);
-    } else if (hovered) {
-        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), IM_COL32(255, 255, 255, 12), kDtRounding);
-    }
+    control_box(dl, p, ImVec2(p.x + w, p.y + h), active, hovered);
     dl->AddText(ImVec2(std::round(p.x + (w - ts.x) * 0.5f), std::round(p.y + (h - ts.y) * 0.5f)),
                 active ? Theme::dt_text_on : Theme::dt_text_off, label);
     return ImGui::IsItemClicked();
@@ -1384,13 +1373,6 @@ void draw_net_selected(const NetRecord& r, TabState& st) {
     if (mono_font) ImGui::PopFont();
 
     const char* names[] = {"Headers", "Response", "Timing", "Security"};
-    // Same order as the Elements detail row: the rule goes down first, so each
-    // tab's underline paints over its own span of it rather than being sliced.
-    const ImVec2 row = ImGui::GetCursorScreenPos();
-    const float rule_y = row.y + ImGui::GetFrameHeight() - 1.0f;
-    ImGui::GetWindowDrawList()->AddLine(
-        ImVec2(row.x, rule_y), ImVec2(row.x + ImGui::GetContentRegionAvail().x, rule_y),
-        Theme::dt_hairline, 1.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 0.0f));
     for (int i = 0; i < 4; i++) {
         if (i) ImGui::SameLine();
@@ -1486,7 +1468,7 @@ void draw_net_selected(const NetRecord& r, TabState& st) {
 }
 
 void draw_network(Tab&, TabState& st) {
-    ToolbarBand band;
+    ControlRow band;
     band.begin();
     if (tool_icon_button("##dt_net_clear", DrawBanIcon, false)) {
         st.nets.clear();
@@ -1611,7 +1593,7 @@ void draw_network(Tab&, TabState& st) {
         float y = std::round((gm.y + gx.y) * 0.5f);
         float cx = (gm.x + gx.x) * 0.5f;
         ImGui::GetWindowDrawList()->AddLine(ImVec2(cx - 14.0f, y), ImVec2(cx + 14.0f, y),
-                                            Theme::dt_hairline, 1.0f);
+                                            Theme::dt_grip, 1.0f);
     }
 
     begin_surface("##dt_net_detail", ImVec2(0, -footer_h));
@@ -1625,7 +1607,7 @@ void draw_network(Tab&, TabState& st) {
     }
     end_surface();
 
-    ToolbarBand footer;
+    ControlRow footer;
     footer.begin();
     char summary[192];
     if (hidden_media > 0) {
@@ -1636,10 +1618,8 @@ void draw_network(Tab&, TabState& st) {
         std::snprintf(summary, sizeof summary, "%zu requests. %s. %s", shown,
                       fmt_bytes(total_bytes).c_str(), fmt_ms(slowest_end).c_str());
     }
-    ImGui::Indent(8.0f);
     ImGui::TextColored(Theme::dt_dim, "%s", summary);
-    ImGui::Unindent(8.0f);
-    footer.end(true);
+    footer.end();
 
     // The idle loop would otherwise sleep through a request completing, leaving a
     // row reading "..." until something else happened to wake the window.
@@ -1707,7 +1687,7 @@ void submit_console(TabState& st, int tab_id) {
 }
 
 void draw_console(Tab& tab, TabState& st) {
-    ToolbarBand band;
+    ControlRow band;
     band.begin();
     if (tool_icon_button("##dt_clear", DrawBanIcon, false)) st.logs.clear();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear console");
@@ -1722,7 +1702,8 @@ void draw_console(Tab& tab, TabState& st) {
     band.end();
 
     // Measured in mono (a point smaller than the UI font, what the row draws in):
-    // mismatched and the band either falls short of the dock's edge or overflows it.
+    // mismatched and the prompt either falls short of the dock's bottom edge or
+    // pushes the log pane off it.
     if (mono_font) ImGui::PushFont(mono_font);
     const float prompt_h = ImGui::GetFrameHeight() + 2.0f * kBandPad +
                            ImGui::GetStyle().ItemSpacing.y;
@@ -1749,7 +1730,7 @@ void draw_console(Tab& tab, TabState& st) {
     }
     end_surface();
 
-    ToolbarBand prompt;
+    ControlRow prompt;
     prompt.begin();
     // Mono goes on first so the gutter squares off the field's height. Sized off
     // the taller UI font it becomes the tallest item and tips the row off centre.
@@ -1761,10 +1742,13 @@ void draw_console(Tab& tab, TabState& st) {
                          ImGui::ColorConvertFloat4ToU32(Theme::dt_accent), 14.0f);
     ImGui::SameLine(0.0f, 0.0f);
     ImGui::PushStyleColor(ImGuiCol_FrameBg, Theme::dt_field_bg);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, Theme::dt_field_bg);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Theme::dt_field_bg);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(8.0f, ImGui::GetStyle().FramePadding.y));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kDtRounding);
-    ImGui::PushItemWidth(-1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::PushItemWidth(-kTabInset);
     const ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue |
                                       ImGuiInputTextFlags_CallbackHistory;
     if (ImGui::InputTextWithHint("##dt_eval", "Run Lua in this page", st.input,
@@ -1772,15 +1756,18 @@ void draw_console(Tab& tab, TabState& st) {
                                  console_input_callback, &st)) {
         submit_console(st, tab.id);
     }
+    const bool eval_focused = ImGui::IsItemActive();
+    const bool eval_hovered = ImGui::IsItemHovered();
     ImGui::PopItemWidth();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(3);
+    outline_field(eval_focused, eval_hovered);
     if (mono_font) ImGui::PopFont();
     if (st.focus_input) {
         ImGui::SetKeyboardFocusHere(-1);
         st.focus_input = false;
     }
-    prompt.end(true);
+    prompt.end();
 }
 
 }  // namespace
