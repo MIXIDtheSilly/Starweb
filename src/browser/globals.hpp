@@ -21,6 +21,9 @@ extern ImFont* mono_font;
 // right, so an unknown family just falls through to the default UI font.
 void register_page_font(const std::string& family, ImFont* font);
 ImFont* font_for_family(const std::string& family);
+// Registration order, spelled the way they were registered; the lookup map keys
+// on the normalised form.
+const std::vector<std::pair<std::string, ImFont*>>& page_font_faces();
 
 // Size of the page viewport for the frame being drawn, which is what `vw` and
 // `vh` resolve against. Set once per frame before the DOM is walked.

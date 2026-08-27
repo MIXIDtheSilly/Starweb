@@ -664,6 +664,9 @@ int main() {
                         if (const char* sel = std::getenv("STARWEB_DEVTOOLS_SELECT")) {
                             devtools::select_node(tab, sel);
                         }
+                        if (const char* src = std::getenv("STARWEB_DEVTOOLS_SOURCE")) {
+                            devtools::select_source(tab.id, src);
+                        }
                     } else {
                         tab.status_text = "Error: " + tab.active_page.error_message;
                         // Also on stderr: an interstitial says a load failed, but

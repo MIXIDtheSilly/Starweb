@@ -48,6 +48,9 @@ void select_node(Tab& tab, const std::string& query);
 // Selects a network row whose URL contains `query`, optionally followed by
 // ",headers" / ",response" / ",timing" / ",security" to open a detail tab with it.
 bool select_request(int tab_id, const std::string& query);
+// Selects the first source file whose name contains `query`, optionally followed
+// by ",<line>".
+void select_source(int tab_id, const std::string& query);
 
 // True while the picker is armed: a page click selects a node instead of reaching
 // the page.

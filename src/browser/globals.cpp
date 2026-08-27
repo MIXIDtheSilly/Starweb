@@ -35,6 +35,7 @@ ImVec2 page_document_origin = ImVec2(0.0f, 0.0f);
 ImVec2 page_viewport_origin = ImVec2(0.0f, 0.0f);
 
 static std::unordered_map<std::string, ImFont*> page_fonts;
+static std::vector<std::pair<std::string, ImFont*>> page_font_list;
 
 // "Inter SemiBold", "inter-semibold" and "'Inter  SemiBold'" all key the same.
 static std::string normalise_family(const std::string& s) {
@@ -50,7 +51,13 @@ static std::string normalise_family(const std::string& s) {
 }
 
 void register_page_font(const std::string& family, ImFont* font) {
-    if (font != nullptr) page_fonts[normalise_family(family)] = font;
+    if (font == nullptr) return;
+    page_fonts[normalise_family(family)] = font;
+    page_font_list.emplace_back(family, font);
+}
+
+const std::vector<std::pair<std::string, ImFont*>>& page_font_faces() {
+    return page_font_list;
 }
 
 ImFont* font_for_family(const std::string& family) {

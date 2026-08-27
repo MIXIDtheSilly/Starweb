@@ -630,6 +630,11 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                 const bool page_secure = res.is_secure;
                 std::string css_content = "";
                 res.dom = parse_html_to_dom(res.body, css_content, res.scripts);
+                // Snapshot for the Sources panel: after the loop css_content is
+                // every sheet at once.
+                if (css_content.find_first_not_of(" \t\r\n") != std::string::npos) {
+                    res.stylesheets.emplace_back("(inline)", css_content);
+                }
 
                 std::vector<std::string> stylesheet_hrefs;
                 find_stylesheets_in_dom(res.dom, stylesheet_hrefs);
@@ -647,6 +652,7 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                     FetchResult sheet_res = perform_fetch(tab_id, sheet_url, false, {}, "stylesheet");
                     if (sheet_res.success) {
                         css_content += "\n" + sheet_res.body;
+                        res.stylesheets.emplace_back(sheet_url, sheet_res.body);
                     }
                 }
 
@@ -666,7 +672,10 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                                               "blocked: mixed content");
                     } else {
                         FetchResult fav_res = perform_fetch(tab_id, fav_url, false, {}, "favicon");
-                        if (fav_res.success) res.favicon_bytes = std::move(fav_res.body);
+                        if (fav_res.success) {
+                            res.favicon_bytes = std::move(fav_res.body);
+                            res.favicon_url = fav_url;
+                        }
                     }
                 }
 

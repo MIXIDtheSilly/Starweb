@@ -36,6 +36,7 @@ std::string resolve_url(const std::string& base_url, const std::string& relative
 std::string find_title_in_dom(const DomNode& node);
 void find_stylesheets_in_dom(const DomNode& node, std::vector<std::string>& hrefs);
 void find_images_in_dom(const DomNode& node, std::vector<std::string>& srcs);
+void find_media_in_dom(const DomNode& node, std::vector<std::string>& srcs);
 // `initiator` labels the row in the network panel ("document", "stylesheet",
 // "image", "script", "favicon", "media", "media-probe", "fetch"). Must outlive
 // the call; every caller passes a literal.

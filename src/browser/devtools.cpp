@@ -4,8 +4,10 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -13,7 +15,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include "fetcher.hpp"
 #include "globals.hpp"
+#include "media_player.hpp"
 #include "parser.hpp"
 #include "renderer.hpp"
 #include "script.hpp"
@@ -112,6 +116,33 @@ struct TabState {
     // Set while a row is still in flight, so the idle loop keeps drawing until it
     // lands. Recomputed by every draw of the panel.
     bool net_wants_frames = false;
+
+    // Sources. The file list is rebuilt every frame, so the selection is held by
+    // key (a URL, or "page" for an inline chunk) rather than by index.
+    std::string src_pin;
+    char src_find[128] = "";
+    bool src_wrap = false;
+    float src_split = 0.34f;
+    int src_hit = 0;
+    int src_hl_line = 0;   // 1-based, 0 for none
+    int src_goto_line = 0; // scrolled to once, then cleared
+    bool src_scroll_to_pin = false;
+    // Dev hook only; resolved in draw_sources, where the file list exists.
+    std::string src_want;
+    int src_want_line = 0;
+
+    // Split lines and the y each one starts at, rebuilt when any part of the key
+    // below changes.
+    std::string src_key;
+    const void* src_key_ptr = nullptr;
+    std::size_t src_key_len = 0;
+    bool src_key_wrap = false;
+    float src_key_w = 0.0f;
+    std::vector<std::string> src_lines;
+    std::vector<float> src_tops;  // size lines + 1; the last entry is the total
+    float src_widest = 0.0f;
+    bool src_hits_dirty = true;
+    std::vector<int> src_hits;  // 0-based line indexes
 
     // Edit buffers, refilled whenever the selection changes.
     std::uint64_t edit_for = 0;
@@ -287,6 +318,7 @@ void drain() {
 void draw_console(Tab& tab, TabState& st);
 void draw_elements(Tab& tab, TabState& st);
 void draw_network(Tab& tab, TabState& st);
+void draw_sources(Tab& tab, TabState& st);
 void draw_placeholder(const char* name);
 
 // Depth-first search for a node by id, plus the chain of ancestors above it.
@@ -467,13 +499,13 @@ bool field_input(const char* id, const char* hint, char* buf, std::size_t cap,
 }
 
 // A recessed pane, held off the dock's edges by the control rows' inset.
-void begin_surface(const char* id, ImVec2 size) {
+void begin_surface(const char* id, ImVec2 size, ImGuiWindowFlags flags = 0) {
     ImGui::Indent(kTabInset);
     if (size.x <= 0.0f) size.x += ImGui::GetContentRegionAvail().x - kTabInset;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(Theme::dt_recess));
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kDtRounding);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
-    ImGui::BeginChild(id, size, true);
+    ImGui::BeginChild(id, size, true, flags);
 }
 
 void end_surface() {
@@ -689,6 +721,17 @@ bool select_request(int tab_id, const std::string& query) {
     return false;
 }
 
+void select_source(int tab_id, const std::string& query) {
+    if (query.empty()) return;
+    TabState& st = state(tab_id);
+    st.src_want = query;
+    st.src_want_line = 0;
+    if (const std::size_t comma = query.find(','); comma != std::string::npos) {
+        st.src_want = query.substr(0, comma);
+        st.src_want_line = std::atoi(query.c_str() + comma + 1);
+    }
+}
+
 void on_navigation_start(int tab_id) {
     PendingNet p;
     p.kind = PendingNet::Kind::Reset;
@@ -707,6 +750,8 @@ void on_navigate(int tab_id) {
     // Node ids are reassigned by the parse, so a selection from the old page would
     // point at an unrelated element. on_navigation_start clears the logs instead.
     st->selected = st->hovered = st->edit_for = 0;
+    st->src_pin.clear();
+    st->src_hl_line = st->src_goto_line = 0;
     st->picking = false;
     st->boxes.clear();
     st->boxes_next.clear();
@@ -854,7 +899,7 @@ void draw(Tab& tab) {
         case Panel::Console:  draw_console(tab, st); break;
         case Panel::Elements: draw_elements(tab, st); break;
         case Panel::Network:  draw_network(tab, st); break;
-        case Panel::Sources:  draw_placeholder("Sources"); break;
+        case Panel::Sources:  draw_sources(tab, st); break;
         case Panel::Metrics:  draw_placeholder("Metrics"); break;
     }
     ImGui::PopStyleColor(10);
@@ -1236,6 +1281,15 @@ std::string short_name(const std::string& url) {
     return name;
 }
 
+// Trimmed from the front: the tail carries the extension.
+std::string elide_front(std::string name, float w) {
+    if (ImGui::CalcTextSize(name.c_str()).x <= w) return name;
+    while (name.size() > 2 && ImGui::CalcTextSize((".." + name).c_str()).x > w) {
+        name.erase(0, 1);
+    }
+    return ".." + name;
+}
+
 // Three significant figures at most: the Size column is fixed, and "336.3 KB"
 // is one character wider than it can hold.
 std::string fmt_bytes(std::size_t n) {
@@ -1532,15 +1586,8 @@ void draw_network(Tab&, TabState& st) {
             std::string name = r.method == "GET" ? std::string() : r.method + " ";
             name += short_name(r.url);
             // The selectable spans every column, so its label is not clipped to the
-            // Name column. Trim from the front: the tail carries the extension.
-            const float name_w = ImGui::GetContentRegionAvail().x;
-            if (ImGui::CalcTextSize(name.c_str()).x > name_w) {
-                while (name.size() > 2 &&
-                       ImGui::CalcTextSize((".." + name).c_str()).x > name_w) {
-                    name.erase(0, 1);
-                }
-                name.insert(0, "..");
-            }
+            // Name column.
+            name = elide_front(std::move(name), ImGui::GetContentRegionAvail().x);
             char label[512];
             std::snprintf(label, sizeof label, "%s##net%llu", name.c_str(),
                           (unsigned long long)r.id);
@@ -1624,6 +1671,633 @@ void draw_network(Tab&, TabState& st) {
     // The idle loop would otherwise sleep through a request completing, leaving a
     // row reading "..." until something else happened to wake the window.
     st.net_wants_frames = any_pending;
+}
+
+// Sources.
+
+// Only Text goes through the line viewer; the rest are decoded assets.
+enum class SrcKind { Text, Image, Media, Font };
+
+// A row in the file list. Everything borrowed here lives for one draw.
+struct SourceFile {
+    const char* group = nullptr;
+    // The resolved URL, or "page" for an inline chunk; what src_pin and a console
+    // error's `source` hold.
+    std::string key;
+    std::string label;
+    const std::string* text = nullptr;  // Text: null for a script whose fetch failed
+    SrcKind kind = SrcKind::Text;
+    const std::string* data = nullptr;  // Image: bytes as they arrived
+    TextureInfo tex;
+    bool favicon = false;
+    // Media: the page's own player, null until the element starts one. Never one
+    // of our own: a URL is a single range cache, so a second reader would clash.
+    VideoPlayer* player = nullptr;
+    ImFont* font = nullptr;  // Font
+};
+
+void collect_sources(const Tab& tab, std::vector<SourceFile>& out) {
+    const FetchResult& page = tab.active_page;
+    if (!page.body.empty()) {
+        SourceFile f;
+        f.group = "Document";
+        f.key = tab.current_url;
+        f.label = short_name(tab.current_url);
+        f.text = &page.body;
+        out.push_back(std::move(f));
+    }
+    for (const PageScript& sc : page.scripts) {
+        // "page" is the chunk name run_page_scripts passes, so an error's source
+        // lines up with a row here.
+        const bool inline_chunk = sc.src.empty();
+        SourceFile f;
+        f.group = "Scripts";
+        f.key = inline_chunk ? std::string("page") : sc.src;
+        f.label = inline_chunk ? std::string("page") : short_name(sc.src);
+        f.text = sc.source.empty() ? nullptr : &sc.source;
+        out.push_back(std::move(f));
+    }
+    for (const auto& sheet : page.stylesheets) {
+        const bool inline_sheet = sheet.first == "(inline)";
+        SourceFile f;
+        f.group = "Stylesheets";
+        f.key = sheet.first;
+        f.label = inline_sheet ? sheet.first : short_name(sheet.first);
+        f.text = &sheet.second;
+        out.push_back(std::move(f));
+    }
+
+    // fetched_images is a hash map, and a list that reshuffles between frames is
+    // unusable.
+    std::vector<const std::string*> img_urls;
+    for (const auto& kv : page.fetched_images) img_urls.push_back(&kv.first);
+    std::sort(img_urls.begin(), img_urls.end(),
+              [](const std::string* a, const std::string* b) { return *a < *b; });
+    for (const std::string* url : img_urls) {
+        SourceFile f;
+        f.group = "Images";
+        f.key = *url;
+        f.label = short_name(*url);
+        f.kind = SrcKind::Image;
+        f.data = &page.fetched_images.at(*url);
+        auto tex = tab.page_textures.find(*url);
+        if (tex != tab.page_textures.end()) f.tex = tex->second;
+        out.push_back(std::move(f));
+    }
+    // Kept apart from page_textures: it outlives the page it came from.
+    if (!page.favicon_bytes.empty()) {
+        SourceFile f;
+        f.group = "Images";
+        f.key = page.favicon_url.empty() ? std::string("favicon") : page.favicon_url;
+        f.label = page.favicon_url.empty() ? std::string("favicon")
+                                           : short_name(page.favicon_url);
+        f.kind = SrcKind::Image;
+        f.data = &page.favicon_bytes;
+        f.tex = tab.favicon;
+        f.favicon = true;
+        out.push_back(std::move(f));
+    }
+
+    // From the live DOM rather than the fetch: media never lands in a body.
+    std::vector<std::string> media;
+    find_media_in_dom(tab.page_dom, media);
+    std::unordered_set<std::string> seen;
+    for (const std::string& src : media) {
+        std::string url = resolve_url(tab.current_url, src);
+        if (!seen.insert(url).second) continue;
+        SourceFile f;
+        f.group = "Media";
+        f.label = short_name(url);
+        f.kind = SrcKind::Media;
+        auto player = tab.active_players.find(url);
+        if (player != tab.active_players.end()) f.player = player->second;
+        f.key = std::move(url);
+        out.push_back(std::move(f));
+    }
+
+    // Only once something is loaded, so an empty tab still reads as empty. These
+    // are the bundled faces a page can select; there is no @font-face to fetch.
+    if (!out.empty()) {
+        for (const auto& face : page_font_faces()) {
+            SourceFile f;
+            f.group = "Fonts";
+            f.key = "font:" + face.first;
+            f.label = face.first;
+            f.kind = SrcKind::Font;
+            f.font = face.second;
+            out.push_back(std::move(f));
+        }
+    }
+}
+
+// Magic numbers, not the content type: the server's guess and the decoder's
+// answer disagree too often.
+const char* image_format(const std::string& b) {
+    auto at = [&](const char* sig, std::size_t n, std::size_t off) {
+        return b.size() >= off + n && std::memcmp(b.data() + off, sig, n) == 0;
+    };
+    if (at("\x89PNG", 4, 0)) return "PNG";
+    if (at("\xFF\xD8\xFF", 3, 0)) return "JPEG";
+    if (at("GIF8", 4, 0)) return "GIF";
+    if (at("RIFF", 4, 0) && at("WEBP", 4, 8)) return "WebP";
+    if (at("BM", 2, 0)) return "BMP";
+    if (at("\x00\x00\x01\x00", 4, 0)) return "ICO";
+    // SVG is text, so the loader sniffs for the tag rather than a magic number.
+    const std::size_t svg = b.find("<svg");
+    if (svg != std::string::npos && svg < 512) return "SVG";
+    return "unknown";
+}
+
+// Behind a preview, so a transparent PNG reads as transparent.
+void checkerboard(ImVec2 mn, ImVec2 size) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 mx(mn.x + size.x, mn.y + size.y);
+    const float c = 8.0f;
+    dl->PushClipRect(mn, mx, true);
+    dl->AddRectFilled(mn, mx, IM_COL32(56, 56, 62, 255));
+    for (int row = 0; mn.y + row * c < mx.y; row++) {
+        for (int col = (row & 1); mn.x + col * c < mx.x; col += 2) {
+            dl->AddRectFilled(ImVec2(mn.x + col * c, mn.y + row * c),
+                              ImVec2(mn.x + (col + 1) * c, mn.y + (row + 1) * c),
+                              IM_COL32(40, 40, 45, 255));
+        }
+    }
+    dl->PopClipRect();
+}
+
+std::string fmt_clock(double secs) {
+    if (secs < 0.0 || secs != secs) return "-";
+    const int t = (int)secs;
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%d:%02d", t / 60, t % 60);
+    return buf;
+}
+
+void asset_table(const char* id, const std::function<void()>& rows) {
+    if (ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthStretch, 0.36f);
+        ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch, 0.64f);
+        rows();
+        ImGui::EndTable();
+    }
+}
+
+// What is left for a preview once the table below it has its room. A reservation,
+// not a measurement: the rows are not laid out yet.
+float preview_height_budget() {
+    return std::max(120.0f, ImGui::GetContentRegionAvail().y -
+                                6.0f * ImGui::GetTextLineHeightWithSpacing());
+}
+
+void draw_image_view(const SourceFile& f) {
+    const float avail = ImGui::GetContentRegionAvail().x;
+    if (f.tex.id == 0 || f.tex.width <= 0) {
+        ImGui::TextColored(Theme::dt_dim, "No preview: the bytes did not decode.");
+    } else {
+        // Never scaled up: a 16x16 icon stretched across the pane misreports it.
+        const float scale = std::min({1.0f, avail / (float)f.tex.width,
+                                      preview_height_budget() / (float)f.tex.height});
+        const ImVec2 size(std::floor(f.tex.width * scale), std::floor(f.tex.height * scale));
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const ImVec2 at(std::round(p.x + (avail - size.x) * 0.5f), p.y);
+        ImGui::SetCursorScreenPos(at);
+        checkerboard(at, size);
+        ImGui::Image((void*)(intptr_t)f.tex.id, size);
+        if (scale < 1.0f) {
+            ImGui::TextColored(Theme::dt_dim, "Shown at %d%%", (int)std::round(scale * 100.0f));
+        }
+    }
+
+    ImGui::Spacing();
+    asset_table("##dt_src_img", [&] {
+        kv_row("URL", f.key);
+        if (f.data) kv_row("Format", image_format(*f.data));
+        if (f.tex.id != 0) {
+            kv_row("Size", std::to_string(f.tex.width) + " x " + std::to_string(f.tex.height));
+        }
+        if (f.data) kv_row("Bytes", fmt_bytes(f.data->size()));
+        if (f.favicon) kv_row("Role", "favicon");
+    });
+}
+
+void draw_media_view(const SourceFile& f) {
+    VideoPlayer* p = f.player;
+    if (p && !p->is_audio_only() && p->get_texture_id() != 0 && p->get_width() > 0) {
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float scale = std::min({1.0f, avail / (float)p->get_width(),
+                                      preview_height_budget() / (float)p->get_height()});
+        const ImVec2 size(std::floor(p->get_width() * scale), std::floor(p->get_height() * scale));
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(std::round(at.x + (avail - size.x) * 0.5f), at.y));
+        ImGui::Image((void*)(intptr_t)p->get_texture_id(), size);
+        ImGui::Spacing();
+    }
+
+    asset_table("##dt_src_media", [&] {
+        kv_row("URL", f.key);
+        if (!p) {
+            kv_row("State", "not started");
+        } else if (p->has_error()) {
+            kv_row("State", "failed to decode");
+        } else {
+            kv_row("Kind", p->is_audio_only() ? "audio" : "video");
+            if (p->get_width() > 0) {
+                kv_row("Size", std::to_string(p->get_width()) + " x " +
+                                   std::to_string(p->get_height()));
+            }
+            kv_row("Position", fmt_clock(p->get_current_time()) + " / " +
+                                   fmt_clock(p->get_duration()));
+            kv_row("State", p->is_playing() ? "playing" : "paused");
+        }
+    });
+}
+
+void draw_font_view(const SourceFile& f) {
+    if (f.font) ImGui::PushFont(f.font);
+    ImGui::SetWindowFontScale(1.9f);
+    ImGui::TextUnformatted(f.label.c_str());
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::Spacing();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted("The quick brown fox jumps over the lazy dog. 0123456789");
+    ImGui::PopTextWrapPos();
+    if (f.font) ImGui::PopFont();
+
+    ImGui::Spacing();
+    if (mono_font) ImGui::PushFont(mono_font);
+    ImGui::TextColored(Theme::dt_dim, "font-family: %s;", f.label.c_str());
+    if (mono_font) ImGui::PopFont();
+}
+
+void open_source(TabState& st, const std::string& key, int line) {
+    st.panel = Panel::Sources;
+    st.src_pin = key;
+    st.src_scroll_to_pin = true;
+    st.src_hl_line = line;
+    st.src_goto_line = line;
+}
+
+// Splits the file into lines and measures each one. Wrapping makes rows a
+// variable height, which ImGuiListClipper cannot do; src_tops takes its place.
+void rebuild_source_cache(TabState& st, const SourceFile& f, float wrap_w) {
+    const std::size_t len = f.text ? f.text->size() : 0;
+    if (st.src_key == f.key && st.src_key_ptr == f.text && st.src_key_len == len &&
+        st.src_key_wrap == st.src_wrap &&
+        (!st.src_wrap || std::fabs(st.src_key_w - wrap_w) < 0.5f)) {
+        return;
+    }
+    st.src_key = f.key;
+    st.src_key_ptr = f.text;
+    st.src_key_len = len;
+    st.src_key_wrap = st.src_wrap;
+    st.src_key_w = wrap_w;
+    st.src_hits_dirty = true;
+    st.src_lines.clear();
+
+    if (f.text) {
+        for (std::size_t start = 0; start <= f.text->size();) {
+            const std::size_t nl = f.text->find('\n', start);
+            std::string line = f.text->substr(
+                start, nl == std::string::npos ? std::string::npos : nl - start);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            // ImGui has no tab stops, so a literal tab is one narrow glyph.
+            for (std::size_t t = line.find('\t'); t != std::string::npos;
+                 t = line.find('\t', t + 4)) {
+                line.replace(t, 1, "    ");
+            }
+            st.src_lines.push_back(std::move(line));
+            if (nl == std::string::npos) break;
+            start = nl + 1;
+        }
+    }
+
+    // Measured under the font the viewer draws in; the caller pushes mono first.
+    const float line_h = ImGui::GetTextLineHeight();
+    st.src_tops.assign(st.src_lines.size() + 1, 0.0f);
+    st.src_widest = 0.0f;
+    float y = 0.0f;
+    for (std::size_t i = 0; i < st.src_lines.size(); i++) {
+        st.src_tops[i] = y;
+        const char* b = st.src_lines[i].c_str();
+        const char* e = b + st.src_lines[i].size();
+        if (st.src_wrap) {
+            y += std::max(line_h, ImGui::CalcTextSize(b, e, false, wrap_w).y);
+        } else {
+            st.src_widest = std::max(st.src_widest, ImGui::CalcTextSize(b, e).x);
+            y += line_h;
+        }
+    }
+    st.src_tops.back() = y;
+}
+
+void rebuild_source_hits(TabState& st) {
+    if (!st.src_hits_dirty) return;
+    st.src_hits_dirty = false;
+    st.src_hits.clear();
+    if (st.src_find[0] == '\0') return;
+
+    auto fold = [](std::string s) {
+        for (char& c : s) c = (char)std::tolower((unsigned char)c);
+        return s;
+    };
+    const std::string needle = fold(st.src_find);
+    for (std::size_t i = 0; i < st.src_lines.size(); i++) {
+        if (fold(st.src_lines[i]).find(needle) != std::string::npos) {
+            st.src_hits.push_back((int)i);
+        }
+    }
+    if (st.src_hit >= (int)st.src_hits.size()) st.src_hit = 0;
+}
+
+void draw_source_view(TabState& st, const SourceFile* f) {
+    if (!f) {
+        ImGui::TextDisabled("Select a file.");
+        return;
+    }
+    switch (f->kind) {
+        case SrcKind::Image: draw_image_view(*f); return;
+        case SrcKind::Media: draw_media_view(*f); return;
+        case SrcKind::Font:  draw_font_view(*f);  return;
+        case SrcKind::Text:  break;
+    }
+    if (mono_font) ImGui::PushFont(mono_font);
+
+    // From the raw newline count, not src_lines: the split needs the wrap width,
+    // which needs the gutter.
+    const std::size_t nlines =
+        f->text ? (std::size_t)std::count(f->text->begin(), f->text->end(), '\n') + 1 : 1;
+    char widest[24];
+    std::snprintf(widest, sizeof widest, "%zu", nlines);
+    const float gutter = ImGui::CalcTextSize(widest).x + 16.0f;
+    const float wrap_w = std::max(40.0f, ImGui::GetContentRegionAvail().x - gutter);
+
+    rebuild_source_cache(st, *f, wrap_w);
+    rebuild_source_hits(st);
+
+    if (!f->text) {
+        if (mono_font) ImGui::PopFont();
+        ImGui::TextDisabled("This script failed to load.");
+        return;
+    }
+
+    const int n = (int)st.src_lines.size();
+    const float view_h = ImGui::GetWindowHeight();
+    if (st.src_goto_line > 0 && n > 0) {
+        const int idx = std::clamp(st.src_goto_line - 1, 0, n - 1);
+        // A third down, not at the top: the lines above an error matter too.
+        ImGui::SetScrollY(std::max(0.0f, st.src_tops[idx] - view_h * 0.33f));
+        st.src_goto_line = 0;
+    }
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+    // Only visible rows are emitted, so the scrollbar needs the extent up front.
+    if (!st.src_wrap && n > 0) ImGui::Dummy(ImVec2(gutter + st.src_widest, 0.0f));
+
+    const float scroll = ImGui::GetScrollY();
+    int first = 0, last = n;
+    if (n > 0) {
+        const auto b = st.src_tops.begin();
+        first = std::max(0, (int)(std::upper_bound(b, b + n, scroll) - b) - 1);
+        last = std::min(n, (int)(std::lower_bound(b, b + n, scroll + view_h) - b) + 1);
+    }
+
+    if (first > 0) ImGui::Dummy(ImVec2(0.0f, st.src_tops[first]));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // From the window, not the cursor, so a band stays put under a sideways scroll.
+    const float x0 = ImGui::GetWindowPos().x + 1.0f;
+    const float x1 = x0 + ImGui::GetWindowWidth() - 2.0f;
+    for (int i = first; i < last; i++) {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float h = st.src_tops[i + 1] - st.src_tops[i];
+        const bool marked = (i + 1) == st.src_hl_line;
+        const bool hit = std::binary_search(st.src_hits.begin(), st.src_hits.end(), i);
+        if (marked) {
+            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x1, p.y + h), Theme::dt_row_selected);
+        } else if (hit) {
+            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x1, p.y + h), Theme::dt_row_hover);
+        }
+
+        char num[24];
+        std::snprintf(num, sizeof num, "%d", i + 1);
+        dl->AddText(ImVec2(std::round(p.x + gutter - 8.0f - ImGui::CalcTextSize(num).x), p.y),
+                    marked ? Theme::dt_text_on : Theme::dt_text_off, num);
+
+        ImGui::SetCursorScreenPos(ImVec2(p.x + gutter, p.y));
+        if (st.src_wrap) ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap_w);
+        ImGui::TextUnformatted(st.src_lines[i].c_str());
+        if (st.src_wrap) ImGui::PopTextWrapPos();
+    }
+    if (last < n) ImGui::Dummy(ImVec2(0.0f, st.src_tops[n] - st.src_tops[last]));
+
+    ImGui::PopStyleVar();
+    if (mono_font) ImGui::PopFont();
+}
+
+void draw_sources(Tab& tab, TabState& st) {
+    std::vector<SourceFile> files;
+    collect_sources(tab, files);
+
+    if (!st.src_want.empty()) {
+        for (const SourceFile& f : files) {
+            if (f.key.find(st.src_want) == std::string::npos) continue;
+            open_source(st, f.key, st.src_want_line);
+            st.src_want.clear();
+            break;
+        }
+    }
+
+    const SourceFile* sel = nullptr;
+    for (const SourceFile& f : files)
+        if (f.key == st.src_pin) { sel = &f; break; }
+    if (!sel && !files.empty()) {
+        // The pin is from a page that has since been replaced.
+        sel = &files[0];
+        st.src_pin = sel->key;
+        st.src_hl_line = 0;
+    }
+
+    // An asset has no lines, so wrapping and find have nothing to act on.
+    const bool textual = !sel || sel->kind == SrcKind::Text;
+
+    ControlRow band;
+    band.begin();
+    if (textual) {
+        if (tool_button("Wrap", st.src_wrap)) {
+            st.src_wrap = !st.src_wrap;
+            if (st.src_wrap) ImGui::SetScrollX(0.0f);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Wrap long lines to the pane");
+        ImGui::SameLine(0.0f, 4.0f);
+    }
+    if (tool_button("Copy") && sel) {
+        ImGui::SetClipboardText(textual ? (sel->text ? sel->text->c_str() : "")
+                                        : sel->key.c_str());
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(textual ? "Copy this file to the clipboard"
+                                  : "Copy this URL to the clipboard");
+    }
+    if (textual) {
+        ImGui::SameLine(0.0f, 8.0f);
+        if (field_input("##dt_src_find", "Find in file", st.src_find,
+                        IM_ARRAYSIZE(st.src_find))) {
+            st.src_hits_dirty = true;
+            st.src_hit = 0;
+        }
+    }
+
+    if (textual && st.src_find[0] != '\0') {
+        auto step = [&](int by) {
+            if (st.src_hits.empty()) return;
+            const int n = (int)st.src_hits.size();
+            st.src_hit = (st.src_hit + by + n) % n;
+            st.src_hl_line = st.src_hits[st.src_hit] + 1;
+            st.src_goto_line = st.src_hl_line;
+        };
+        if (tool_button("Prev")) step(-1);
+        ImGui::SameLine(0.0f, 4.0f);
+        if (tool_button("Next")) step(1);
+        ImGui::SameLine(0.0f, 8.0f);
+        char count[64];
+        if (st.src_hits.empty()) std::snprintf(count, sizeof count, "no matches");
+        else std::snprintf(count, sizeof count, "%d / %d lines", st.src_hit + 1,
+                           (int)st.src_hits.size());
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(Theme::dt_dim, "%s", count);
+    }
+    band.end();
+
+    // Reserved for the summary footer, measured the way the network panel's is.
+    const float footer_h = ImGui::GetTextLineHeight() + 2.0f * kBandPad +
+                           ImGui::GetStyle().ItemSpacing.y;
+    const float avail_h = std::max(1.0f, ImGui::GetContentRegionAvail().y - footer_h);
+    const float list_h = std::max(60.0f, avail_h * st.src_split - 4.0f);
+
+    begin_surface("##dt_src_files", ImVec2(0, list_h));
+    if (files.empty()) {
+        ImGui::TextDisabled("Nothing loaded. Open a page.");
+    }
+    const char* group = nullptr;
+    for (int i = 0; i < (int)files.size(); i++) {
+        const SourceFile& f = files[i];
+        if (group != f.group) {
+            group = f.group;
+            if (i) ImGui::Spacing();
+            ImGui::TextColored(Theme::dt_dim, "%s", group);
+        }
+        std::string size;
+        bool bad = false;
+        switch (f.kind) {
+            case SrcKind::Text:
+                size = f.text ? fmt_bytes(f.text->size()) : std::string("failed");
+                bad = !f.text;
+                break;
+            case SrcKind::Image:
+                size = f.data ? fmt_bytes(f.data->size()) : std::string("failed");
+                bad = f.tex.id == 0;
+                break;
+            case SrcKind::Media: size = "stream"; break;
+            case SrcKind::Font:  size = "face"; break;
+        }
+        const float size_w = ImGui::CalcTextSize(size.c_str()).x;
+        char label[512];
+        std::snprintf(label, sizeof label, "%s##src%d",
+                      elide_front(f.label, ImGui::GetContentRegionAvail().x - size_w - 10.0f)
+                          .c_str(),
+                      i);
+        if (ImGui::Selectable(label, sel == &f)) {
+            st.src_pin = f.key;
+            st.src_hl_line = 0;
+            st.src_hit = 0;
+            st.src_scroll_to_pin = false;
+        }
+        if (sel == &f && st.src_scroll_to_pin) {
+            ImGui::SetScrollHereY(0.5f);
+            st.src_scroll_to_pin = false;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", f.key.c_str());
+        // Centred in the row: a Selectable's rect is grown by half an ItemSpacing
+        // on each side.
+        const ImVec2 rmn = ImGui::GetItemRectMin(), rmx = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(rmx.x - size_w,
+                   std::round((rmn.y + rmx.y - ImGui::GetTextLineHeight()) * 0.5f)),
+            bad ? IM_COL32(242, 115, 115, 255) : Theme::dt_text_off, size.c_str());
+    }
+    end_surface();
+
+    ImGui::InvisibleButton("##dt_src_split", ImVec2(-1.0f, 7.0f));
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    }
+    if (ImGui::IsItemActive() && avail_h > 1.0f) {
+        st.src_split = std::clamp(st.src_split + ImGui::GetIO().MouseDelta.y / avail_h,
+                                  0.12f, 0.80f);
+    }
+    {
+        const ImVec2 gm = ImGui::GetItemRectMin(), gx = ImGui::GetItemRectMax();
+        const float y = std::round((gm.y + gx.y) * 0.5f);
+        const float cx = (gm.x + gx.x) * 0.5f;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(cx - 14.0f, y), ImVec2(cx + 14.0f, y),
+                                            Theme::dt_grip, 1.0f);
+    }
+
+    // Forced on: the scrollbar width comes out of the wrap width, so letting it
+    // appear with the content would size the wrap from the wrap.
+    ImGuiWindowFlags vf = ImGuiWindowFlags_AlwaysVerticalScrollbar;
+    if (textual && !st.src_wrap) vf |= ImGuiWindowFlags_HorizontalScrollbar;
+    begin_surface("##dt_src_view", ImVec2(0, -footer_h), vf);
+    draw_source_view(st, sel);
+    end_surface();
+
+    ControlRow footer;
+    footer.begin();
+    std::string summary;
+    if (sel) {
+        switch (sel->kind) {
+            case SrcKind::Text:
+                if (sel->text) {
+                    summary = sel->label + "  -  " + std::to_string(st.src_lines.size()) +
+                              " lines, " + fmt_bytes(sel->text->size());
+                }
+                break;
+            case SrcKind::Image:
+                summary = sel->label + "  -  " +
+                          (sel->data ? std::string(image_format(*sel->data)) + ", " : "") +
+                          (sel->tex.id != 0 ? std::to_string(sel->tex.width) + " x " +
+                                                  std::to_string(sel->tex.height) + ", "
+                                            : "") +
+                          (sel->data ? fmt_bytes(sel->data->size()) : "no bytes");
+                break;
+            case SrcKind::Media:
+                summary = sel->label + "  -  " +
+                          (sel->player ? std::string(sel->player->is_audio_only() ? "audio"
+                                                                                  : "video") +
+                                             ", " + fmt_clock(sel->player->get_duration())
+                                       : std::string("not started"));
+                break;
+            case SrcKind::Font:
+                summary = sel->label + "  -  bundled face";
+                break;
+        }
+    }
+    if (summary.empty()) summary = std::to_string(files.size()) + " files";
+    ImGui::TextColored(Theme::dt_dim, "%s", summary.c_str());
+    footer.end();
+}
+
+// Lua puts the position in the message itself ("chunk:12: attempt to ...").
+int ref_line(const LogEntry& e) {
+    if (e.line > 0) return e.line;
+    if (e.source.empty()) return 0;
+    if (e.text.compare(0, e.source.size(), e.source) != 0) return 0;
+    std::size_t i = e.source.size();
+    if (i >= e.text.size() || e.text[i] != ':') return 0;
+    int n = 0;
+    for (i++; i < e.text.size() && std::isdigit((unsigned char)e.text[i]); i++) {
+        n = n * 10 + (e.text[i] - '0');
+    }
+    return n;
 }
 
 bool passes_filter(const TabState& st, const LogEntry& e) {
@@ -1710,16 +2384,48 @@ void draw_console(Tab& tab, TabState& st) {
     if (mono_font) ImGui::PopFont();
     begin_surface("##dt_log", ImVec2(0, -prompt_h));
     if (mono_font) ImGui::PushFont(mono_font);
+    // Collected once, not per row: the log can run to thousands of lines.
+    std::vector<SourceFile> files;
+    collect_sources(tab, files);
+    auto jumpable = [&files](const std::string& key) {
+        for (const SourceFile& f : files)
+            if (f.key == key && f.text) return true;
+        return false;
+    };
+
     bool any = false;
+    int row = 0;
     for (const LogEntry& e : st.logs) {
+        row++;
         if (!passes_filter(st, e)) continue;
         any = true;
         ImGui::PushStyleColor(ImGuiCol_Text, level_color(e.level));
         ImGui::TextWrapped("%s%s", level_prefix(e.level), e.text.c_str());
         ImGui::PopStyleColor();
-        if (!e.source.empty()) {
-            if (e.line > 0) ImGui::TextDisabled("      %s:%d", e.source.c_str(), e.line);
-            else            ImGui::TextDisabled("      %s", e.source.c_str());
+        if (e.source.empty()) continue;
+
+        const int line = ref_line(e);
+        char ref[600];
+        if (line > 0) std::snprintf(ref, sizeof ref, "%s:%d", e.source.c_str(), line);
+        else          std::snprintf(ref, sizeof ref, "%s", e.source.c_str());
+        // Drawn by hand: the colour depends on a hover the item reports only once
+        // it exists.
+        const float lead = ImGui::CalcTextSize("      ").x;
+        const ImVec2 ts = ImGui::CalcTextSize(ref);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        char id[32];
+        std::snprintf(id, sizeof id, "##dt_ref%d", row);
+        ImGui::InvisibleButton(id, ImVec2(lead + ts.x, ts.y));
+        const bool hot = jumpable(e.source) && ImGui::IsItemHovered();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        const ImU32 col = hot ? ImGui::ColorConvertFloat4ToU32(Theme::dt_accent)
+                              : Theme::dt_text_off;
+        ImDrawList* rdl = ImGui::GetWindowDrawList();
+        rdl->AddText(ImVec2(p.x + lead, p.y), col, ref);
+        if (hot) {
+            rdl->AddLine(ImVec2(p.x + lead, p.y + ts.y - 1.0f),
+                         ImVec2(p.x + lead + ts.x, p.y + ts.y - 1.0f), col, 1.0f);
+            if (ImGui::IsItemClicked()) open_source(st, e.source, line);
         }
     }
     if (mono_font) ImGui::PopFont();

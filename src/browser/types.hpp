@@ -177,9 +177,12 @@ struct FetchResult {
     std::unordered_map<std::string, CssStyle> css_classes;
     std::unordered_map<std::string, std::string> fetched_images;
     std::vector<PageScript> scripts;
+    // (url, text) in cascade order, inline <style> blocks first under "(inline)".
+    std::vector<std::pair<std::string, std::string>> stylesheets;
     // The tab's icon, already fetched. Empty if the page declared none or the
     // fetch failed; the tab strip then just leaves the space to the label.
     std::string favicon_bytes;
+    std::string favicon_url;
 };
 
 struct TextureInfo {
