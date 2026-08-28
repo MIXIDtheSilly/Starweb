@@ -86,19 +86,19 @@ static ImVec2 measure_intrinsic(const DomNode& node, const CssStyle& merged, flo
             natW = (float)it->second.width;
             natH = (float)it->second.height;
         }
-        float w = merged.width > 0.0f ? merged.width : (natW > 0.0f ? natW : 100.0f);
-        float h = merged.height > 0.0f ? merged.height : (natH > 0.0f ? natH : 100.0f);
+        float w = merged.width > 0.0f ? merged.width : zpx(natW > 0.0f ? natW : 100.0f);
+        float h = merged.height > 0.0f ? merged.height : zpx(natH > 0.0f ? natH : 100.0f);
         if (w > avail_w) { h *= avail_w / w; w = avail_w; }
         return ImVec2(w, h);
     }
     if (tag == "video") {
-        float w = merged.width > 0.0f ? merged.width : 500.0f;
-        float h = merged.height > 0.0f ? merged.height : 375.0f;
+        float w = merged.width > 0.0f ? merged.width : zpx(500.0f);
+        float h = merged.height > 0.0f ? merged.height : zpx(375.0f);
         if (w > avail_w) { h *= avail_w / w; w = avail_w; }
         return ImVec2(w, h);
     }
     if (tag == "audio") {
-        return ImVec2(merged.width > 0.0f ? merged.width : 450.0f, 42.0f);
+        return ImVec2(merged.width > 0.0f ? merged.width : zpx(450.0f), zpx(42.0f));
     }
     if (tag == "button") {
         std::string t = collapse_whitespace(node.text_content);
@@ -106,25 +106,25 @@ static ImVec2 measure_intrinsic(const DomNode& node, const CssStyle& merged, flo
         if (fam) ImGui::PushFont(fam);
         ImVec2 ts = ImGui::CalcTextSize(t.c_str());
         if (fam) ImGui::PopFont();
-        return ImVec2(merged.width > 0.0f ? merged.width : ts.x + 36.0f,
-                      merged.height > 0.0f ? merged.height : ts.y + 12.0f);
+        return ImVec2(merged.width > 0.0f ? merged.width : ts.x + zpx(36.0f),
+                      merged.height > 0.0f ? merged.height : ts.y + zpx(12.0f));
     }
     if (tag == "input" || tag == "select") {
         // A field is drawn from its own padding (see the field guards in
         // renderer.cpp), not from the global frame padding, so GetFrameHeight()
         // would hand the layout a shorter box than the one that gets painted and
         // leave the field sitting low in a centred flex row.
-        float field_pad_y = merged.padding_top > 0.0f ? merged.padding_top : 2.0f;
+        float field_pad_y = merged.padding_top > 0.0f ? merged.padding_top : zpx(2.0f);
         float line = ImGui::GetFontSize() * merged.font_size;
-        return ImVec2(merged.width > 0.0f ? merged.width : (tag == "select" ? 150.0f : 200.0f),
+        return ImVec2(merged.width > 0.0f ? merged.width : zpx(tag == "select" ? 150.0f : 200.0f),
                       merged.height > 0.0f ? merged.height : line + field_pad_y * 2.0f);
     }
     if (tag == "textarea") {
-        return ImVec2(merged.width > 0.0f ? merged.width : 300.0f,
-                      merged.height > 0.0f ? merged.height : 100.0f);
+        return ImVec2(merged.width > 0.0f ? merged.width : zpx(300.0f),
+                      merged.height > 0.0f ? merged.height : zpx(100.0f));
     }
     if (tag == "hr") {
-        return ImVec2(merged.width > 0.0f ? merged.width : avail_w, 8.0f);
+        return ImVec2(merged.width > 0.0f ? merged.width : avail_w, zpx(8.0f));
     }
 
     std::string text = collapse_whitespace(node.text_content);
@@ -147,7 +147,7 @@ static ImVec2 measure_intrinsic(const DomNode& node, const CssStyle& merged, flo
         if (fam) ImGui::PopFont();
         float w = merged.width > 0.0f ? merged.width : ts.x + pad_x;
         float h = merged.height > 0.0f ? merged.height : ts.y + pad_y;
-        if (tag == "p" || tag[0] == 'h') h += ImGui::GetTextLineHeightWithSpacing() * 0.3f;
+        if (tag == "p" || tag[0] == 'h') h += zpx(ImGui::GetTextLineHeightWithSpacing() * 0.3f);
         return ImVec2(w, h);
     }
 

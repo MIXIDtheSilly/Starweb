@@ -51,6 +51,7 @@
 #include "media_player.hpp"
 #include "script.hpp"
 #include "devtools.hpp"
+#include "zoom.hpp"
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -555,13 +556,16 @@ int main() {
 
     Tab initial_tab;
     initial_tab.id = next_tab_id++;
-    // Development hooks, both off unless the environment sets them: STARWEB_URL
-    // opens somewhere other than the local index, and STARWEB_SHOT writes the
-    // framebuffer to a file and quits once the page has settled, which is how a
-    // page gets looked at without a person driving the window.
+    // Development hooks, all off unless the environment sets them: STARWEB_URL
+    // opens somewhere other than the local index, STARWEB_ZOOM starts the tab at
+    // another scale, and STARWEB_SHOT writes the framebuffer out and quits once
+    // the page has settled.
     if (const char* start_url = std::getenv("STARWEB_URL")) {
         initial_tab.current_url = start_url;
         std::snprintf(initial_tab.url_input, sizeof(initial_tab.url_input), "%s", start_url);
+    }
+    if (const char* z = std::getenv("STARWEB_ZOOM")) {
+        initial_tab.zoom = std::strtof(z, nullptr);
     }
     const char* shot_path = std::getenv("STARWEB_SHOT");
     int shot_countdown = shot_path ? 240 : -1;
@@ -745,6 +749,8 @@ int main() {
                 devtools::toggle(tid);
                 settle_frames = kSettleFrames;
             }
+            if (zoom::handle_input(tabs[active_tab_idx])) settle_frames = kSettleFrames;
+            page_zoom = tabs[active_tab_idx].zoom;
         }
 
         {
@@ -1428,13 +1434,14 @@ int main() {
         CssStyle default_style;
         default_style.color = ImVec4(0.95f, 0.95f, 0.95f, 1.0f);
         default_style.has_color = true;
+        default_style.font_size = active_tab.zoom;
         bool default_inline_flow = false;
         // Vertical gaps are the page's to set via margins; ImGui's own
         // ItemSpacing would stack 4px per nesting level on top, which is what
         // kept a 100vh box from reaching the bottom. X spacing stays;
         // SameLine passes its own gap explicitly.
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                            ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
+                            ImVec2(zpx(ImGui::GetStyle().ItemSpacing.x), 0.0f));
         render_node(active_tab.page_dom, default_style, default_inline_flow, active_tab);
         ImGui::PopStyleVar();
 
@@ -1465,11 +1472,11 @@ int main() {
         active_tab.vp_fit_used = false;
 
         ImGui::EndChild();
+        const ImVec2 vp_rect_min = ImGui::GetItemRectMin();
+        const ImVec2 vp_rect_max = ImGui::GetItemRectMax();
         ImGui::PopStyleColor(2);
 
         if (dt_open) {
-            ImVec2 vp_rect_min = ImGui::GetItemRectMin();
-            ImVec2 vp_rect_max = ImGui::GetItemRectMax();
             devtools::draw_overlay(active_tab, vp_rect_min, vp_rect_max);
 
             ImGui::SameLine(0.0f, 0.0f);
@@ -1518,12 +1525,15 @@ int main() {
 
         ImGui::End();
 
+        zoom::draw_badge(active_tab, vp_rect_min, vp_rect_max);
+
         // An auto-resizing modal needs a couple of frames to lay itself out, and it
         // can be opened by a script rather than by input, so it asks for frames too.
         bool ui_busy = io.WantTextInput || ImGui::IsAnyItemActive() || ImGui::IsAnyMouseDown() ||
                        io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f ||
                        io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f ||
-                       active_tab.show_alert || devtools::wants_frames(active_tab.id);
+                       active_tab.show_alert || devtools::wants_frames(active_tab.id) ||
+                       zoom::wants_frames();
         if (ui_busy) settle_frames = kSettleFrames;
         else if (settle_frames > 0) settle_frames--;
 

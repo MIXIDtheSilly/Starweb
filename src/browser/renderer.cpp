@@ -597,7 +597,8 @@ static void DrawVolumePopup(ImDrawList* draw_list, VideoPlayer* player, ImVec2 b
 static void DrawMediaControlBar(ImDrawList* draw_list, VideoPlayer* player,
                                 ImVec2 bar_min, ImVec2 bar_max, const std::string& id_suffix,
                                 float icon_size) {
-    const float pad = 12.0f, gap = 10.0f, play_sz = 26.0f, vol_sz = 24.0f;
+    const float pad = zpx(12.0f), gap = zpx(10.0f), play_sz = zpx(26.0f), vol_sz = zpx(24.0f);
+    const float track = zpx(1.5f), knob = zpx(5.0f);
     float cy = (bar_min.y + bar_max.y) * 0.5f;
 
     bool playing = player->is_playing();
@@ -641,9 +642,9 @@ static void DrawMediaControlBar(ImDrawList* draw_list, VideoPlayer* player,
 
     ImGui::PopStyleColor(3);
 
-    if (tl_w > 30.0f) {
-        ImGui::SetCursorScreenPos(ImVec2(tl_x, cy - 12.0f));
-        ImGui::InvisibleButton(("##slider_" + id_suffix).c_str(), ImVec2(tl_w, 24.0f));
+    if (tl_w > zpx(30.0f)) {
+        ImGui::SetCursorScreenPos(ImVec2(tl_x, cy - zpx(12.0f)));
+        ImGui::InvisibleButton(("##slider_" + id_suffix).c_str(), ImVec2(tl_w, zpx(24.0f)));
         bool active = ImGui::IsItemActive();
         if (active && duration > 0.0) {
             float pct = std::clamp((ImGui::GetIO().MousePos.x - tl_x) / tl_w, 0.0f, 1.0f);
@@ -652,7 +653,7 @@ static void DrawMediaControlBar(ImDrawList* draw_list, VideoPlayer* player,
         }
         float pct = duration > 0.0f ? (float)(current_time / duration) : 0.0f;
         float split_x = tl_x + pct * tl_w;
-        draw_list->AddRectFilled(ImVec2(tl_x, cy - 1.5f), ImVec2(tl_x + tl_w, cy + 1.5f), kMediaTrackColor, 2.0f);
+        draw_list->AddRectFilled(ImVec2(tl_x, cy - track), ImVec2(tl_x + tl_w, cy + track), kMediaTrackColor, 2.0f);
 
         // What is held locally, under the played fill. With a bounded read-ahead the
         // buffer is a window around the playhead rather than a run from the start, so
@@ -661,12 +662,12 @@ static void DrawMediaControlBar(ImDrawList* draw_list, VideoPlayer* player,
             float bx0 = tl_x + (float)s * tl_w;
             float bx1 = tl_x + (float)e * tl_w;
             if (bx1 - bx0 < 1.0f) bx1 = bx0 + 1.0f;
-            draw_list->AddRectFilled(ImVec2(bx0, cy - 1.5f), ImVec2(bx1, cy + 1.5f),
-                                     kMediaBufferColor, 2.0f);
+            draw_list->AddRectFilled(ImVec2(bx0, cy - track), ImVec2(bx1, cy + track),
+                                     kMediaBufferColor, zpx(2.0f));
         }
 
-        if (pct > 0.0f) draw_list->AddRectFilled(ImVec2(tl_x, cy - 1.5f), ImVec2(split_x, cy + 1.5f), kMediaFillColor, 2.0f);
-        draw_list->AddCircleFilled(ImVec2(split_x, cy), active ? 6.0f : 5.0f, kMediaFillColor);
+        if (pct > 0.0f) draw_list->AddRectFilled(ImVec2(tl_x, cy - track), ImVec2(split_x, cy + track), kMediaFillColor, 2.0f);
+        draw_list->AddCircleFilled(ImVec2(split_x, cy), active ? knob * 1.2f : knob, kMediaFillColor);
     }
 
     // Time label (vertically centred, drawn last so it reflects any seek this frame).
@@ -819,11 +820,11 @@ void render_flow_children(DomNode& parent, const CssStyle& merged, Tab& tab,
             if (prev_inline) {
                 float last_x2 = ImGui::GetItemRectMax().x;
                 float w = text_inline ? inline_text_width(child, scale)
-                                      : ImGui::CalcTextSize(collapse_whitespace(child.text_content).c_str()).x + 20.0f;
+                                      : ImGui::CalcTextSize(collapse_whitespace(child.text_content).c_str()).x + zpx(20.0f);
                 // Inter-item spacing comes from the source text's own spaces (preserved by
                 // collapse_inline), so items butt together; only complex inline widgets get
                 // a small gap. Stay on this line only if it still fits, else wrap.
-                float spacing = text_inline ? 0.0f : 4.0f;
+                float spacing = text_inline ? 0.0f : zpx(4.0f);
                 if (w <= 0.0f || last_x2 + spacing + w <= wrap_right) {
                     ImGui::SameLine(0, spacing);
                 }
@@ -849,7 +850,10 @@ CssStyle merge_node_style(const DomNode& node, const CssStyle& parent_style, Tab
         merged.color = parent_style.color;
         merged.has_color = true;
     }
-    merged.font_size = parent_style.font_size;
+    // The inherited font scale arrives already zoomed, so it goes back to CSS
+    // units for the cascade and is rescaled with the rest of the box below.
+    const float z = page_zoom;
+    merged.font_size = parent_style.font_size / z;
     merged.font_family = parent_style.font_family;
     merged.text_align = parent_style.text_align;
     auto tag_it = tab.css_classes.find(node.tag);
@@ -865,6 +869,24 @@ CssStyle merge_node_style(const DomNode& node, const CssStyle& parent_style, Tab
     if (node.has_inline_style) {
         apply_style(merged, node.parsed_inline_style);
     }
+    if (z != 1.0f) {
+        merged.font_size      *= z;
+        merged.padding_left   *= z; merged.padding_right  *= z;
+        merged.padding_top    *= z; merged.padding_bottom *= z;
+        merged.margin_left    *= z; merged.margin_right   *= z;
+        merged.margin_top     *= z; merged.margin_bottom  *= z;
+        merged.border_width   *= z;
+        if (merged.width  > 0.0f)      merged.width  *= z;
+        if (merged.height > 0.0f)      merged.height *= z;
+        if (merged.border_radius >= 0.0f) merged.border_radius *= z;
+        if (merged.row_gap    >= 0.0f) merged.row_gap    *= z;
+        if (merged.column_gap >= 0.0f) merged.column_gap *= z;
+        if (merged.flex_basis >= 0.0f) merged.flex_basis *= z;
+        // Only the px part; vw/vh resolve against the unscaled viewport.
+        merged.pos_left.px *= z;  merged.pos_right.px  *= z;
+        merged.pos_top.px  *= z;  merged.pos_bottom.px *= z;
+    }
+
     // Fold vw/vh down to pixels here, so layout and painting only ever see the
     // pixel fields. A zero viewport (before the first frame) leaves them unset.
     // An out-of-flow box measures against the untrimmed viewport: it is not in
@@ -993,7 +1015,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
     bool is_inline = !positioned && is_inline_element(node, merged);
     if (is_inline) {
         if (is_inline_flow) {
-            ImGui::SameLine(0, 8.0f + merged.margin_left);
+            ImGui::SameLine(0, zpx(8.0f) + merged.margin_left);
         }
         is_inline_flow = true;
     } else {
@@ -1150,7 +1172,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         }
     } else if (node.tag == "blockquote") {
         ImVec2 bq_start = ImGui::GetCursorScreenPos();
-        float indent = 14.0f;
+        float indent = zpx(14.0f);
         ImGui::Indent(indent);
 
         CssStyle quote_style = merged;
@@ -1160,7 +1182,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         ImGui::Unindent(indent);
         float bar_bottom = ImGui::GetItemRectMax().y;
         draw_list->AddRectFilled(ImVec2(bq_start.x, bq_start.y),
-                                 ImVec2(bq_start.x + 3.0f, bar_bottom),
+                                 ImVec2(bq_start.x + zpx(3.0f), bar_bottom),
                                  IM_COL32(130, 130, 145, 200), 1.5f);
         ImGui::Spacing();
     } else if (node.tag == "table") {
@@ -1252,7 +1274,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         }
     } else if (node.tag == "button") {
         std::string cleaned_text = collapse_whitespace(node.text_content);
-        float btn_width = merged.width > 0.0f ? merged.width : (ImGui::CalcTextSize(cleaned_text.c_str()).x + 36.0f);
+        float btn_width = merged.width > 0.0f ? merged.width : (ImGui::CalcTextSize(cleaned_text.c_str()).x + zpx(36.0f));
         float btn_height = merged.height > 0.0f ? merged.height : 0.0f;
         
         ImVec4 btn_bg = merged.has_bg ? merged.bg_color : ImVec4(0.53f, 0.34f, 0.84f, 0.70f);
@@ -1288,8 +1310,8 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         if (tex_it != tab.page_textures.end() && tex_it->second.id != 0) {
             const auto& tex = tex_it->second;
             
-            float w = merged.width > 0.0f ? merged.width : (float)tex.width;
-            float h = merged.height > 0.0f ? merged.height : (float)tex.height;
+            float w = merged.width > 0.0f ? merged.width : zpx((float)tex.width);
+            float h = merged.height > 0.0f ? merged.height : zpx((float)tex.height);
             
             float avail_width = ImGui::GetContentRegionAvail().x - (parent_accumulated_right + merged.margin_right + merged.padding_right);
             if (avail_width < 0.0f) avail_width = 0.0f;
@@ -1301,7 +1323,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             
             ImGui::Image((void*)(intptr_t)tex.id, ImVec2(w, h));
         } else {
-            ImGui::Button("[Image Missing]", ImVec2(100.0f, 100.0f));
+            ImGui::Button("[Image Missing]", ImVec2(zpx(100.0f), zpx(100.0f)));
         }
     } else if (node.tag == "a") {
         std::string cleaned_text = collapse_whitespace(node.text_content);
@@ -1344,8 +1366,8 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         float right_offset = parent_accumulated_right + merged.margin_right + merged.padding_right;
         float w = merged.width  > 0.0f ? merged.width  : (avail.x - right_offset);
         float h = merged.height > 0.0f ? merged.height : avail.y;
-        if (w < 1.0f) w = 300.0f;
-        if (h < 1.0f) h = 150.0f;
+        if (w < 1.0f) w = zpx(300.0f);
+        if (h < 1.0f) h = zpx(150.0f);
 
         float reserve_h = h;
         if (merged.height <= 0.0f) {
@@ -1576,7 +1598,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             if (val < lo) val = lo;
             if (val > hi) val = hi;
 
-            float width = widget_fill_width(merged, parent_accumulated_right, 200.0f);
+            float width = widget_fill_width(merged, parent_accumulated_right, zpx(200.0f));
             float rowH = ImGui::GetFontSize() + 8.0f;
             ImGui::PushID(input_label.c_str());
             ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -1676,7 +1698,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                     std::snprintf(shown, sizeof shown, "%02d/%02d/%04d", sm, sd, sy);
                 }
             }
-            float width = merged.width > 0.0f ? merged.width : (withTime ? 220.0f : 150.0f);
+            float width = merged.width > 0.0f ? merged.width : zpx(withTime ? 220.0f : 150.0f);
             float rowH = ImGui::GetFontSize() + 8.0f;
             std::string pop = "datepop##" + uid;
             const char* ph = withTime ? "mm/dd/yyyy --:-- --" : "mm/dd/yyyy";
@@ -1866,7 +1888,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             char buf[1024] = {0};
             std::strncpy(buf, node.value.c_str(), sizeof(buf) - 1);
 
-            float width = widget_fill_width(merged, parent_accumulated_right, 200.0f);
+            float width = widget_fill_width(merged, parent_accumulated_right, zpx(200.0f));
             ImGui::PushItemWidth(width);
 
             ImGuiInputTextFlags flags = 0;
@@ -1893,8 +1915,8 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         char buf[4096] = {0};
         std::strncpy(buf, node.value.c_str(), sizeof(buf) - 1);
         
-        float width = widget_fill_width(merged, parent_accumulated_right, 300.0f);
-        float height = merged.height > 0.0f ? merged.height : 100.0f;
+        float width = widget_fill_width(merged, parent_accumulated_right, zpx(300.0f));
+        float height = merged.height > 0.0f ? merged.height : zpx(100.0f);
         
         std::string label = "##" + (node.id.empty() ? std::to_string((uintptr_t)&node) : node.id);
         
@@ -1962,7 +1984,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             items.push_back(opt.c_str());
         }
         
-        float width = widget_fill_width(merged, parent_accumulated_right, 150.0f);
+        float width = widget_fill_width(merged, parent_accumulated_right, zpx(150.0f));
         ImGui::PushItemWidth(width);
 
         {
@@ -2025,8 +2047,8 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             w = nat_w;
             h = nat_h;
         } else {
-            w = 640.0f;
-            h = 360.0f;
+            w = zpx(640.0f);
+            h = zpx(360.0f);
         }
 
         float avail_width = ImGui::GetContentRegionAvail().x - (parent_accumulated_right + merged.margin_right + merged.padding_right);
@@ -2073,7 +2095,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             
             if (node.controls) {
                 ImDrawList* draw_list = ImGui::GetWindowDrawList();
-                float control_bar_height = 42.0f;
+                float control_bar_height = zpx(42.0f);
                 ImVec2 bar_min = ImVec2(video_pos.x, video_pos.y + h - control_bar_height);
                 ImVec2 bar_max = ImVec2(video_pos.x + w, video_pos.y + h);
 
@@ -2081,7 +2103,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
                 // Horizontal-only separator so it never spills past the video's sides.
                 draw_list->AddLine(bar_min, ImVec2(bar_max.x, bar_min.y), IM_COL32(255, 255, 255, 15), 1.0f);
 
-                DrawMediaControlBar(draw_list, player, bar_min, bar_max, id_suffix, 11.0f);
+                DrawMediaControlBar(draw_list, player, bar_min, bar_max, id_suffix, zpx(11.0f));
             }
             ImGui::EndGroup();
 
@@ -2110,8 +2132,8 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             player = player_it->second;
         }
 
-        float w = merged.width > 0.0f ? merged.width : 450.0f;
-        float h = 42.0f;
+        float w = merged.width > 0.0f ? merged.width : zpx(450.0f);
+        float h = zpx(42.0f);
 
         std::string id_suffix = "##audio_" + std::to_string((uintptr_t)&node);
 
@@ -2130,7 +2152,7 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             
             draw_list->AddRectFilled(audio_pos, card_max, IM_COL32(40, 40, 42, 255), h * 0.5f);
             draw_list->AddRect(audio_pos, card_max, IM_COL32(255, 255, 255, 15), h * 0.5f, 0, 1.0f);
-            DrawMediaControlBar(draw_list, player, audio_pos, card_max, id_suffix, 12.0f);
+            DrawMediaControlBar(draw_list, player, audio_pos, card_max, id_suffix, zpx(12.0f));
             
             ImGui::EndGroup();
 

@@ -220,6 +220,9 @@ struct Tab {
     TextureInfo favicon;
     std::unordered_map<std::string, class VideoPlayer*> active_players;
 
+    // Page zoom, kept across navigations within the tab.
+    float zoom = 1.0f;
+
     // Viewport-fitting slack. An auto-height <canvas> or a `vh` length wants to
     // fill the viewport exactly, but the element sits inside a chain of wrapper
     // elements that each add item spacing after it, so filling it precisely

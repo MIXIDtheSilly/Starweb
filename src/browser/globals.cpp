@@ -27,6 +27,7 @@ int restored_w = 1024;
 int restored_h = 768;
 std::mutex fetch_mutex;
 ImFont* mono_font = nullptr;
+float page_zoom = 1.0f;
 float page_viewport_w = 0.0f;
 float page_viewport_h = 0.0f;
 float page_viewport_w_full = 0.0f;

@@ -25,6 +25,11 @@ ImFont* font_for_family(const std::string& family);
 // on the normalised form.
 const std::vector<std::pair<std::string, ImFont*>>& page_font_faces();
 
+// Multiplier on every CSS pixel, set once per frame from the active tab. The
+// viewport itself is not scaled, so `vw`/`vh` keep meaning the real box.
+extern float page_zoom;
+inline float zpx(float css_px) { return css_px * page_zoom; }
+
 // Size of the page viewport for the frame being drawn, which is what `vw` and
 // `vh` resolve against. Set once per frame before the DOM is walked.
 extern float page_viewport_w;
