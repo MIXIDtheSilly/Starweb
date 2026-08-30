@@ -21,6 +21,7 @@
 #include "parser.hpp"
 #include "renderer.hpp"
 #include "script.hpp"
+#include "storage.hpp"
 #include "theme.hpp"
 
 namespace devtools {
@@ -136,6 +137,7 @@ struct TabState {
     std::string src_key;
     const void* src_key_ptr = nullptr;
     std::size_t src_key_len = 0;
+    std::uint64_t src_key_rev = 0;
     bool src_key_wrap = false;
     float src_key_w = 0.0f;
     std::vector<std::string> src_lines;
@@ -1690,6 +1692,10 @@ struct SourceFile {
     const std::string* data = nullptr;  // Image: bytes as they arrived
     TextureInfo tex;
     bool favicon = false;
+    // A localStorage entry: `text` points into the live store.
+    bool stored = false;
+    // Stored values mutate in place, which address and length alone cannot show.
+    std::uint64_t rev = 0;
     // Media: the page's own player, null until the element starts one. Never one
     // of our own: a URL is a single range cache, so a second reader would clash.
     VideoPlayer* player = nullptr;
@@ -1773,6 +1779,19 @@ void collect_sources(const Tab& tab, std::vector<SourceFile>& out) {
         if (player != tab.active_players.end()) f.player = player->second;
         f.key = std::move(url);
         out.push_back(std::move(f));
+    }
+
+    if (const auto* stored = storage::entries(storage::origin_for_url(tab.current_url))) {
+        for (const auto& kv : *stored) {
+            SourceFile f;
+            f.group = "Storage";
+            f.key = "storage:" + kv.first;
+            f.label = kv.first;
+            f.text = &kv.second;
+            f.stored = true;
+            f.rev = storage::revision();
+            out.push_back(std::move(f));
+        }
     }
 
     // Only once something is loaded, so an empty tab still reads as empty. These
@@ -1942,13 +1961,14 @@ void open_source(TabState& st, const std::string& key, int line) {
 void rebuild_source_cache(TabState& st, const SourceFile& f, float wrap_w) {
     const std::size_t len = f.text ? f.text->size() : 0;
     if (st.src_key == f.key && st.src_key_ptr == f.text && st.src_key_len == len &&
-        st.src_key_wrap == st.src_wrap &&
+        st.src_key_rev == f.rev && st.src_key_wrap == st.src_wrap &&
         (!st.src_wrap || std::fabs(st.src_key_w - wrap_w) < 0.5f)) {
         return;
     }
     st.src_key = f.key;
     st.src_key_ptr = f.text;
     st.src_key_len = len;
+    st.src_key_rev = f.rev;
     st.src_key_wrap = st.src_wrap;
     st.src_key_w = wrap_w;
     st.src_hits_dirty = true;
@@ -2119,6 +2139,10 @@ void draw_sources(Tab& tab, TabState& st) {
     // An asset has no lines, so wrapping and find have nothing to act on.
     const bool textual = !sel || sel->kind == SrcKind::Text;
 
+    // Deferred: mutating the store here dangles the pointers `files` holds.
+    enum class StoreEdit { None, Delete, Clear } edit = StoreEdit::None;
+    std::string edit_key;
+
     ControlRow band;
     band.begin();
     if (textual) {
@@ -2136,6 +2160,14 @@ void draw_sources(Tab& tab, TabState& st) {
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(textual ? "Copy this file to the clipboard"
                                   : "Copy this URL to the clipboard");
+    }
+    if (sel && sel->stored) {
+        ImGui::SameLine(0.0f, 4.0f);
+        if (tool_button("Delete")) { edit = StoreEdit::Delete; edit_key = sel->label; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this key from localStorage");
+        ImGui::SameLine(0.0f, 4.0f);
+        if (tool_button("Clear")) edit = StoreEdit::Clear;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove every key this origin stored");
     }
     if (textual) {
         ImGui::SameLine(0.0f, 8.0f);
@@ -2256,7 +2288,10 @@ void draw_sources(Tab& tab, TabState& st) {
     if (sel) {
         switch (sel->kind) {
             case SrcKind::Text:
-                if (sel->text) {
+                if (sel->stored) {
+                    summary = sel->label + "  -  " + fmt_bytes(sel->text->size()) + ", " +
+                              storage::origin_for_url(tab.current_url);
+                } else if (sel->text) {
                     summary = sel->label + "  -  " + std::to_string(st.src_lines.size()) +
                               " lines, " + fmt_bytes(sel->text->size());
                 }
@@ -2284,6 +2319,14 @@ void draw_sources(Tab& tab, TabState& st) {
     if (summary.empty()) summary = std::to_string(files.size()) + " files";
     ImGui::TextColored(Theme::dt_dim, "%s", summary.c_str());
     footer.end();
+
+    if (edit != StoreEdit::None) {
+        const std::string origin = storage::origin_for_url(tab.current_url);
+        if (edit == StoreEdit::Delete) storage::remove(origin, edit_key);
+        else storage::clear(origin);
+        st.src_pin.clear();
+        st.src_hl_line = 0;
+    }
 }
 
 // Lua puts the position in the message itself ("chunk:12: attempt to ...").

@@ -51,6 +51,7 @@
 #include "media_player.hpp"
 #include "script.hpp"
 #include "devtools.hpp"
+#include "storage.hpp"
 #include "zoom.hpp"
 #include <filesystem>
 #include <fstream>
@@ -722,6 +723,7 @@ int main() {
                 eng->set_visible(id == visible_tab_id);
                 eng->poll_fetches(); eng->poll_timers(); eng->run_raf();
             }
+        storage::flush();
 
         if (!g_pending_navs.empty()) {
             auto navs = std::move(g_pending_navs);
@@ -1583,6 +1585,8 @@ int main() {
         }
         tab.active_players.clear();
     }
+
+    storage::flush(true);
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
