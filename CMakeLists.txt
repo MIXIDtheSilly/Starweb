@@ -97,6 +97,7 @@ set(BROWSER_SRCS
     ${SRC}/browser/script.cpp
     ${SRC}/browser/script_fetch.cpp
     ${SRC}/browser/storage.cpp
+    ${SRC}/browser/history.cpp
     ${SRC}/common/tls.cpp
 )
 

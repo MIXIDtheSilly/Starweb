@@ -50,6 +50,16 @@ const char* const kLockOpen =
 const char* const kPlus =
     R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>)";
 
+// The toolbar's overflow menu and its entries.
+const char* const kEllipsisVertical =
+    R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>)";
+
+const char* const kSquarePlus =
+    R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>)";
+
+const char* const kHistory =
+    R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>)";
+
 // The devtools console's four: clear, and the log/warn/error filter chips.
 const char* const kBan =
     R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M4.929 4.929 19.07 19.071"/></svg>)";
@@ -193,6 +203,18 @@ void DrawXIcon(ImVec2 center, ImU32 color, float size, float thickness) {
 
 void DrawLockIcon(ImVec2 center, ImU32 color, bool closed, float size, float thickness) {
     DrawSvgIcon(closed ? kLock : kLockOpen, center, color, size, thickness);
+}
+
+void DrawMenuIcon(ImVec2 center, ImU32 color, float size, float thickness) {
+    DrawSvgIcon(kEllipsisVertical, center, color, size, thickness);
+}
+
+void DrawNewTabIcon(ImVec2 center, ImU32 color, float size, float thickness) {
+    DrawSvgIcon(kSquarePlus, center, color, size, thickness);
+}
+
+void DrawHistoryIcon(ImVec2 center, ImU32 color, float size, float thickness) {
+    DrawSvgIcon(kHistory, center, color, size, thickness);
 }
 
 // The chrome's stroke weight, not Lucide's own 2/24.

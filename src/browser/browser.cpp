@@ -52,10 +52,12 @@
 #include "script.hpp"
 #include "devtools.hpp"
 #include "storage.hpp"
+#include "history.hpp"
 #include "zoom.hpp"
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <cfloat>
 
 // Window chrome metrics, halved from a design drawn at 2048 wide against this
 // window's 1024 logical default. Logical pixels; the chrome is a fixed frame.
@@ -85,6 +87,13 @@ namespace Trim {
     constexpr float kOmniboxH      = 28.0f;
     constexpr float kOmniboxRound  = 7.0f;
     constexpr float kOmniboxStroke = 2.0f;
+    constexpr float kMenuGap       = 9.0f;
+    constexpr float kMenuRight     = 8.0f;
+    constexpr float kMenuMinW      = 216.0f;
+    constexpr float kMenuIconCol   = 22.0f;
+    constexpr float kMenuRowPad    = 10.0f;
+    constexpr int   kMenuHistory   = 5;
+    constexpr float kMenuShadow    = 14.0f;
     // The page is a panel floating on the chrome, not a region of it.
     constexpr float kPageInset     = 7.0f;
     constexpr float kPageTopGap    = 8.0f;
@@ -180,6 +189,33 @@ void script_dispatch_input(int tab_id, uint64_t node_id) {
     if (it != g_script_engines.end() && it->second) it->second->dispatch_input(node_id);
 }
 
+
+// ImGui draws no shadows, so one is stacked out of 1px rounded rings outside the
+// window. The clip rect has to be opened up: a window clips its draw list to itself.
+static void draw_panel_shadow(float rounding) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetWindowPos();
+    const ImVec2 p1 = ImVec2(p0.x + ImGui::GetWindowSize().x, p0.y + ImGui::GetWindowSize().y);
+    const int rings = (int)Trim::kMenuShadow;
+    dl->PushClipRectFullScreen();
+    for (int i = 1; i <= rings; ++i) {
+        const float e = (float)i;
+        const float t = 1.0f - e / (float)(rings + 1);
+        dl->AddRect(ImVec2(p0.x - e, p0.y - e), ImVec2(p1.x + e, p1.y + e),
+                    IM_COL32(0, 0, 0, (int)(90.0f * t * t)), rounding + e, 0, 1.0f);
+    }
+    dl->PopClipRect();
+}
+
+// Reallocates `tabs`, so callers must not hold a Tab& across it.
+static void open_new_tab(GLFWwindow* window) {
+    Tab new_tab;
+    new_tab.id = next_tab_id++;
+    tabs.push_back(new_tab);
+    active_tab_idx = (int)tabs.size() - 1;
+    start_async_fetch(tabs[active_tab_idx].id, tabs[active_tab_idx].current_url);
+    glfwSetWindowTitle(window, ("Starmap - " + tabs[active_tab_idx].title).c_str());
+}
 
 static void dispatch_page_keys(GLFWwindow* window) {
     struct NamedKey { int key; const char* name; };
@@ -663,6 +699,8 @@ int main() {
                             }
                         }
                         
+                        history::record(tab.current_url, tab.title);
+
                         run_page_scripts(tab);
                         // Dev hook, alongside STARWEB_DEVTOOLS: preselects an
                         // element so a headless shot can capture the inspector.
@@ -724,6 +762,7 @@ int main() {
                 eng->poll_fetches(); eng->poll_timers(); eng->run_raf();
             }
         storage::flush();
+        history::flush();
 
         if (!g_pending_navs.empty()) {
             auto navs = std::move(g_pending_navs);
@@ -1086,12 +1125,7 @@ int main() {
         bool plus_active = plus_hovered && ImGui::IsMouseDown(0);
 
         if (plus_hovered && mouse_clicked) {
-            Tab new_tab;
-            new_tab.id = next_tab_id++;
-            tabs.push_back(new_tab);
-            active_tab_idx = (int)tabs.size() - 1;
-            start_async_fetch(tabs[active_tab_idx].id, tabs[active_tab_idx].current_url);
-            glfwSetWindowTitle(window, ("Starmap - " + tabs[active_tab_idx].title).c_str());
+            open_new_tab(window);
         }
         
         // Outlined like the active tab but one step dimmer on the border ramp: it
@@ -1312,7 +1346,8 @@ int main() {
         // toolbar's own black and the outline alone gives it an edge, climbing the
         // border ramp to full brightness while it has focus.
         const float omni_x = toolbar_min.x + Trim::kOmniboxX;
-        const float omni_w = window_avail_width - Trim::kOmniboxX - 8.0f;
+        const float omni_w = window_avail_width - Trim::kOmniboxX
+                           - Trim::kMenuGap - hit - Trim::kMenuRight;
         const float omni_y = std::round(tb_cy - Trim::kOmniboxH * 0.5f);
 
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Trim::kOmniboxRound);
@@ -1342,6 +1377,103 @@ int main() {
                                         : (omni_hovered ? Theme::outline_mid : Theme::outline_dim),
                            Trim::kOmniboxRound, 0,
                            omni_focused ? Trim::kOmniboxStroke : 1.0f);
+
+        // ImGui shuts a popup during NewFrame when the click lands outside it, so
+        // clicking the button to dismiss it would reopen it without this.
+        static bool menu_was_open = false;
+        static int menu_closed_frame = -1;
+        const bool menu_open = ImGui::IsPopupOpen("chrome_menu");
+        if (menu_was_open && !menu_open) menu_closed_frame = ImGui::GetFrameCount();
+        menu_was_open = menu_open;
+
+        bool menu_new_tab = false;
+        std::string menu_nav_url;
+
+        const float menu_cx = toolbar_min.x + window_avail_width - Trim::kMenuRight - hit * 0.5f;
+        ImGui::SetCursorScreenPos(ImVec2(menu_cx - hit * 0.5f, tb_cy - hit * 0.5f));
+        if (ImGui::InvisibleButton("##menu", ImVec2(hit, hit)) &&
+            !menu_open && ImGui::GetFrameCount() != menu_closed_frame) {
+            ImGui::OpenPopup("chrome_menu");
+        }
+        if (menu_open || ImGui::IsItemHovered()) {
+            draw_list->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                     (menu_open || ImGui::IsItemActive()) ? Theme::plus_bg_active
+                                                                          : Theme::plus_bg_hover,
+                                     Trim::kTabRounding);
+        }
+        DrawMenuIcon(ImVec2(menu_cx, tb_cy), Theme::icon_normal, Trim::kIcon, Trim::kIconStroke);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, Trim::kPageRounding);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, Trim::kMenuRowPad));
+        ImGui::PushStyleVar(ImGuiStyleVar_MenuItemRounding, Trim::kTabRounding);
+        ImGui::PushStyleVar(ImGuiStyleVar_SelectableRounding, Trim::kTabRounding);
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, Theme::viewport_bg);
+        ImGui::PushStyleColor(ImGuiCol_Border, Theme::outline_dim);
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::tab_text_on);
+        ImGui::PushStyleColor(ImGuiCol_Header, Theme::plus_bg_hover);
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, Theme::plus_bg_hover);
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, Theme::plus_bg_active);
+        ImGui::SetNextWindowPos(ImVec2(menu_cx + hit * 0.5f, toolbar_max.y - Trim::kPageTopGap * 0.5f),
+                                ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(Trim::kMenuMinW, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
+        if (ImGui::BeginPopup("chrome_menu")) {
+            draw_panel_shadow(Trim::kPageRounding);
+            // Rows are submitted with empty labels and painted afterwards: ImGui's
+            // icon column takes a glyph where ours are textures, and painting after
+            // keeps the icons on top of the hover fill.
+            const float line_h = ImGui::GetTextLineHeight();
+
+            const ImVec2 new_tab_row = ImGui::GetCursorScreenPos();
+            if (ImGui::MenuItem("##newtab")) menu_new_tab = true;
+            const float row_right = ImGui::GetItemRectMax().x;
+
+            const std::vector<history::Visit>& hist = history::visits();
+            const ImVec2 history_row = ImGui::GetCursorScreenPos();
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(0, 0, 0, 0));
+            const bool history_open = ImGui::BeginMenu("##history", !hist.empty());
+            ImGui::PopStyleColor();
+            if (history_open) {
+                draw_panel_shadow(Trim::kPageRounding);
+                const int oldest = std::max(0, (int)hist.size() - Trim::kMenuHistory);
+                for (int i = (int)hist.size() - 1; i >= oldest; --i) {
+                    ImGui::PushID(i);
+                    std::string label = hist[i].title.empty() ? hist[i].url : hist[i].title;
+                    if (label.size() > 64) {
+                        size_t cut = 61;
+                        while (cut > 0 && ((unsigned char)label[cut] & 0xC0) == 0x80) cut--;
+                        label = label.substr(0, cut) + "...";
+                    }
+                    if (ImGui::MenuItem(label.c_str())) menu_nav_url = hist[i].url;
+                    ImGui::PopID();
+                }
+                ImGui::EndMenu();
+            }
+
+            const float icon_cx = new_tab_row.x + Trim::kMenuIconCol * 0.5f;
+            const float label_x = new_tab_row.x + Trim::kMenuIconCol + 6.0f;
+            const ImU32 row_text = hist.empty() ? Theme::tab_text_off : Theme::tab_text_on;
+            ImDrawList* menu_draw = ImGui::GetWindowDrawList();
+
+            DrawNewTabIcon(ImVec2(icon_cx, new_tab_row.y + line_h * 0.5f),
+                           Theme::icon_normal, Trim::kIcon, Trim::kIconStroke);
+            menu_draw->AddText(ImVec2(label_x, new_tab_row.y), Theme::tab_text_on, "New tab");
+
+            DrawHistoryIcon(ImVec2(icon_cx, history_row.y + line_h * 0.5f),
+                            hist.empty() ? Theme::icon_disabled : Theme::icon_normal,
+                            Trim::kIcon, Trim::kIconStroke);
+            menu_draw->AddText(ImVec2(label_x, history_row.y), row_text, "History");
+            DrawChevronRightIcon(ImVec2(row_right - 12.0f, history_row.y + line_h * 0.5f),
+                                 hist.empty() ? Theme::icon_disabled : Theme::icon_normal, 14.0f);
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleColor(6);
+        ImGui::PopStyleVar(6);
+
+        if (!menu_nav_url.empty()) {
+            start_async_fetch(active_tab.id, menu_nav_url);
+        }
 
         // The page is a panel floating on the chrome: inset on three sides, with a
         // gap under the toolbar, and rounded on all four corners. Nothing rules it
@@ -1529,6 +1661,9 @@ int main() {
 
         zoom::draw_badge(active_tab, vp_rect_min, vp_rect_max);
 
+        // Last: it reallocates `tabs`, invalidating `active_tab` above.
+        if (menu_new_tab) open_new_tab(window);
+
         // An auto-resizing modal needs a couple of frames to lay itself out, and it
         // can be opened by a script rather than by input, so it asks for frames too.
         bool ui_busy = io.WantTextInput || ImGui::IsAnyItemActive() || ImGui::IsAnyMouseDown() ||
@@ -1587,6 +1722,7 @@ int main() {
     }
 
     storage::flush(true);
+    history::flush(true);
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
