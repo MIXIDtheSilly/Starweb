@@ -57,6 +57,9 @@ const char* const kEllipsisVertical =
 const char* const kSquarePlus =
     R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>)";
 
+const char* const kGlobe =
+    R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>)";
+
 const char* const kHistory =
     R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>)";
 
@@ -215,6 +218,10 @@ void DrawNewTabIcon(ImVec2 center, ImU32 color, float size, float thickness) {
 
 void DrawHistoryIcon(ImVec2 center, ImU32 color, float size, float thickness) {
     DrawSvgIcon(kHistory, center, color, size, thickness);
+}
+
+void DrawGlobeIcon(ImVec2 center, ImU32 color, float size, float thickness) {
+    DrawSvgIcon(kGlobe, center, color, size, thickness);
 }
 
 // The chrome's stroke weight, not Lucide's own 2/24.

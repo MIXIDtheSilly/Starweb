@@ -421,6 +421,26 @@ bool LoadTextureFromMemory(const unsigned char* image_data, int image_size, unsi
     return true;
 }
 
+// The menu redraws every frame it is open, so icons are decoded once per origin.
+static std::unordered_map<std::string, TextureInfo> g_history_favicons;
+
+static const TextureInfo* history_favicon(const std::string& url) {
+    std::string origin = storage::origin_for_url(url);
+    if (origin.empty()) return nullptr;
+    auto it = g_history_favicons.find(origin);
+    if (it == g_history_favicons.end()) {
+        TextureInfo tex;
+        if (const std::string* bytes = history::favicon(url)) {
+            if (!LoadTextureFromMemory((const unsigned char*)bytes->data(), (int)bytes->size(),
+                                       &tex.id, &tex.width, &tex.height)) {
+                tex = TextureInfo{};
+            }
+        }
+        it = g_history_favicons.emplace(std::move(origin), tex).first;
+    }
+    return it->second.id != 0 ? &it->second : nullptr;
+}
+
 int main() {
     net::Startup net_startup;
     std::filesystem::create_directories("cache");
@@ -699,7 +719,8 @@ int main() {
                             }
                         }
                         
-                        history::record(tab.current_url, tab.title);
+                        history::record(tab.current_url, tab.title,
+                                        tab.active_page.favicon_bytes);
 
                         run_page_scripts(tab);
                         // Dev hook, alongside STARWEB_DEVTOOLS: preselects an
@@ -1436,6 +1457,16 @@ int main() {
             ImGui::PopStyleColor();
             if (history_open) {
                 draw_panel_shadow(Trim::kPageRounding);
+                // The label leads with a blank gutter the icon is painted into, so
+                // the hover fill lands under it.
+                std::string gutter;
+                for (int i = 0; i < 24 && ImGui::CalcTextSize(gutter.c_str()).x < Trim::kMenuIconCol; ++i)
+                    gutter += ' ';
+                const float gutter_w = ImGui::CalcTextSize(gutter.c_str()).x;
+
+                struct RowIcon { ImVec2 at; const TextureInfo* tex; };
+                std::vector<RowIcon> row_icons;
+
                 const int oldest = std::max(0, (int)hist.size() - Trim::kMenuHistory);
                 for (int i = (int)hist.size() - 1; i >= oldest; --i) {
                     ImGui::PushID(i);
@@ -1445,8 +1476,23 @@ int main() {
                         while (cut > 0 && ((unsigned char)label[cut] & 0xC0) == 0x80) cut--;
                         label = label.substr(0, cut) + "...";
                     }
-                    if (ImGui::MenuItem(label.c_str())) menu_nav_url = hist[i].url;
+                    const ImVec2 row = ImGui::GetCursorScreenPos();
+                    if (ImGui::MenuItem((gutter + label).c_str())) menu_nav_url = hist[i].url;
+                    row_icons.push_back({ImVec2(row.x + gutter_w * 0.5f, row.y + line_h * 0.5f),
+                                         history_favicon(hist[i].url)});
                     ImGui::PopID();
+                }
+
+                ImDrawList* sub_draw = ImGui::GetWindowDrawList();
+                for (const RowIcon& r : row_icons) {
+                    if (r.tex) {
+                        ImVec2 a(std::round(r.at.x - Trim::kFavicon * 0.5f),
+                                 std::round(r.at.y - Trim::kFavicon * 0.5f));
+                        sub_draw->AddImage((ImTextureID)(intptr_t)r.tex->id, a,
+                                           ImVec2(a.x + Trim::kFavicon, a.y + Trim::kFavicon));
+                    } else {
+                        DrawGlobeIcon(r.at, Theme::tab_text_off, Trim::kIcon, Trim::kIconStroke);
+                    }
                 }
                 ImGui::EndMenu();
             }
@@ -1720,6 +1766,11 @@ int main() {
         }
         tab.active_players.clear();
     }
+
+    for (const auto& [origin, tex] : g_history_favicons) {
+        if (tex.id != 0) glDeleteTextures(1, &tex.id);
+    }
+    g_history_favicons.clear();
 
     storage::flush(true);
     history::flush(true);
