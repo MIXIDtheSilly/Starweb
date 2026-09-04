@@ -168,6 +168,16 @@ const std::string* favicon(const std::string& url) {
     return it->second.empty() ? nullptr : &it->second;
 }
 
+void clear() {
+    g_loaded = true;
+    g_visits.clear();
+    g_icons.clear();
+    g_dirty = false;
+    std::error_code ec;
+    fs::remove(store_path(), ec);
+    fs::remove_all(icon_dir(), ec);
+}
+
 void flush(bool force) {
     if (!g_dirty) return;
     auto now = std::chrono::steady_clock::now();

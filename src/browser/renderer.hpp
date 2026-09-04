@@ -29,6 +29,7 @@ void DrawMenuIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thicknes
 void DrawNewTabIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
 void DrawHistoryIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
 void DrawMinusIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
+void DrawTrashIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
 void DrawZoomIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
 void DrawGlobeIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
 void DrawInspectIcon(ImVec2 center, ImU32 color, float size = 16.0f);

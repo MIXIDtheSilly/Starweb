@@ -69,6 +69,9 @@ const char* const kGlobe =
 const char* const kHistory =
     R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>)";
 
+const char* const kTrash =
+    R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>)";
+
 // The devtools console's four: clear, and the log/warn/error filter chips.
 const char* const kBan =
     R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M4.929 4.929 19.07 19.071"/></svg>)";
@@ -224,6 +227,10 @@ void DrawNewTabIcon(ImVec2 center, ImU32 color, float size, float thickness) {
 
 void DrawHistoryIcon(ImVec2 center, ImU32 color, float size, float thickness) {
     DrawSvgIcon(kHistory, center, color, size, thickness);
+}
+
+void DrawTrashIcon(ImVec2 center, ImU32 color, float size, float thickness) {
+    DrawSvgIcon(kTrash, center, color, size, thickness);
 }
 
 void DrawMinusIcon(ImVec2 center, ImU32 color, float size, float thickness) {

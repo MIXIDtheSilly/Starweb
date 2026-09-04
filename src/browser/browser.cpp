@@ -1409,6 +1409,7 @@ int main() {
         menu_was_open = menu_open;
 
         bool menu_new_tab = false;
+        bool menu_clear_history = false;
         std::string menu_nav_url;
 
         const float menu_cx = toolbar_min.x + window_avail_width - Trim::kMenuRight - hit * 0.5f;
@@ -1498,6 +1499,10 @@ int main() {
                 ImGui::EndMenu();
             }
 
+            const ImVec2 clear_row = ImGui::GetCursorScreenPos();
+            if (ImGui::MenuItem("##clearhistory", nullptr, false, !hist.empty()))
+                menu_clear_history = true;
+
             const ImVec2 zoom_row = ImGui::GetCursorScreenPos();
             const float zoom_ctl = line_h + 6.0f;
             const float zoom_cy = zoom_row.y + zoom_ctl * 0.5f;
@@ -1543,6 +1548,11 @@ int main() {
             DrawChevronRightIcon(ImVec2(row_right - 12.0f, history_row.y + line_h * 0.5f),
                                  hist.empty() ? Theme::icon_disabled : Theme::icon_normal, 14.0f);
 
+            DrawTrashIcon(ImVec2(icon_cx, clear_row.y + line_h * 0.5f),
+                          hist.empty() ? Theme::icon_disabled : Theme::icon_normal,
+                          Trim::kIcon, Trim::kIconStroke);
+            menu_draw->AddText(ImVec2(label_x, clear_row.y), row_text, "Clear history");
+
             DrawZoomIcon(ImVec2(icon_cx, zoom_cy), Theme::icon_normal,
                          Trim::kIcon, Trim::kIconStroke);
             menu_draw->AddText(ImVec2(label_x, zoom_cy - line_h * 0.5f),
@@ -1562,6 +1572,14 @@ int main() {
         }
         ImGui::PopStyleColor(6);
         ImGui::PopStyleVar(6);
+
+        if (menu_clear_history) {
+            history::clear();
+            for (auto& [origin, tex] : g_history_favicons) {
+                if (tex.id) glDeleteTextures(1, &tex.id);
+            }
+            g_history_favicons.clear();
+        }
 
         if (!menu_nav_url.empty()) {
             start_async_fetch(active_tab.id, menu_nav_url);

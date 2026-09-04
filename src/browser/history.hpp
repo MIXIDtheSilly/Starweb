@@ -25,6 +25,9 @@ void record(const std::string& url, const std::string& title,
 // The site's icon as served, or null. Kept per origin.
 const std::string* favicon(const std::string& url);
 
+// Drops every visit and the stored icons, on disk as well as in memory.
+void clear();
+
 // Rate-limited unless `force`, which the shutdown path passes.
 void flush(bool force = false);
 
