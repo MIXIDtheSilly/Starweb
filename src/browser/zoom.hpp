@@ -14,4 +14,10 @@ void draw_badge(Tab& tab, const ImVec2& panel_min, const ImVec2& panel_max);
 
 bool wants_frames();
 
+// Menu controls. Silent: the row already shows the scale.
+bool step(Tab& tab, int dir);
+bool reset(Tab& tab);
+int  percent(const Tab& tab);
+bool at_limit(const Tab& tab, int dir);
+
 }

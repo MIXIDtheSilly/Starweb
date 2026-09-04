@@ -27,20 +27,20 @@ int nearest_step(float z) {
     return best;
 }
 
-// Every path through here shows the readout, so a key at the end of the ladder
-// still says what the scale is instead of doing nothing visible.
-bool set_zoom(Tab& tab, float z) {
+// Keyed paths flash the readout so a key at the end of the ladder still shows
+// the scale instead of doing nothing visible.
+bool set_zoom(Tab& tab, float z, bool show = true) {
     z = std::clamp(z, kSteps[0], kSteps[kStepCount - 1]);
-    g_shown_at = ImGui::GetTime();
+    if (show) g_shown_at = ImGui::GetTime();
     if (std::fabs(z - tab.zoom) < 0.0005f) return false;
     tab.zoom = z;
     tab.vp_slack = 0.0f;  // measured at the old scale
     return true;
 }
 
-bool step(Tab& tab, int dir) {
+bool walk(Tab& tab, int dir, bool show = true) {
     int i = std::clamp(nearest_step(tab.zoom) + dir, 0, kStepCount - 1);
-    return set_zoom(tab, kSteps[i]);
+    return set_zoom(tab, kSteps[i], show);
 }
 
 ImU32 fade(ImU32 c, float a) {
@@ -63,11 +63,11 @@ bool handle_input(Tab& tab) {
 
     if (ImGui::IsKeyPressed(ImGuiKey_Equal, false) ||
         ImGui::IsKeyPressed(ImGuiKey_KeypadAdd, false)) {
-        return step(tab, +1);
+        return walk(tab, +1);
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Minus, false) ||
         ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract, false)) {
-        return step(tab, -1);
+        return walk(tab, -1);
     }
     if (ImGui::IsKeyPressed(ImGuiKey_0, false) ||
         ImGui::IsKeyPressed(ImGuiKey_Keypad0, false)) {
@@ -78,7 +78,7 @@ bool handle_input(Tab& tab) {
     if (io.KeyCtrl && io.MouseWheel != 0.0f && g_panel_known &&
         io.MousePos.x >= g_panel_min.x && io.MousePos.x <= g_panel_max.x &&
         io.MousePos.y >= g_panel_min.y && io.MousePos.y <= g_panel_max.y) {
-        return step(tab, io.MouseWheel > 0.0f ? +1 : -1);
+        return walk(tab, io.MouseWheel > 0.0f ? +1 : -1);
     }
     return false;
 }
@@ -149,5 +149,16 @@ void draw_badge(Tab& tab, const ImVec2& panel_min, const ImVec2& panel_max) {
 }
 
 bool wants_frames() { return alpha_now() > 0.002f; }
+
+bool step(Tab& tab, int dir) { return walk(tab, dir, false); }
+
+bool reset(Tab& tab) { return set_zoom(tab, 1.0f, false); }
+
+int percent(const Tab& tab) { return (int)std::lround(tab.zoom * 100.0f); }
+
+bool at_limit(const Tab& tab, int dir) {
+    const int i = nearest_step(tab.zoom) + dir;
+    return i < 0 || i >= kStepCount;
+}
 
 }  // namespace zoom

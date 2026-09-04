@@ -7,6 +7,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <unordered_map>
 #include <cmath>
@@ -1497,6 +1498,35 @@ int main() {
                 ImGui::EndMenu();
             }
 
+            const ImVec2 zoom_row = ImGui::GetCursorScreenPos();
+            const float zoom_ctl = line_h + 6.0f;
+            const float zoom_cy = zoom_row.y + zoom_ctl * 0.5f;
+            const float pct_w = std::max(ImGui::CalcTextSize("100%").x + 10.0f, zoom_ctl);
+            const float plus_cx = row_right - zoom_ctl * 0.5f;
+            const float pct_cx = plus_cx - zoom_ctl * 0.5f - pct_w * 0.5f;
+            const float minus_cx = pct_cx - pct_w * 0.5f - zoom_ctl * 0.5f;
+
+            auto zoom_button = [&](const char* id, float cx, float w, bool enabled) {
+                ImGui::SetCursorScreenPos(ImVec2(cx - w * 0.5f, zoom_row.y));
+                const bool pressed = ImGui::InvisibleButton(id, ImVec2(w, zoom_ctl)) && enabled;
+                if (enabled && ImGui::IsItemHovered()) {
+                    ImGui::GetWindowDrawList()->AddRectFilled(
+                        ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                        ImGui::IsItemActive() ? Theme::plus_bg_active : Theme::plus_bg_hover,
+                        Trim::kTabRounding);
+                }
+                return pressed;
+            };
+
+            bool zoom_moved = false;
+            if (zoom_button("##zoomout", minus_cx, zoom_ctl, !zoom::at_limit(active_tab, -1)))
+                zoom_moved = zoom::step(active_tab, -1);
+            if (zoom_button("##zoomin", plus_cx, zoom_ctl, !zoom::at_limit(active_tab, +1)))
+                zoom_moved = zoom::step(active_tab, +1);
+            if (zoom_button("##zoomreset", pct_cx, pct_w, true))
+                zoom_moved = zoom::reset(active_tab);
+            if (zoom_moved) settle_frames = kSettleFrames;
+
             const float icon_cx = new_tab_row.x + Trim::kMenuIconCol * 0.5f;
             const float label_x = new_tab_row.x + Trim::kMenuIconCol + 6.0f;
             const ImU32 row_text = hist.empty() ? Theme::tab_text_off : Theme::tab_text_on;
@@ -1512,6 +1542,22 @@ int main() {
             menu_draw->AddText(ImVec2(label_x, history_row.y), row_text, "History");
             DrawChevronRightIcon(ImVec2(row_right - 12.0f, history_row.y + line_h * 0.5f),
                                  hist.empty() ? Theme::icon_disabled : Theme::icon_normal, 14.0f);
+
+            DrawZoomIcon(ImVec2(icon_cx, zoom_cy), Theme::icon_normal,
+                         Trim::kIcon, Trim::kIconStroke);
+            menu_draw->AddText(ImVec2(label_x, zoom_cy - line_h * 0.5f),
+                               Theme::tab_text_on, "Zoom");
+            DrawMinusIcon(ImVec2(minus_cx, zoom_cy),
+                          zoom::at_limit(active_tab, -1) ? Theme::icon_disabled : Theme::icon_normal,
+                          Trim::kIcon, Trim::kIconStroke);
+            DrawPlusIcon(ImVec2(plus_cx, zoom_cy),
+                         zoom::at_limit(active_tab, +1) ? Theme::icon_disabled : Theme::icon_normal,
+                         Trim::kIcon, Trim::kIconStroke);
+            char pct[16];
+            std::snprintf(pct, sizeof(pct), "%d%%", zoom::percent(active_tab));
+            const ImVec2 pct_sz = ImGui::CalcTextSize(pct);
+            menu_draw->AddText(ImVec2(pct_cx - pct_sz.x * 0.5f, zoom_cy - pct_sz.y * 0.5f),
+                               Theme::tab_text_on, pct);
             ImGui::EndPopup();
         }
         ImGui::PopStyleColor(6);
