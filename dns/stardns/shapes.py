@@ -364,6 +364,16 @@ def icon_svg(name: str, color: str) -> bytes:
     return svg.replace('stroke="currentColor"', f'stroke="{color}"').encode()
 
 
+# The purple the wordmark's swoosh gradients run to; swapping it themes the mark.
+BANNER_INK = "#9176EF"
+
+
+@lru_cache(maxsize=None)
+def banner_svg(color: str) -> bytes:
+    """The wordmark with its swooshes in `color`."""
+    return (ASSETS / "Banner.svg").read_text().replace(BANNER_INK, color).encode()
+
+
 @lru_cache(maxsize=1)
 def lua_icons(var: str = "ICON_PATHS") -> str:
     """Every icon as one Lua table: name -> list of flat {x,y,x,y,...} subpaths."""

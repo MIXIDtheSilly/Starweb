@@ -1,5 +1,6 @@
 """The control panel: STWP pages plus a small JSON API, served by starweb."""
 import json
+import re
 
 from starweb import App, Response
 
@@ -15,6 +16,24 @@ STATUS_TEXT = {
     404: "Not Found", 409: "Conflict", 500: "Internal Server Error",
     503: "Service Unavailable",
 }
+
+_HEX = re.compile(r"[0-9a-fA-F]{6}")
+
+# Roles an asset URL can ask for instead of a hex, read off Star-Theme.
+_ROLES = {"accent": ui.ACCENT}
+
+
+def _themed(req, role: str) -> str | None:
+    """The colour `role` names for the browser that asked, or None if `role` is
+    not a role at all."""
+    fallback = _ROLES.get(role)
+    if fallback is None:
+        return None
+    for part in (req.headers.get("star-theme") or "").split(";"):
+        key, _, value = part.partition("=")
+        if key.strip() == role and _HEX.fullmatch(value.strip().lstrip("#")):
+            return value.strip().lstrip("#")
+    return fallback.lstrip("#")
 
 app = App()
 
@@ -63,10 +82,22 @@ def banner_trans(req):
                     headers={"Content-Type": "image/png"})
 
 
+@app.route("/assets/banner/<color>")
+def banner_mark(req, color):
+    color = _themed(req, color) or color
+    if not _HEX.fullmatch(color):
+        return Response(400, STATUS_TEXT[400], body=b"bad colour")
+    return Response(200, body=shapes.banner_svg("#" + color),
+                    headers={"Content-Type": "image/svg+xml"})
+
+
 # Every icon <img> in ui.py points here; icon_svg() is cached, so recolouring
 # is a one-time string substitution per (name, colour) pair actually used.
 @app.route("/assets/icon/<name>/<color>")
 def icon(req, name, color):
+    color = _themed(req, color) or color
+    if not _HEX.fullmatch(color):
+        return Response(400, STATUS_TEXT[400], body=b"bad colour")
     return Response(200, body=shapes.icon_svg(name, "#" + color),
                     headers={"Content-Type": "image/svg+xml"})
 

@@ -83,6 +83,10 @@ public:
     void dispatch_key(bool down, const std::string& key);
     bool wants_keys() const { return !keydown_handlers_.empty() || !keyup_handlers_.empty(); }
 
+    void add_theme_handler(int ref);
+    void dispatch_theme();
+    bool wants_theme() const { return !theme_handlers_.empty(); }
+
     void set_nav(NavSink n) { nav_ = std::move(n); }
     void set_url_provider(UrlProvider u) { url_ = std::move(u); }
     void navigate(const std::string& url) { if (nav_) nav_(url); }
@@ -178,6 +182,7 @@ private:
     UrlProvider url_;
     std::unordered_map<uint64_t, std::vector<int>> click_handlers_;
     std::unordered_map<uint64_t, std::vector<int>> input_handlers_;
+    std::vector<int> theme_handlers_;
     std::vector<int> keydown_handlers_;
     std::vector<int> keyup_handlers_;
     static constexpr size_t kMaxKeyHandlers = 64;

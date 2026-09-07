@@ -20,9 +20,16 @@ Unchanged between the schemes. A request:
 GET /index.html STWP/1.0
 Host: localhost
 User-Agent: Starmap/1.0
+Star-Theme: name=Nebula; scheme=dark; accent=#9461db; focus=#4937db
 Connection: close
 
 ```
+
+`Star-Theme` is the browser's current theme: its name, whether it is the light or
+dark variant, the accent, and the colour the chrome outlines a focused control
+with. A server that colours its own artwork can read it and serve the first paint
+already in the right colours. It is advisory; a client with no theme sends no
+header.
 
 A response:
 

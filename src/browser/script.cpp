@@ -3,9 +3,11 @@
 #include "storage.hpp"
 #include "types.hpp"
 #include "parser.hpp"
+#include "globals.hpp"
 #include "../common/url_parser.hpp"
 
 #include <cfloat>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
@@ -118,6 +120,17 @@ static std::string arg_to_string(lua_State* L, int idx) {
     return out;
 }
 
+// An <img> holds its old artwork, so the swap is announced, not just assigned.
+static void set_node_src(lua_State* L, DomNode& n, const std::string& val) {
+    if (val == n.src) return;
+    if (n.tag == "img") {
+        if (ScriptEngine* eng = engine_from_lua(L)) {
+            page_image_replaced(eng->tab_id(), n.node_id, n.src);
+        }
+    }
+    n.src = val;
+}
+
 static int el_setAttribute(lua_State* L) {
     DomNode* n = resolve_element(L, 1);
     std::string name = luaL_checkstring(L, 2);
@@ -126,7 +139,7 @@ static int el_setAttribute(lua_State* L) {
     if      (name == "id")          n->id = val;
     else if (name == "class")       n->class_name = val;
     else if (name == "href")        n->href = val;
-    else if (name == "src")         n->src = val;
+    else if (name == "src")         { set_node_src(L, *n, val); }
     else if (name == "value")       n->value = val;
     else if (name == "placeholder") n->placeholder = val;
     else if (name == "style") {
@@ -171,11 +184,13 @@ static int el_addEventListener(lua_State* L) {
 static int doc_addEventListener(lua_State* L) {
     std::string ev = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TFUNCTION);
-    if (ev != "keydown" && ev != "keyup") return 0;
+    if (ev != "keydown" && ev != "keyup" && ev != "themechange") return 0;
     lua_pushvalue(L, 2);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    if (ScriptEngine* eng = engine_from_lua(L)) eng->add_key_handler(ev == "keydown", ref);
-    else luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    ScriptEngine* eng = engine_from_lua(L);
+    if (!eng) { luaL_unref(L, LUA_REGISTRYINDEX, ref); return 0; }
+    if (ev == "themechange") eng->add_theme_handler(ref);
+    else eng->add_key_handler(ev == "keydown", ref);
     return 0;
 }
 
@@ -208,6 +223,7 @@ static int element_index(lua_State* L) {
     else if (std::strcmp(key, "className")   == 0) push_str(L, n->class_name);
     else if (std::strcmp(key, "tagName")     == 0) push_str(L, n->tag);
     else if (std::strcmp(key, "href")        == 0) push_str(L, n->href);
+    else if (std::strcmp(key, "src")         == 0) push_str(L, n->src);
     else lua_pushnil(L);
     return 1;
 }
@@ -223,6 +239,7 @@ static int element_newindex(lua_State* L) {
     } else if (std::strcmp(key, "value")     == 0) n->value = val;
     else if   (std::strcmp(key, "id")        == 0) n->id = val;
     else if   (std::strcmp(key, "className") == 0) n->class_name = val;
+    else if   (std::strcmp(key, "src")       == 0) set_node_src(L, *n, val);
     return 0;
 }
 
@@ -243,6 +260,54 @@ static int style_index(lua_State* L) {
 }
 
 static const char* kLocationMT = "StarLocation";
+static const char* kThemeMT = "StarTheme";
+
+static void push_hex(lua_State* L, ImU32 c) {
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "#%02X%02X%02X",
+                  (unsigned)((c >> IM_COL32_R_SHIFT) & 0xFF),
+                  (unsigned)((c >> IM_COL32_G_SHIFT) & 0xFF),
+                  (unsigned)((c >> IM_COL32_B_SHIFT) & 0xFF));
+    lua_pushstring(L, buf);
+}
+
+static void push_theme_field(lua_State* L, const char* key) {
+    const Theme::Preset& p = Theme::target();
+    if      (std::strcmp(key, "name")       == 0) lua_pushstring(L, Theme::families()[Theme::current()].name);
+    else if (std::strcmp(key, "scheme")     == 0) lua_pushstring(L, Theme::is_light() ? "light" : "dark");
+    else if (std::strcmp(key, "light")      == 0) lua_pushboolean(L, Theme::is_light());
+    else if (std::strcmp(key, "dark")       == 0) lua_pushboolean(L, !Theme::is_light());
+    else if (std::strcmp(key, "background") == 0) push_hex(L, p.ground);
+    else if (std::strcmp(key, "surface")    == 0) push_hex(L, p.sheet);
+    else if (std::strcmp(key, "text")       == 0) push_hex(L, p.ink);
+    else if (std::strcmp(key, "muted")      == 0) push_hex(L, p.ink_dim);
+    else if (std::strcmp(key, "line")       == 0) push_hex(L, p.line_mid);
+    else if (std::strcmp(key, "accent")     == 0) push_hex(L, p.accent);
+    else if (std::strcmp(key, "focus")      == 0) push_hex(L, p.line_bright);
+    else lua_pushnil(L);
+}
+
+static const char* const kThemeFields[] = {
+    "name", "scheme", "light", "dark", "background", "surface", "text", "muted", "line",
+    "accent", "focus"
+};
+
+static int theme_index(lua_State* L) {
+    push_theme_field(L, luaL_checkstring(L, 2));
+    return 1;
+}
+
+static int theme_newindex(lua_State* L) {
+    return luaL_error(L, "theme is read-only");
+}
+
+static void push_theme_table(lua_State* L) {
+    lua_newtable(L);
+    for (const char* key : kThemeFields) {
+        push_theme_field(L, key);
+        lua_setfield(L, -2, key);
+    }
+}
 
 static int loc_assign(lua_State* L) {
     std::string url = luaL_checkstring(L, lua_gettop(L));
@@ -683,6 +748,16 @@ int ScriptEngine::p_install(lua_State* L) {
     lua_pushboolean(L, 0);                    lua_setfield(L, -2, "__metatable");
     lua_pop(L, 1);
 
+    luaL_newmetatable(L, kThemeMT);
+    lua_pushcfunction(L, &theme_index);    lua_setfield(L, -2, "__index");
+    lua_pushcfunction(L, &theme_newindex); lua_setfield(L, -2, "__newindex");
+    lua_pushboolean(L, 0);                 lua_setfield(L, -2, "__metatable");
+    lua_pop(L, 1);
+
+    lua_newuserdatauv(L, 1, 0);
+    luaL_setmetatable(L, kThemeMT);
+    lua_setglobal(L, "theme");
+
     install_fetch_api(L);
     install_storage_api(L);
 
@@ -699,6 +774,7 @@ int ScriptEngine::p_install(lua_State* L) {
     lua_pushcfunction(L, &ScriptEngine::l_alert); lua_setfield(L, -2, "alert");
     lua_getglobal(L, "fetch");                    lua_setfield(L, -2, "fetch");
     lua_getglobal(L, "localStorage");             lua_setfield(L, -2, "localStorage");
+    lua_getglobal(L, "theme");                    lua_setfield(L, -2, "theme");
     lua_pushvalue(L, -1);
     lua_setglobal(L, "window");
     lua_getfield(L, -1, "location");
@@ -999,6 +1075,21 @@ void ScriptEngine::dispatch_input(uint64_t node_id) {
     for (int ref : refs) {
         call_handler(ref, 1, [node_id](lua_State* L) { push_element(L, node_id); }, "[input]");
     }
+}
+
+void ScriptEngine::add_theme_handler(int ref) {
+    if (!L_ || theme_handlers_.size() >= kMaxKeyHandlers) {
+        if (L_) luaL_unref(L_, LUA_REGISTRYINDEX, ref);
+        return;
+    }
+    theme_handlers_.push_back(ref);
+}
+
+void ScriptEngine::dispatch_theme() {
+    if (!L_ || theme_handlers_.empty()) return;
+    std::vector<int> refs = theme_handlers_;
+    deadline_ = std::chrono::steady_clock::now() + time_budget_;
+    for (int ref : refs) call_handler(ref, 1, &push_theme_table, "[themechange]");
 }
 
 void ScriptEngine::add_key_handler(bool down, int ref) {

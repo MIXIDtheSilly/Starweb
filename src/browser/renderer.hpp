@@ -32,6 +32,8 @@ void DrawMinusIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickne
 void DrawTrashIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
 void DrawZoomIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
 void DrawGlobeIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
+void DrawPaletteIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
+void DrawCheckIcon(ImVec2 center, ImU32 color, float size = 16.0f, float thickness = 0.0f);
 void DrawInspectIcon(ImVec2 center, ImU32 color, float size = 16.0f);
 void DrawChevronRightIcon(ImVec2 center, ImU32 color, float size = 16.0f);
 void DrawBanIcon(ImVec2 center, ImU32 color, float size = 16.0f);

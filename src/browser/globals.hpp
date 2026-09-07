@@ -58,6 +58,12 @@ Tab* find_tab_by_id(int tab_id);
 // browser.cpp, which owns their lifetime.
 class ScriptEngine;
 ScriptEngine* script_engine_for(int tab_id);
+// Fetches a src the page load never saw; until it lands the element keeps the
+// last texture it drew. Cheap per frame.
+const TextureInfo* page_image(int tab_id, uint64_t node_id, const std::string& url);
+void page_image_replaced(int tab_id, uint64_t node_id, const std::string& old_src);
+// False while the fetch is still in flight.
+bool page_image_failed(int tab_id, const std::string& url);
 std::string get_cache_filepath(const std::string& url);
 void prune_media_cache(std::uintmax_t max_bytes);
 void script_dispatch_click(int tab_id, uint64_t node_id);

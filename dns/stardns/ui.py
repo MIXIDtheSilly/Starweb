@@ -20,7 +20,9 @@ in attribute values, so `href="?a=1&amp;b=2"` arrived with `b` lost, and the
 parser was fixed on 2026-07-22, but the shape is the nicer one, so it stayed.
 """
 
+import re
 from pathlib import Path
+from string import Template
 
 from . import analytics, config, shapes
 
@@ -50,31 +52,31 @@ BRAND = "Nebula"
 # reason sign-in is staged. `.c-*` and `.r*` share column widths so the record list
 # lines up with the add-record form. `text-align` is sticky once inherited, so
 # it sits on leaf paragraphs, never on a container.
-CSS = """
+_CSS = """
 /* Set once here so every element inherits Inter via merge_node_style()
    instead of the platform default. Only the SemiBold weight is bundled, so
    that's the family used everywhere. */
-body { background: #000000; color: #ffffff; margin: 0; padding: 0;
+body { background: $bg; color: $text; margin: 0; padding: 0;
        font-family: Inter SemiBold; }
 
-h1 { color: #ba8cf5; font-size: 26px; margin-bottom: 4; }
-h2 { color: #ffffff; font-size: 17px; margin-top: 0; margin-bottom: 12; }
-h3 { color: #8b8b96; font-size: 13px; margin-top: 0; margin-bottom: 8; }
-a { color: #ba8cf5; }
-p { color: #ffffff; }
+h1 { color: $accent; font-size: 26px; margin-bottom: 4; }
+h2 { color: $text; font-size: 17px; margin-top: 0; margin-bottom: 12; }
+h3 { color: $muted; font-size: 13px; margin-top: 0; margin-bottom: 8; }
+a { color: $accent; }
+p { color: $text; }
 ul { margin-top: 4; margin-bottom: 4; }
-li { color: #d4d4dc; font-size: 14px; }
+li { color: $body; font-size: 14px; }
 
 .band {
-  background: #000000;
+  background: $bg;
   padding-left: 30; padding-right: 30; padding-top: 20; padding-bottom: 18;
   margin-bottom: 22;
 }
 .bandrow { display: flex; flex-direction: row; align-items: center;
            justify-content: space-between; }
-.brand { color: #ba8cf5; font-size: 24px; margin: 0; }
-.tag { color: #8b8b96; font-size: 13px; margin-top: 0; margin-bottom: 0; }
-.who { color: #d4d4dc; font-size: 13px; margin: 0; }
+.brand { color: $accent; font-size: 24px; margin: 0; }
+.tag { color: $muted; font-size: 13px; margin-top: 0; margin-bottom: 0; }
+.who { color: $body; font-size: 13px; margin: 0; }
 
 .wrap { margin-left: 30; margin-right: 30; margin-bottom: 30; }
 
@@ -92,50 +94,50 @@ li { color: #d4d4dc; font-size: 14px; }
 }
 
 /* Wider than .auth on purpose: it overhangs the form on both sides. Both axes
-   are vw so the 2.83:1 banner keeps its aspect on any window shape. */
-.logo { width: 58vw; height: 20.5vw; margin-bottom: 6; }
+   are vw so the 2.75:1 wordmark keeps its aspect on any window shape. */
+.logo { width: 37.9vw; height: 13.8vw; margin-bottom: 44; }
 
 .lbl {
-  color: #8f8a9e; font-family: Inter SemiBold; font-size: 15px;
+  color: $muted; font-family: Inter SemiBold; font-size: 15px;
   width: 31vw; margin-top: 0; margin-bottom: 8;
 }
 .fld {
-  background: #000000; color: #ffffff;
-  border-width: 1; border-color: #7c5cff; border-radius: 8;
+  background: $bg; color: $text;
+  border-width: 1; border-color: $accent_line; border-radius: 8;
   padding-left: 14; padding-top: 11;
   width: 31vw; height: 38; margin-bottom: 22;
 }
 .cta {
-  background: #8b5cf6; color: #ffffff; font-family: Inter SemiBold;
-  border-width: 1; border-color: #8b5cf6; border-radius: 8;
+  background: $accent_fill; color: #ffffff; font-family: Inter SemiBold;
+  border-width: 1; border-color: $accent_fill; border-radius: 8;
   width: 31vw; height: 44; margin-top: 30;
 }
 
 .tiles { display: flex; flex-direction: row; gap: 12; margin-bottom: 20; }
 .tile {
-  background: #000000;
-  border-width: 1; border-color: #24242b; border-radius: 8;
+  background: $bg;
+  border-width: 1; border-color: $line; border-radius: 8;
   width: 168; height: 72;
   padding-left: 14; padding-top: 12;
 }
-.tnum { color: #ffffff; font-size: 21px; margin: 0; }
-.tlab { color: #8b8b96; font-size: 12px; margin-top: 4; margin-bottom: 0; }
+.tnum { color: $text; font-size: 21px; margin: 0; }
+.tlab { color: $muted; font-size: 12px; margin-top: 4; margin-bottom: 0; }
 
 .card {
-  background: #000000;
-  border-width: 1; border-color: #24242b; border-radius: 8;
+  background: $bg;
+  border-width: 1; border-color: $line; border-radius: 8;
   padding: 18; margin-bottom: 16;
 }
 .card-warn {
-  background: #000000;
-  border-width: 1; border-color: #52292e; border-radius: 8;
+  background: $bg;
+  border-width: 1; border-color: $danger_line; border-radius: 8;
   padding: 18; margin-bottom: 16;
 }
 /* Bolder purple outline (matching .trend) marks this as the primary action,
    not just another list card. */
 .addcard {
-  background: #000000;
-  border-width: 2; border-color: #6b4ef0; border-radius: 8;
+  background: $bg;
+  border-width: 2; border-color: $accent_line; border-radius: 8;
   padding: 18; margin-bottom: 16;
 }
 
@@ -152,7 +154,7 @@ li { color: #d4d4dc; font-size: 14px; }
 .backico { width: 14; height: 14; }
 /* Nudges text down to match a same-height canvas icon; <p> boxes get extra
    intrinsic-height padding that isn't reflected in the glyph position. */
-.backlbl { color: #8b8b96; font-size: 13px; margin: 0; margin-top: 3; }
+.backlbl { color: $muted; font-size: 13px; margin: 0; margin-top: 3; }
 
 .section { margin-bottom: 24; }
 
@@ -160,28 +162,28 @@ li { color: #d4d4dc; font-size: 14px; }
 .drow { display: flex; flex-direction: row; align-items: center; gap: 12;
         height: 44; }
 /* Single class since an element can't carry two, so this one also carries flex-grow. */
-.dname { color: #ba8cf5; font-family: Inter SemiBold; font-size: 16px;
+.dname { color: $accent; font-family: Inter SemiBold; font-size: 16px;
          margin: 0; flex-grow: 1; }
 .dico { width: 18; height: 18; }
 .dspark { width: 100; height: 28; }
 .dcert { width: 18; height: 18; }
 
-.label { color: #8b8b96; font-size: 13px; margin-bottom: 5; margin-top: 10; }
-.hint { color: #74747f; font-size: 12px; margin-top: 8; margin-bottom: 0; }
-.body { color: #d4d4dc; font-size: 14px; margin-top: 0; }
-.certdesc { color: #d4d4dc; font-size: 14px; margin-top: 0; margin-bottom: 10; }
-.mono { color: #d4d4dc; font-size: 13px; }
+.label { color: $muted; font-size: 13px; margin-bottom: 5; margin-top: 10; }
+.hint { color: $faint; font-size: 12px; margin-top: 8; margin-bottom: 0; }
+.body { color: $body; font-size: 14px; margin-top: 0; }
+.certdesc { color: $body; font-size: 14px; margin-top: 0; margin-bottom: 10; }
+.mono { color: $body; font-size: 13px; }
 
 .kv { display: flex; flex-direction: row; align-items: center; gap: 10;
       margin-bottom: 10; }
-.k { color: #8b8b96; font-size: 13px; width: 96; margin: 0; }
-.v { color: #d4d4dc; font-size: 13px; flex-grow: 1; margin: 0; }
+.k { color: $muted; font-size: 13px; width: 96; margin: 0; }
+.v { color: $body; font-size: 13px; flex-grow: 1; margin: 0; }
 
 .certhead { display: flex; flex-direction: row; align-items: center; gap: 10;
             margin-bottom: 14; }
 .certicon { width: 22; height: 22; }
 /* See .backlbl above for why text next to a canvas icon needs this nudge. */
-.certttl { color: #ffffff; font-family: Inter SemiBold; font-size: 15px; margin: 0; margin-top: 3; }
+.certttl { color: $text; font-family: Inter SemiBold; font-size: 15px; margin: 0; margin-top: 3; }
 .certlinks { display: flex; flex-direction: row; align-items: center; gap: 12;
              margin-top: 10; margin-bottom: 4; }
 
@@ -190,89 +192,89 @@ li { color: #d4d4dc; font-size: 14px; }
 .colsr { display: flex; flex-direction: row; align-items: center; gap: 12;
          margin-bottom: 6; padding-left: 10; padding-right: 10; }
 .crow {
-  background: #000000;
-  border-width: 1; border-color: #24242b; border-radius: 6;
+  background: $bg;
+  border-width: 1; border-color: $line; border-radius: 6;
   padding: 10; margin-bottom: 6;
   display: flex; flex-direction: row; align-items: center; gap: 12;
 }
-.c-name { color: #74747f; font-size: 12px; width: 10vw; margin: 0; }
-.c-type { color: #74747f; font-size: 12px; width: 7vw; margin: 0; }
-.c-val { color: #74747f; font-size: 12px; flex-grow: 1; margin: 0; }
-.c-ttl { color: #74747f; font-size: 12px; width: 6vw; margin: 0; }
-.c-act { color: #74747f; font-size: 12px; width: 74; margin: 0; }
+.c-name { color: $faint; font-size: 12px; width: 10vw; margin: 0; }
+.c-type { color: $faint; font-size: 12px; width: 7vw; margin: 0; }
+.c-val { color: $faint; font-size: 12px; flex-grow: 1; margin: 0; }
+.c-ttl { color: $faint; font-size: 12px; width: 6vw; margin: 0; }
+.c-act { color: $faint; font-size: 12px; width: 74; margin: 0; }
 
 /* Same vw units as .in-name/.sel/.in-val/.in-ttl below, so the add-record
    row's columns track the records table's columns as the window resizes. */
-.ac-name { color: #74747f; font-size: 12px; width: 10vw; margin: 0; }
-.ac-type { color: #74747f; font-size: 12px; width: 7vw; margin: 0; }
-.ac-val { color: #74747f; font-size: 12px; margin: 0; flex-grow: 1; }
-.ac-ttl { color: #74747f; font-size: 12px; width: 6vw; margin: 0; }
+.ac-name { color: $faint; font-size: 12px; width: 10vw; margin: 0; }
+.ac-type { color: $faint; font-size: 12px; width: 7vw; margin: 0; }
+.ac-val { color: $faint; font-size: 12px; margin: 0; flex-grow: 1; }
+.ac-ttl { color: $faint; font-size: 12px; width: 6vw; margin: 0; }
 
 /* margin-top matches text to .btn-del's vertical center; buttons don't get
    the same extra intrinsic-height padding text tags do. */
-.rname { color: #ffffff; font-size: 14px; width: 10vw; margin: 0; margin-top: 3; }
-.rval { color: #d4d4dc; font-size: 14px; flex-grow: 1; margin: 0; margin-top: 3; }
-.rttl { color: #8b8b96; font-size: 14px; width: 6vw; margin: 0; margin-top: 3; }
+.rname { color: $text; font-size: 14px; width: 10vw; margin: 0; margin-top: 3; }
+.rval { color: $body; font-size: 14px; flex-grow: 1; margin: 0; margin-top: 3; }
+.rttl { color: $muted; font-size: 14px; width: 6vw; margin: 0; margin-top: 3; }
 .rt-a { color: #79c0ff; font-size: 14px; width: 7vw; margin: 0; margin-top: 3; }
 .rt-aaaa { color: #6fd0c0; font-size: 14px; width: 7vw; margin: 0; margin-top: 3; }
-.rt-cname { color: #ba8cf5; font-size: 14px; width: 7vw; margin: 0; margin-top: 3; }
+.rt-cname { color: $accent; font-size: 14px; width: 7vw; margin: 0; margin-top: 3; }
 .rt-txt { color: #d9a94e; font-size: 14px; width: 7vw; margin: 0; margin-top: 3; }
 
 .in {
-  background: #000000; color: #ffffff;
-  border-width: 1; border-color: #2e2e37; border-radius: 5;
+  background: $bg; color: $text;
+  border-width: 1; border-color: $line2; border-radius: 5;
   padding: 7; width: 300; margin-bottom: 4;
 }
 /* vw-based, not px, so these actually shrink with the window; .ac-name/etc
    above are matching caption widths, kept separate from the records table's
    fixed .c-name/etc. */
 .in-name {
-  background: #000000; color: #ffffff;
-  border-width: 1; border-color: #2e2e37; border-radius: 5;
+  background: $bg; color: $text;
+  border-width: 1; border-color: $line2; border-radius: 5;
   padding: 7; width: 10vw;
 }
 /* No width: fills whatever NAME/TYPE/TTL leave in the row via
    widget_fill_width() in renderer.cpp, since flex-grow alone doesn't repaint
    widgets at their grown size. */
 .in-val {
-  background: #000000; color: #ffffff;
-  border-width: 1; border-color: #2e2e37; border-radius: 5;
+  background: $bg; color: $text;
+  border-width: 1; border-color: $line2; border-radius: 5;
   padding: 7; flex-grow: 1;
 }
 .in-ttl {
-  background: #000000; color: #ffffff;
-  border-width: 1; border-color: #2e2e37; border-radius: 5;
+  background: $bg; color: $text;
+  border-width: 1; border-color: $line2; border-radius: 5;
   padding: 7; width: 6vw;
 }
 .sel {
-  background: #000000; color: #ffffff;
+  background: $bg; color: $text;
   border-width: 0; border-radius: 5;
   padding: 7; width: 7vw;
 }
 
 .btn {
-  background: #8b5cf6; color: #ffffff;
-  border-width: 1; border-color: #8b5cf6; border-radius: 6;
+  background: $accent_fill; color: #ffffff;
+  border-width: 1; border-color: $accent_fill; border-radius: 6;
   width: 160; height: 34; margin-top: 12; margin-right: 8;
 }
 .btn-alt {
-  background: #17171c; color: #ffffff;
-  border-width: 1; border-color: #2e2e37; border-radius: 6;
+  background: $raise; color: $text;
+  border-width: 1; border-color: $line2; border-radius: 6;
   width: 160; height: 34; margin-top: 12;
 }
 .btn-row {
-  background: #8b5cf6; color: #ffffff;
-  border-width: 1; border-color: #8b5cf6; border-radius: 6;
+  background: $accent_fill; color: #ffffff;
+  border-width: 1; border-color: $accent_fill; border-radius: 6;
   width: 130; height: 32;
 }
 .btn-del {
-  background: #000000; color: #f87171;
-  border-width: 1; border-color: #f87171; border-radius: 5;
+  background: $bg; color: $danger;
+  border-width: 1; border-color: $danger; border-radius: 5;
   width: 74; height: 26;
 }
 
-.msg { color: #8b8b96; font-size: 14px; margin-top: 12; }
-.bad { color: #f87171; font-size: 14px; }
+.msg { color: $muted; font-size: 14px; margin-top: 12; }
+.bad { color: $danger; font-size: 14px; }
 
 /* The signed-in shell. The sidebar, its hairline and the artwork are all out
    of the flow, pinned to the viewport, so only the content column scrolls,
@@ -288,20 +290,20 @@ li { color: #d4d4dc; font-size: 14px; }
   width: 300;
   padding-left: 24; padding-right: 24; padding-top: 26;
 }
-.navmark { width: 196; height: 71; margin-left: -4; margin-bottom: 16; }
+.navmark { width: 196; height: 71.4; margin-left: 30; margin-bottom: 16; }
 
-.rule { background: #17171c; position: fixed; left: 300; top: 0; bottom: 0; width: 1; }
+.rule { background: $raise; position: fixed; left: 300; top: 0; bottom: 0; width: 1; }
 
 .qbox {
-  background: #000000;
-  border-width: 1; border-color: #7c5cff; border-radius: 8;
+  background: $bg;
+  border-width: 1; border-color: $accent_line; border-radius: 8;
   width: 252; height: 38; margin-bottom: 20;
   padding-left: 12;
   display: flex; flex-direction: row; align-items: center; gap: 10;
 }
 .qico { width: 15; height: 15; }
 .qfld {
-  background: #000000; color: #ffffff;
+  background: $bg; color: $text;
   border-width: 0; font-size: 14px;
   width: 200; padding-left: 0; padding-top: 4;
 }
@@ -315,18 +317,18 @@ li { color: #d4d4dc; font-size: 14px; }
 }
 .qdropon {
   position: fixed; left: 24; top: 161; width: 252;
-  background: #000000; border-width: 1; border-color: #7c5cff; border-radius: 8;
+  background: $bg; border-width: 1; border-color: $accent_line; border-radius: 8;
   padding-top: 6; padding-bottom: 6;
 }
-.qheadoff { color: #6f6f7c; font-size: 11px; margin: 0; }
-.qheadon { color: #6f6f7c; font-size: 11px; margin: 0;
+.qheadoff { color: $faint; font-size: 11px; margin: 0; }
+.qheadon { color: $faint; font-size: 11px; margin: 0;
            padding-left: 12; padding-top: 8; padding-bottom: 4; }
 /* The dropdown is a plain block, not a flex container, so an unset width here
    would fall back to the full window rather than 252. */
 .qrow { display: flex; flex-direction: row; align-items: center; gap: 10;
         width: 228; height: 36; padding-left: 12; padding-right: 12; }
 .qricon { width: 15; height: 15; }
-.qrname { color: #d4d4dc; font-size: 13px; margin: 0; margin-top: 2; }
+.qrname { color: $body; font-size: 13px; margin: 0; margin-top: 2; }
 .qrchev { width: 13; height: 13; }
 
 /* left tracks .sbox's centring but is computed in Lua (heroPosition, home_page)
@@ -337,16 +339,16 @@ li { color: #d4d4dc; font-size: 14px; }
 }
 .hdropon {
   position: fixed; top: 248; width: 52vw;
-  background: #000000; border-width: 1; border-color: #7c5cff; border-radius: 8;
+  background: $bg; border-width: 1; border-color: $accent_line; border-radius: 8;
   padding-top: 6; padding-bottom: 6;
 }
-.hheadoff { color: #6f6f7c; font-size: 11px; margin: 0; }
-.hheadon { color: #6f6f7c; font-size: 11px; margin: 0;
+.hheadoff { color: $faint; font-size: 11px; margin: 0; }
+.hheadon { color: $faint; font-size: 11px; margin: 0;
            padding-left: 12; padding-top: 8; padding-bottom: 4; }
 .hrow { display: flex; flex-direction: row; align-items: center; gap: 10;
         width: 52vw; height: 36; padding-left: 12; padding-right: 12; }
 .hricon { width: 15; height: 15; }
-.hrname { color: #d4d4dc; font-size: 13px; margin: 0; margin-top: 2; }
+.hrname { color: $body; font-size: 13px; margin: 0; margin-top: 2; }
 .hrchev { width: 13; height: 13; }
 
 /* 1px sliver whose .width in Lua is the only way to read live window width. */
@@ -355,20 +357,20 @@ li { color: #d4d4dc; font-size: 14px; }
 /* The current tab is the only row with a fill; the rest repeat the page colour
    so both kinds of row measure and indent identically. */
 .navon {
-  background: #17171c; border-radius: 8;
+  background: $raise; border-radius: 8;
   width: 240; height: 40; margin-bottom: 4;
   padding-left: 12;
   display: flex; flex-direction: row; align-items: center; gap: 12;
 }
 .navoff {
-  background: #000000; border-radius: 8;
+  background: $bg; border-radius: 8;
   width: 240; height: 40; margin-bottom: 4;
   padding-left: 12;
   display: flex; flex-direction: row; align-items: center; gap: 12;
 }
 .navico { width: 18; height: 18; }
-.navtxt { color: #ffffff; font-family: Inter SemiBold; font-size: 15px; margin: 0; }
-.navmut { color: #b6b6c2; font-size: 15px; margin: 0; }
+.navtxt { color: $text; font-family: Inter SemiBold; font-size: 15px; margin: 0; }
+.navmut { color: $body; font-size: 15px; margin: 0; }
 
 .main {
   display: flex; flex-direction: column; align-items: center;
@@ -381,8 +383,8 @@ li { color: #d4d4dc; font-size: 14px; }
   padding-right: 30; padding-top: 18;
 }
 .avatar {
-  background: #000000;
-  border-width: 1; border-color: #2f2f3a; border-radius: 22;
+  background: $bg;
+  border-width: 1; border-color: $line2; border-radius: 22;
   width: 44; height: 44;
   display: flex; flex-direction: row; justify-content: center; align-items: center;
 }
@@ -392,20 +394,20 @@ li { color: #d4d4dc; font-size: 14px; }
 .page { align-self: stretch; padding-left: 40; padding-right: 40; padding-top: 6; }
 
 .hero {
-  color: #ffffff; font-family: Inter SemiBold; font-size: 32px;
+  color: $text; font-family: Inter SemiBold; font-size: 32px;
   margin-top: 56; margin-bottom: 26;
 }
 
 .sbox {
-  background: #000000;
-  border-width: 1; border-color: #6b4ef0; border-radius: 10;
+  background: $bg;
+  border-width: 1; border-color: $accent_line; border-radius: 10;
   width: 52vw; height: 52; margin-bottom: 28;
   padding-left: 18;
   display: flex; flex-direction: row; align-items: center; gap: 12;
 }
 .sico { width: 19; height: 19; }
 .sfld {
-  background: #000000; color: #ffffff;
+  background: $bg; color: $text;
   border-width: 0; font-size: 15px;
   width: 46vw; padding-left: 0; padding-top: 7;
 }
@@ -418,7 +420,7 @@ li { color: #d4d4dc; font-size: 14px; }
 
 .colhead { display: flex; flex-direction: row; align-items: center; gap: 6;
            margin-bottom: 10; }
-.colttl { color: #8b8b96; font-size: 14px; margin: 0; }
+.colttl { color: $muted; font-size: 14px; margin: 0; }
 .colchev { width: 13; height: 13; }
 
 .lrow { display: flex; flex-direction: row; align-items: center; gap: 10;
@@ -426,30 +428,30 @@ li { color: #d4d4dc; font-size: 14px; }
 .lico { width: 16; height: 16; }
 /* See .backlbl: a <p> measures taller than its glyphs, so centring the box in
    the row leaves the text sitting above the icon beside it. */
-.lname { color: #ffffff; font-family: Inter SemiBold; font-size: 14px;
+.lname { color: $text; font-family: Inter SemiBold; font-size: 14px;
          flex-grow: 1; margin: 0; margin-top: 3; }
 .lchev { width: 16; height: 16; }
-.hair { background: #1c1c22; height: 1; margin-bottom: 4; }
-.empty { color: #6f6f7c; font-size: 13px; margin-top: 2; }
+.hair { background: $raise; height: 1; margin-bottom: 4; }
+.empty { color: $faint; font-size: 13px; margin-top: 2; }
 
 /* .trend fills .page's width like other cards there. .trendhome instead
    pins to 52vw to line up with .hubcols in the vw-based .hub. Both get a
    purple outline, like qbox/sbox, since this is the flagship feature. */
 .trend {
-  background: #000000;
-  border-width: 1; border-color: #6b4ef0; border-radius: 8;
+  background: $bg;
+  border-width: 1; border-color: $accent_line; border-radius: 8;
   padding: 18; margin-bottom: 16;
 }
 .trendhome {
-  background: #000000;
-  border-width: 1; border-color: #6b4ef0; border-radius: 8;
+  background: $bg;
+  border-width: 1; border-color: $accent_line; border-radius: 8;
   padding: 18; margin-top: 22;
   width: 52vw;
 }
 .trendhead { display: flex; flex-direction: row; align-items: center;
              justify-content: space-between; }
-.trendttl { color: #ffffff; font-family: Inter SemiBold; font-size: 15px; margin: 0; }
-.trendtot { color: #ba8cf5; font-size: 24px; margin: 0; }
+.trendttl { color: $text; font-family: Inter SemiBold; font-size: 15px; margin: 0; }
+.trendtot { color: $accent; font-size: 24px; margin: 0; }
 /* .trendcv/.trendlabs take no width, so they auto-match .trend's own unsized
    content width. .trendhome sets an explicit 52vw though, so its children
    don't narrow to match; .trendcvh/.trendlabsh are pinned a bit inside that
@@ -461,37 +463,37 @@ li { color: #d4d4dc; font-size: 14px; }
 .trendlabs { display: flex; flex-direction: row; justify-content: space-between; }
 .trendlabsh { display: flex; flex-direction: row; justify-content: space-between;
               width: 47vw; }
-.trendlab { color: #6f6f7c; font-size: 11px; margin: 0; }
+.trendlab { color: $faint; font-size: 11px; margin: 0; }
 
 /* Two classes rather than one plus a modifier, since an element can only
    carry a single class here; same split as .navon/.navoff. */
 .ranges { display: flex; flex-direction: row; align-items: center; gap: 8;
           margin-bottom: 18; }
 .rgon {
-  background: #17171c;
-  border-width: 1; border-color: #6b4ef0; border-radius: 14;
+  background: $raise;
+  border-width: 1; border-color: $accent_line; border-radius: 14;
   height: 28; padding-left: 13; padding-right: 13;
   display: flex; flex-direction: row; align-items: center;
 }
 .rgoff {
-  background: #000000;
-  border-width: 1; border-color: #24242b; border-radius: 14;
+  background: $bg;
+  border-width: 1; border-color: $line; border-radius: 14;
   height: 28; padding-left: 13; padding-right: 13;
   display: flex; flex-direction: row; align-items: center;
 }
-.rgtxt { color: #ffffff; font-size: 12px; margin: 0; margin-top: 3; }
-.rgmut { color: #8b8b96; font-size: 12px; margin: 0; margin-top: 3; }
+.rgtxt { color: $text; font-size: 12px; margin: 0; margin-top: 3; }
+.rgmut { color: $muted; font-size: 12px; margin: 0; margin-top: 3; }
 
 /* Wider than .k: these labels carry the window's own noun, so they run to
    "Busiest 5 minutes" rather than the cert card's one-word keys. */
-.ak { color: #8b8b96; font-size: 13px; width: 132; margin: 0; }
+.ak { color: $muted; font-size: 13px; width: 132; margin: 0; }
 
 .spark { display: flex; flex-direction: row; align-items: center; gap: 14;
          height: 40; }
-.sparkname { color: #ffffff; font-family: Inter SemiBold; font-size: 14px;
+.sparkname { color: $text; font-family: Inter SemiBold; font-size: 14px;
              width: 160; margin: 0; }
 .sparkcv { width: 160; height: 30; }
-.sparktot { color: #8b8b96; font-size: 13px; width: 90; margin: 0; }
+.sparktot { color: $muted; font-size: 13px; width: 90; margin: 0; }
 .sparkchev { width: 15; height: 15; }
 """
 
@@ -499,14 +501,72 @@ MUTED = "#8b8b96"
 BAD = "#f87171"
 
 
+# Asking by role lets the request's own Star-Theme header settle the colour, so
+# the first paint is already right.
+ACCENT_ROLE = "accent"
+
+
 def icon_src(name: str, color: str) -> str:
     """URL for a recoloured lucide icon, served by shapes.icon_svg() via panel.py."""
     return f"/assets/icon/{name}/{color.lstrip('#')}"
 
 
+def banner_src(color: str) -> str:
+    """URL for the wordmark with its swooshes in `color`."""
+    return f"/assets/banner/{color.lstrip('#')}"
+
+
 def esc(value) -> str:
     return (str(value).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+# The defaults for the $role form the stylesheet is written in; THEME_SCRIPT
+# recomputes the same roles once a script runs.
+PALETTE = {
+    "bg":          "#000000",
+    "raise":       "#17171c",
+    "text":        "#ffffff",
+    "body":        "#d4d4dc",
+    "muted":       "#8b8b96",
+    "faint":       "#74747f",
+    "accent":      ACCENT,
+    "accent_fill": "#8b5cf6",
+    "accent_line": "#7c5cff",
+    "line":        "#24242b",
+    "line2":       "#2e2e37",
+    "danger":      "#f87171",
+    "danger_line": "#52292e",
+}
+
+CSS = Template(_CSS).substitute(PALETTE)
+
+_COLOUR_PROPS = ("color", "background", "background-color", "border-color")
+
+
+def _theme_rules() -> tuple[list, list]:
+    """Which selector takes which role, read back out of the stylesheet so the
+    script can never drift from it. Returns (tag rules, class rules)."""
+    tags: list[tuple[str, list[tuple[str, str]]]] = []
+    classes: list[tuple[str, list[tuple[str, str]]]] = []
+    for sel_raw, decls in re.findall(r"([^{}]*)\{([^{}]*)\}", _CSS):
+        sel = sel_raw.strip().split("*/")[-1].strip()
+        if not sel or sel == "body":
+            continue
+        taken = [(prop, role[1:]) for prop, role in
+                 re.findall(r"([a-z-]+)\s*:\s*(\$[a-z_0-9]+)", decls)
+                 if prop in _COLOUR_PROPS]
+        if not taken:
+            continue
+        (classes if sel.startswith(".") else tags).append((sel.lstrip("."), taken))
+    return tags, classes
+
+
+def _lua_rules(rules) -> str:
+    return "{" + ",".join(
+        "{" + lua_str(sel) + ",{" +
+        ",".join("{" + lua_str(prop) + "," + lua_str(role) + "}" for prop, role in decls) +
+        "}}" for sel, decls in rules) + "}"
 
 
 def lua_str(value) -> str:
@@ -533,8 +593,104 @@ def lua_strs(values) -> str:
     return "{" + ",".join(lua_str(v) for v in values) + "}"
 
 
+_TAG_RULES, _CLASS_RULES = _theme_rules()
+
+# Appended to every page. `starPaint` is global because inline style is per
+# element, so a script that swaps a className has to ask for a repaint.
+THEME_SCRIPT = """
+local tagRules = """ + _lua_rules(_TAG_RULES) + """
+local classRules = """ + _lua_rules(_CLASS_RULES) + """
+
+local function rgb(h)
+    return tonumber(h:sub(2, 3), 16), tonumber(h:sub(4, 5), 16), tonumber(h:sub(6, 7), 16)
+end
+
+local function mix(a, b, t)
+    local ar, ag, ab = rgb(a)
+    local br, bg, bb = rgb(b)
+    return string.format("#%02x%02x%02x",
+        math.floor(ar + (br - ar) * t + 0.5),
+        math.floor(ag + (bg - ag) * t + 0.5),
+        math.floor(ab + (bb - ab) * t + 0.5))
+end
+
+function starPalette()
+    -- Flat black under a light theme too; only the accent is the browser's.
+    local bg = "#000000"
+    local fg = "#ffffff"
+    local ac = theme.light and mix(theme.accent, fg, 0.30) or theme.accent
+    local danger = "#f87171"
+    return {
+        bg = bg,
+        ["raise"] = mix(bg, fg, 0.09),
+        text = fg,
+        body = mix(fg, bg, 0.14),
+        muted = mix(fg, bg, 0.42),
+        faint = mix(fg, bg, 0.55),
+        accent = ac,
+        accent_fill = ac,
+        accent_line = ac,
+        line = mix(bg, fg, 0.14),
+        line2 = mix(bg, fg, 0.20),
+        danger = danger,
+        danger_line = mix(danger, bg, 0.55),
+    }
+end
+
+function starArtRamp()
+    local ac = theme.focus or theme.accent
+    local base = mix("#000000", ac, 0.22)
+    local tip = mix(ac, "#ffffff", 0.55)
+    local out = {}
+    for i = 1, 16 do out[i] = mix(base, tip, (i - 1) / 15) end
+    return out
+end
+
+-- starPaint cannot restyle a canvas, so the code that drew one watches this.
+starThemeTick = 0
+
+function starPaint()
+    starThemeTick = starThemeTick + 1
+    local pal = starPalette()
+    if starArtSetPalette then starArtSetPalette(starArtRamp()) end
+
+    local page = document.querySelector("body")
+    if page then page.style.background = pal.bg end
+
+    -- Artwork is served already coloured, so an image is repointed, not restyled.
+    local mark = document.getElementById("mark")
+    if mark then mark.src = "/assets/banner/" .. pal.accent:sub(2) end
+
+    local ico = document.getElementById("navico")
+    local name = ico and ico.src:match("/assets/icon/([^/]+)/")
+    if name then ico.src = "/assets/icon/" .. name .. "/" .. pal.accent:sub(2) end
+
+    local function apply(els, decls)
+        for i = 1, #els do
+            local st = els[i].style
+            for j = 1, #decls do
+                local v = pal[decls[j][2]]
+                if v then st[decls[j][1]] = v end
+            end
+        end
+    end
+    for i = 1, #tagRules do
+        apply(document.getElementsByTagName(tagRules[i][1]), tagRules[i][2])
+    end
+    for i = 1, #classRules do
+        apply(document.getElementsByClassName(classRules[i][1]), classRules[i][2])
+    end
+end
+
+starPaint()
+document.addEventListener("themechange", starPaint)
+"""
+
+
 def page(title: str, body: str, script: str = "") -> str:
-    tail = f"<script>\n{script}\n</script>" if script else ""
+    # First, so starPalette() is in scope for everything the page adds after it.
+    script = (THEME_SCRIPT + "\n" + script) if script else THEME_SCRIPT
+    tail = f"<script>\n{script}\n</script>"
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -710,12 +866,12 @@ local function readout(ctx, w, text, centre)
     -- A pixel off each edge, since the outline straddles the rect it traces.
     if x < 1 then x = 1 elseif x + tw > w - 1 then x = w - 1 - tw end
     local r = PILLH / 2
-    ctx.fillStyle = "#17171c"
+    ctx.fillStyle = starPalette()["raise"]
     ctx:fillRect(x, 2, tw, PILLH, r)
-    ctx.strokeStyle = "#6b4ef0"
+    ctx.strokeStyle = starPalette().accent
     ctx.lineWidth = 1
     ctx:strokeRect(x, 2, tw, PILLH, r)
-    ctx.fillStyle = "#ffffff"
+    ctx.fillStyle = starPalette().text
     ctx:fillText(text, x + PILLPAD, 7)
 end
 
@@ -724,11 +880,11 @@ end
 -- highlight needs is the one already running. A build that predates it reports
 -- nil, and comparing that would kill the callback before it re-registers,
 -- taking the whole chart with it, so the fallback is not optional.
-function chartBars(id, values, labels, colour)
+function chartBars(id, values, labels)
     local cv = document.getElementById(id)
     if not cv then return end
     local ctx = cv:getContext("2d")
-    local w, h, hot = -1, -1, -2
+    local w, h, hot, tick = -1, -1, -2, -1
     local n = #values
 
     local function draw()
@@ -746,10 +902,11 @@ function chartBars(id, values, labels, colour)
             if i >= 1 and i <= n then over = i end
         end
 
-        if cw ~= w or ch ~= h or over ~= hot then
-            w, h, hot = cw, ch, over
+        if cw ~= w or ch ~= h or over ~= hot or starThemeTick ~= tick then
+            w, h, hot, tick = cw, ch, over, starThemeTick
             if w > 0 and h > 0 and n > 0 then
                 ctx:clearRect(0, 0, w, h)
+                local colour = starPalette().accent
                 local maxv = chartMax(values)
                 for i = 1, n do
                     -- A zero bar draws nothing, so a quiet series does not
@@ -760,7 +917,7 @@ function chartBars(id, values, labels, colour)
                         if values[i] > 0 then
                             bh = math.max(2, (values[i] / maxv) * (h - 2))
                         end
-                        ctx.fillStyle = (i == hot) and "#cbb2ff" or colour
+                        ctx.fillStyle = (i == hot) and mix(colour, starPalette().text, 0.35) or colour
                         ctx:fillRect((i - 1) * (bw + gap), h - bh, bw, bh)
                     end
                 end
@@ -775,21 +932,21 @@ function chartBars(id, values, labels, colour)
     requestAnimationFrame(draw)
 end
 
-function chartLine(id, values, colour)
+function chartLine(id, values)
     local cv = document.getElementById(id)
     if not cv then return end
     local ctx = cv:getContext("2d")
-    local w, h = -1, -1
+    local w, h, tick = -1, -1, -1
     local n = #values
 
     local function draw()
-        if cv.width ~= w or cv.height ~= h then
-            w, h = cv.width, cv.height
+        if cv.width ~= w or cv.height ~= h or starThemeTick ~= tick then
+            w, h, tick = cv.width, cv.height, starThemeTick
             if w > 0 and h > 0 and n > 1 then
                 ctx:clearRect(0, 0, w, h)
                 local maxv = chartMax(values)
                 local pad = 3
-                ctx.strokeStyle = colour
+                ctx.strokeStyle = starPalette().accent
                 ctx.lineWidth = 2
                 ctx.lineCap = "round"
                 ctx.lineJoin = "round"
@@ -902,8 +1059,8 @@ local function {prefix}Search(q)
                 n = n + 1
                 {prefix}Target[n] = item[3]
                 document.getElementById({lua_str(prefix + "rn-")} .. n).textContent = item[1]
-                drawIcon({lua_str(prefix + "ri-")} .. n, item[2], "#d4d4dc", 1.4)
-                drawIcon({lua_str(prefix + "rc-")} .. n, "chevron-right", "#6f6f7c", 1.3)
+                drawIcon({lua_str(prefix + "ri-")} .. n, item[2], starPalette().body, 1.4)
+                drawIcon({lua_str(prefix + "rc-")} .. n, "chevron-right", starPalette().faint, 1.3)
             end
         end
     end
@@ -918,6 +1075,7 @@ local function {prefix}Search(q)
     document.getElementById({lua_str(prefix + "head")}).textContent = (n > 0) and "GO TO" or ""
     document.getElementById({lua_str(prefix + "drop")}).className =
         (n > 0) and {lua_str(prefix + "dropon")} or {lua_str(prefix + "dropoff")}
+    starPaint()
 end
 
 document.getElementById({lua_str(field_id)}):addEventListener("input", function()
@@ -938,7 +1096,7 @@ def shell(active: str, token: str, domains: list[dict], content: str,
         on = key == active
         rows.append(f"""
     <div class="{'navon' if on else 'navoff'}" id="nav-{key}">
-      <img class="navico" src="{icon_src(icon, '#ffffff' if on else '#b6b6c2')}">
+      <img class="navico"{' id="navico"' if on else ''} src="{icon_src(icon, ACCENT_ROLE if on else '#8b8b96')}">
       <p class="{'navtxt' if on else 'navmut'}">{esc(label)}</p>
     </div>""")
         script.append(f'link("nav-{key}", {lua_str(path + "?t=" + token)})')
@@ -961,7 +1119,7 @@ def shell(active: str, token: str, domains: list[dict], content: str,
 <div class="rule"></div>
 
 <div class="nav">
-  <img class="navmark" src="/banner_trans.png">
+  <img class="navmark" id="mark" src="{banner_src(ACCENT_ROLE)}">
 
   <div class="qbox">
     <img class="qico" src="{icon_src('search', '#6f6f7c')}">
@@ -989,12 +1147,12 @@ def login_page() -> str:
     # Markup mirrors www/index.html one for one: the two flanking canvases, a
     # banner, the two labelled fields and a single "Log In" button. The only
     # change is the button carries the login wiring index.html never had.
-    body = """
+    body = f"""
 <div class="stage">
   <canvas class="side" id="lft"></canvas>
 
   <div class="auth">
-    <img class="logo" src="/banner.png">
+    <img class="logo" id="mark" src="{banner_src(ACCENT_ROLE)}">
     <p class="lbl">Username</p>
     <input type="text" class="fld" id="u">
     <p class="lbl">Password</p>
@@ -1145,7 +1303,7 @@ local function heroPosition()
     if heroTries < 60 then requestAnimationFrame(heroPosition) end
 end
 heroPosition()""")
-    script.append(f'chartLine("chart-home", {lua_arr(series)}, "#ba8cf5")')
+    script.append(f'chartLine("chart-home", {lua_arr(series)})')
     # Must come after the sidebar in document order to paint on top of it.
     vpmeter_markup = '<canvas class="vpmeter" id="vpmeter"></canvas>'
     return page(f"{BRAND} - {esc(username)}", body + vpmeter_markup + hdrop_markup,
@@ -1183,9 +1341,9 @@ def panel_page(username: str, token: str, domains: list[dict],
 </div>""")
         if i < len(domains):
             rows.append('<div class="hair"></div>')
-        icon_script.append(f'chartLine("dchart-{i}", '
-                           f'{lua_arr(series.get(name) or [0] * analytics.DEFAULT_DAYS)}, '
-                           f'"#8b6ef0")')
+        icon_script.append(
+            f'chartLine("dchart-{i}", '
+            f'{lua_arr(series.get(name) or [0] * analytics.DEFAULT_DAYS)})')
 
     if domains:
         list_card = f'<div class="card">{"".join(rows)}</div>'
@@ -1235,7 +1393,7 @@ local msg = document.getElementById("msg")
 
 local function say(text, color)
     msg.textContent = text
-    msg.style.color = color or "#8b8b96"
+    msg.style.color = color or starPalette().muted
 end
 
 local function bind(name)
@@ -1243,9 +1401,9 @@ local function bind(name)
         say("Deleting " .. name .. "...")
         fetch("/api/domain/delete", {{ method = "POST",
             json = {{ token = token, domain = name }} }}, function(err, res)
-            if err then return say(err, "#f87171") end
+            if err then return say(err, starPalette().danger) end
             local data = res:json()
-            if not res.ok then return say(data.error or "Failed.", "#f87171") end
+            if not res.ok then return say(data.error or "Failed.", starPalette().danger) end
             location.assign("/domains?t=" .. token)
         end)
     end)
@@ -1255,13 +1413,13 @@ end
 
 document.getElementById("add"):addEventListener("click", function()
     local name = document.getElementById("newdomain").value
-    if name == "" then return say("Enter a name.", "#f87171") end
+    if name == "" then return say("Enter a name.", starPalette().danger) end
     say("Registering...")
     fetch("/api/domain/add", {{ method = "POST",
         json = {{ token = token, domain = name }} }}, function(err, res)
-        if err then return say(err, "#f87171") end
+        if err then return say(err, starPalette().danger) end
         local data = res:json()
-        if not res.ok then return say(data.error or "Failed.", "#f87171") end
+        if not res.ok then return say(data.error or "Failed.", starPalette().danger) end
         location.assign("/domains?t=" .. token)
     end)
 end)
@@ -1315,7 +1473,7 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
     </div>""")
         if i < len(per_domain):
             rows.append('    <div class="hair"></div>')
-        script.append(f'chartLine("chart-dom-{i}", {lua_arr(d["series"])}, "#8b6ef0")')
+        script.append(f'chartLine("chart-dom-{i}", {lua_arr(d["series"])})')
         target = f"/analytics/{d['name']}?t={token}&r={rng}"
         script.append(f'link("spk-{i}", {lua_str(target)})')
 
@@ -1347,7 +1505,7 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
     </div>"""
 
     body, shell_script = shell("analytics", token, domains, content, art=True)
-    script.insert(0, f'chartLine("chart-all", {lua_arr(series)}, "#ba8cf5")')
+    script.insert(0, f'chartLine("chart-all", {lua_arr(series)})')
     return page(f"{BRAND} - analytics", body,
                 shell_script + "\n" + CHARTS + "\n" + "\n".join(script))
 
@@ -1416,8 +1574,8 @@ def domain_analytics_page(token: str, domain: str, domains: list[dict], series: 
     script += [
         f'link("back-ana", {lua_str(f"/analytics?t={token}&r={rng}")})',
         f'link("manage", {lua_str(f"/domain/{domain}?t={token}")})',
-        f'chartLine("chart-dom", {lua_arr(series)}, "#ba8cf5")',
-        f'chartBars("chart-days", {lua_arr(series)}, {lua_strs(labels)}, "#8b6ef0")',
+        f'chartLine("chart-dom", {lua_arr(series)})',
+        f'chartBars("chart-days", {lua_arr(series)}, {lua_strs(labels)})',
     ]
     return page(f"{BRAND} - {domain} analytics", body,
                 shell_script + "\n" + CHARTS + "\n" + "\n".join(script))
@@ -1548,7 +1706,7 @@ local msg = document.getElementById("msg")
 
 local function say(text, color)
     msg.textContent = text
-    msg.style.color = color or "#8b8b96"
+    msg.style.color = color or starPalette().muted
 end
 
 local function reload()
@@ -1557,9 +1715,9 @@ end
 
 local function post(path, payload, done)
     fetch(path, {{ method = "POST", json = payload }}, function(err, res)
-        if err then return say(err, "#f87171") end
+        if err then return say(err, starPalette().danger) end
         local data = res:json()
-        if not res.ok then return say(data.error or "Failed.", "#f87171") end
+        if not res.ok then return say(data.error or "Failed.", starPalette().danger) end
         done(data)
     end)
 end

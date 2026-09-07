@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "imgui.h"
+#include "theme.hpp"
 #include "../common/net.hpp"
 #include "../common/tls_info.hpp"
 
@@ -22,7 +23,7 @@ struct Length {
 };
 
 struct CssStyle {
-    ImVec4 color = ImVec4(1, 1, 1, 1);
+    ImVec4 color = Theme::page_text;
     ImVec4 bg_color = ImVec4(0, 0, 0, 0);
     bool has_bg = false;
     bool has_color = false;

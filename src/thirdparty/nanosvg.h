@@ -289,6 +289,18 @@ static void nsvg__parseElement(char* s,
 	while (*s && !nsvg__isspace(*s)) s++;
 	if (*s) { *s++ = '\0'; }
 
+	// Local change: a self-closing tag carrying no attributes ("<stop/>") keeps
+	// the slash stuck to its name, which then matches no element at all — Figma
+	// writes gradient stops that way, and the stop was being dropped. Split it
+	// off and close the tag, exactly as the spaced "<stop />" already is.
+	if (start) {
+		size_t name_len = strlen(name);
+		if (name_len > 0 && name[name_len - 1] == '/') {
+			name[name_len - 1] = '\0';
+			end = 1;
+		}
+	}
+
 	// Get attribs
 	while (!end && *s && nattr < NSVG_XML_MAX_ATTRIBS-3) {
 		char* name = NULL;

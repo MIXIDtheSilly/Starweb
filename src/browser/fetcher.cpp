@@ -2,6 +2,7 @@
 #include "globals.hpp"
 #include "parser.hpp"
 #include "devtools.hpp"
+#include "theme.hpp"
 #include "../common/url_parser.hpp"
 #include "../common/stwp_msg.hpp"
 #include "../common/net.hpp"
@@ -266,6 +267,7 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
     req.headers["Host"] = format_host(parsed.host) +
         (parsed.port == default_port_for(parsed.scheme) ? "" : ":" + port_str);
     req.headers["User-Agent"] = "Starmap/1.0";
+    req.headers["Star-Theme"] = Theme::request_header();
     req.headers["Connection"] = "close";
     if (!opt.body.empty()) {
         req.body = opt.body;
@@ -692,8 +694,16 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                         continue;
                     }
                     FetchResult img_res = perform_fetch(tab_id, img_url, false, {}, "image");
+                    // One retry: a subresource is easily lost to the connection.
+                    if (!img_res.success) {
+                        img_res = perform_fetch(tab_id, img_url, false, {}, "image");
+                    }
                     if (img_res.success) {
                         res.fetched_images[img_url] = img_res.body;
+                    } else {
+                        devtools::log(tab_id, devtools::Level::Warn,
+                                      "image failed to load: " + img_res.error_message,
+                                      img_url);
                     }
                 }
 

@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
+#include <map>
+#include <set>
 #include <cmath>
 #include <chrono>
 
@@ -206,6 +208,45 @@ static void draw_panel_shadow(float rounding) {
                     IM_COL32(0, 0, 0, (int)(90.0f * t * t)), rounding + e, 0, 1.0f);
     }
     dl->PopClipRect();
+}
+
+// Sketched at 214x140, scaled to the width asked for.
+static void draw_theme_card(ImDrawList* dl, ImVec2 a, float w, const Theme::Preset& p) {
+    const float s = w / 214.0f;
+    const float line = std::max(1.0f, s);
+    auto X = [&](float v) { return a.x + v * s; };
+    auto Y = [&](float v) { return a.y + v * s; };
+    auto box = [&](float x0, float y0, float x1, float y1, ImU32 fill, float round) {
+        dl->AddRectFilled(ImVec2(X(x0), Y(y0)), ImVec2(X(x1), Y(y1)), fill, round * s);
+    };
+    auto ring = [&](float x0, float y0, float x1, float y1, ImU32 col, float round) {
+        dl->AddRect(ImVec2(X(x0), Y(y0)), ImVec2(X(x1), Y(y1)), col, round * s, 0, line);
+    };
+    auto bar = [&](float x, float y, float bw, float bh, ImU32 col) {
+        dl->AddRectFilled(ImVec2(X(x), Y(y)), ImVec2(X(x + bw), Y(y + bh)), col, bh * s * 0.5f);
+    };
+
+    box(0, 0, 214, 140, p.sheet, Trim::kPageRounding);
+
+    box(12, 12, 78, 28, p.hover, 5.0f);
+    ring(12, 12, 78, 28, p.line_mid, 5.0f);
+
+    box(12, 36, 202, 50, p.well, 6.0f);
+    ring(12, 36, 202, 50, p.line_bright, 6.0f);
+
+    box(12, 58, 202, 128, p.ground, 7.0f);
+    bar(24, 72, 84, 6, p.ink);
+    bar(24, 88, 154, 4, p.ink_dim);
+    bar(24, 99, 120, 4, p.ink_dim);
+    box(24, 112, 72, 124, p.accent, 5.0f);
+}
+
+static const DomNode* find_body(const DomNode* n) {
+    if (!n) return nullptr;
+    if (n->tag == "body") return n;
+    for (const DomNode& c : n->children)
+        if (const DomNode* f = find_body(&c)) return f;
+    return nullptr;
 }
 
 // Reallocates `tabs`, so callers must not hold a Tab& across it.
@@ -422,6 +463,104 @@ bool LoadTextureFromMemory(const unsigned char* image_data, int image_size, unsi
     return true;
 }
 
+// Every URL is remembered, hit or miss, so a broken one is not refetched.
+namespace {
+    struct LoadedImage { int tab_id = 0; std::string url; std::string bytes; };
+    std::mutex g_img_mutex;
+    std::vector<LoadedImage> g_img_done;
+    std::set<std::pair<int, std::string>> g_img_asked;
+    std::set<std::pair<int, std::string>> g_img_failed;
+    // What each <img> last drew, so a changed src does not flash the placeholder.
+    std::map<std::pair<int, uint64_t>, std::string> g_img_drawn;
+}
+
+static void request_page_image(int tab_id, const std::string& url) {
+    if (!g_img_asked.insert({ tab_id, url }).second) return;
+    Tab* tab = find_tab_by_id(tab_id);
+    if (!tab) return;
+    if (url.rfind("star://", 0) != 0 && url.rfind("moon://", 0) != 0) return;
+    if (tab->active_page.is_secure && url.rfind("moon://", 0) == 0) {
+        devtools::log(tab_id, devtools::Level::Warn, "blocked mixed-content image " + url);
+        devtools::net_blocked(tab_id, url, "image", "blocked: mixed content");
+        return;
+    }
+    std::thread([tab_id, url]() {
+        FetchResult res = perform_fetch(tab_id, url, false, {}, "image");
+        {
+            std::lock_guard<std::mutex> lk(g_img_mutex);
+            g_img_done.push_back({ tab_id, url, res.success ? std::move(res.body) : std::string() });
+        }
+        glfwPostEmptyEvent();
+    }).detach();
+}
+
+void page_image_replaced(int tab_id, uint64_t node_id, const std::string& old_src) {
+    Tab* tab = find_tab_by_id(tab_id);
+    if (!tab || old_src.empty()) return;
+    std::string url = old_src.find("://") == std::string::npos
+                    ? resolve_url(tab->current_url, old_src) : old_src;
+    auto it = tab->page_textures.find(url);
+    if (it != tab->page_textures.end() && it->second.id != 0) {
+        g_img_drawn[{ tab_id, node_id }] = url;
+    }
+}
+
+const TextureInfo* page_image(int tab_id, uint64_t node_id, const std::string& url) {
+    Tab* tab = find_tab_by_id(tab_id);
+    if (!tab) return nullptr;
+
+    auto it = tab->page_textures.find(url);
+    if (it != tab->page_textures.end() && it->second.id != 0) {
+        g_img_drawn[{ tab_id, node_id }] = url;
+        return &it->second;
+    }
+
+    request_page_image(tab_id, url);
+    auto prev = g_img_drawn.find({ tab_id, node_id });
+    if (prev == g_img_drawn.end()) return nullptr;
+    it = tab->page_textures.find(prev->second);
+    return it != tab->page_textures.end() && it->second.id != 0 ? &it->second : nullptr;
+}
+
+bool page_image_failed(int tab_id, const std::string& url) {
+    return g_img_failed.count({ tab_id, url }) != 0;
+}
+
+static void forget_page_images(int tab_id) {
+    for (auto it = g_img_asked.begin(); it != g_img_asked.end(); ) {
+        it = it->first == tab_id ? g_img_asked.erase(it) : std::next(it);
+    }
+    for (auto it = g_img_failed.begin(); it != g_img_failed.end(); ) {
+        it = it->first == tab_id ? g_img_failed.erase(it) : std::next(it);
+    }
+    for (auto it = g_img_drawn.begin(); it != g_img_drawn.end(); ) {
+        it = it->first.first == tab_id ? g_img_drawn.erase(it) : std::next(it);
+    }
+}
+
+static void drain_page_images() {
+    std::vector<LoadedImage> done;
+    {
+        std::lock_guard<std::mutex> lk(g_img_mutex);
+        if (g_img_done.empty()) return;
+        done.swap(g_img_done);
+    }
+    for (LoadedImage& img : done) {
+        Tab* tab = find_tab_by_id(img.tab_id);
+        if (!tab) continue;
+        TextureInfo tex;
+        if (img.bytes.empty() ||
+            !LoadTextureFromMemory((const unsigned char*)img.bytes.data(), (int)img.bytes.size(),
+                                   &tex.id, &tex.width, &tex.height)) {
+            g_img_failed.insert({ img.tab_id, img.url });
+            continue;
+        }
+        auto& slot = tab->page_textures[img.url];
+        if (slot.id != 0) glDeleteTextures(1, &slot.id);
+        slot = tex;
+    }
+}
+
 // The menu redraws every frame it is open, so icons are decoded once per origin.
 static std::unordered_map<std::string, TextureInfo> g_history_favicons;
 
@@ -574,40 +713,15 @@ int main() {
     style.PopupRounding = 6.0f;
     style.ChildRounding = Trim::kPageRounding;
 
-    style.Colors[ImGuiCol_WindowBg] = Theme::window_bg;
-    style.Colors[ImGuiCol_ChildBg] = Theme::child_bg;
-    style.Colors[ImGuiCol_PopupBg] = Theme::popup_bg;
-    style.Colors[ImGuiCol_Border] = Theme::border;
-    style.Colors[ImGuiCol_BorderShadow] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-
-    style.Colors[ImGuiCol_FrameBg] = Theme::frame_bg;
-    style.Colors[ImGuiCol_FrameBgHovered] = Theme::frame_bg_hovered;
-    style.Colors[ImGuiCol_FrameBgActive] = Theme::frame_bg_active;
-
-    style.Colors[ImGuiCol_Header] = Theme::header;
-    style.Colors[ImGuiCol_HeaderHovered] = Theme::header_hovered;
-    style.Colors[ImGuiCol_HeaderActive] = Theme::header_active;
-
-    style.Colors[ImGuiCol_Button] = Theme::button;
-    style.Colors[ImGuiCol_ButtonHovered] = Theme::button_hovered;
-    style.Colors[ImGuiCol_ButtonActive] = Theme::button_active;
-
     // The scrollbar floats on the page instead of running in a channel of its
     // own: no rail behind the grab, so nothing paints a strip down the page's
     // right edge. The grab is a thin pill and the only part still drawn.
     style.ScrollbarSize = 10.0f;
     style.ScrollbarRounding = 5.0f;
+
+    Theme::load();
+    style.Colors[ImGuiCol_BorderShadow] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
     style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-    style.Colors[ImGuiCol_ScrollbarGrab] = Theme::scrollbar_grab;
-    style.Colors[ImGuiCol_ScrollbarGrabHovered] = Theme::scrollbar_grab_hovered;
-    style.Colors[ImGuiCol_ScrollbarGrabActive] = Theme::scrollbar_grab_active;
-
-    style.Colors[ImGuiCol_CheckMark] = Theme::checkmark;
-    style.Colors[ImGuiCol_SliderGrab] = Theme::slider_grab;
-    style.Colors[ImGuiCol_SliderGrabActive] = Theme::slider_grab_active;
-
-    style.Colors[ImGuiCol_InputTextCursor] = Theme::input_text_cursor;
-    style.Colors[ImGuiCol_Text] = Theme::text;
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
@@ -669,6 +783,7 @@ int main() {
                         }
                     }
                     tab.page_textures.clear();
+                    forget_page_images(tab.id);
 
                     for (auto& [url, player] : tab.active_players) {
                         delete player;
@@ -775,6 +890,14 @@ int main() {
 
         dispatch_page_keys(window);
 
+        // Before the render pass, not mid-walk: a handler can rewrite the DOM.
+        static unsigned theme_seen = Theme::revision();
+        if (theme_seen != Theme::revision()) {
+            theme_seen = Theme::revision();
+            for (auto& [id, eng] : g_script_engines)
+                if (eng && eng->wants_theme()) eng->dispatch_theme();
+        }
+
         int visible_tab_id = (active_tab_idx >= 0 && active_tab_idx < (int)tabs.size()
                               && !glfwGetWindowAttrib(window, GLFW_ICONIFIED))
                            ? tabs[active_tab_idx].id : -1;
@@ -783,6 +906,7 @@ int main() {
                 eng->set_visible(id == visible_tab_id);
                 eng->poll_fetches(); eng->poll_timers(); eng->run_raf();
             }
+        drain_page_images();
         storage::flush();
         history::flush();
 
@@ -795,6 +919,8 @@ int main() {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+
+        Theme::tick(ImGui::GetIO().DeltaTime);
 
         if (active_tab_idx >= 0 && active_tab_idx < (int)tabs.size()) {
             const int tid = tabs[active_tab_idx].id;
@@ -1182,6 +1308,7 @@ int main() {
                 }
             }
             tabs[tab_to_close].page_textures.clear();
+            forget_page_images(tabs[tab_to_close].id);
             if (tabs[tab_to_close].favicon.id != 0) {
                 glDeleteTextures(1, &tabs[tab_to_close].favicon.id);
                 tabs[tab_to_close].favicon = TextureInfo{};
@@ -1410,6 +1537,7 @@ int main() {
 
         bool menu_new_tab = false;
         bool menu_clear_history = false;
+        bool open_picker = false;
         std::string menu_nav_url;
 
         const float menu_cx = toolbar_min.x + window_avail_width - Trim::kMenuRight - hit * 0.5f;
@@ -1448,6 +1576,12 @@ int main() {
             // keeps the icons on top of the hover fill.
             const float line_h = ImGui::GetTextLineHeight();
 
+            // A blank gutter the icon is painted into, so hover fills under it.
+            std::string gutter;
+            for (int i = 0; i < 24 && ImGui::CalcTextSize(gutter.c_str()).x < Trim::kMenuIconCol; ++i)
+                gutter += ' ';
+            const float gutter_w = ImGui::CalcTextSize(gutter.c_str()).x;
+
             const ImVec2 new_tab_row = ImGui::GetCursorScreenPos();
             if (ImGui::MenuItem("##newtab")) menu_new_tab = true;
             const float row_right = ImGui::GetItemRectMax().x;
@@ -1459,13 +1593,6 @@ int main() {
             ImGui::PopStyleColor();
             if (history_open) {
                 draw_panel_shadow(Trim::kPageRounding);
-                // The label leads with a blank gutter the icon is painted into, so
-                // the hover fill lands under it.
-                std::string gutter;
-                for (int i = 0; i < 24 && ImGui::CalcTextSize(gutter.c_str()).x < Trim::kMenuIconCol; ++i)
-                    gutter += ' ';
-                const float gutter_w = ImGui::CalcTextSize(gutter.c_str()).x;
-
                 struct RowIcon { ImVec2 at; const TextureInfo* tex; };
                 std::vector<RowIcon> row_icons;
 
@@ -1532,6 +1659,9 @@ int main() {
                 zoom_moved = zoom::reset(active_tab);
             if (zoom_moved) settle_frames = kSettleFrames;
 
+            const ImVec2 theme_row = ImGui::GetCursorScreenPos();
+            if (ImGui::MenuItem("##theme")) open_picker = true;
+
             const float icon_cx = new_tab_row.x + Trim::kMenuIconCol * 0.5f;
             const float label_x = new_tab_row.x + Trim::kMenuIconCol + 6.0f;
             const ImU32 row_text = hist.empty() ? Theme::tab_text_off : Theme::tab_text_on;
@@ -1568,10 +1698,111 @@ int main() {
             const ImVec2 pct_sz = ImGui::CalcTextSize(pct);
             menu_draw->AddText(ImVec2(pct_cx - pct_sz.x * 0.5f, zoom_cy - pct_sz.y * 0.5f),
                                Theme::tab_text_on, pct);
+
+            DrawPaletteIcon(ImVec2(icon_cx, theme_row.y + line_h * 0.5f),
+                            Theme::icon_normal, Trim::kIcon, Trim::kIconStroke);
+            menu_draw->AddText(ImVec2(label_x, theme_row.y), Theme::tab_text_on, "Theme");
+            const char* theme_name = Theme::families()[Theme::current()].name;
+            menu_draw->AddText(ImVec2(row_right - ImGui::CalcTextSize(theme_name).x, theme_row.y),
+                               Theme::tab_text_off, theme_name);
             ImGui::EndPopup();
         }
         ImGui::PopStyleColor(6);
         ImGui::PopStyleVar(6);
+
+        if (open_picker) ImGui::OpenPopup("theme_picker");
+
+        int picked_theme = -1;
+        int picked_mode = -1;
+        {
+            const int cols = 3;
+            const int rows = (Theme::family_count() + cols - 1) / cols;
+            const float card_w = 138.0f;
+            const float card_h = card_w * 140.0f / 214.0f;
+            const float pad = 12.0f, gap = 10.0f, label_h = 19.0f, pill_h = 30.0f;
+            const float pick_w = cols * card_w + (cols - 1) * gap + pad * 2.0f;
+            const float pick_h = rows * (card_h + label_h) + (rows - 1) * gap
+                               + gap + pill_h + pad * 2.0f;
+
+            const ImGuiViewport* vp = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + Trim::kPageInset + 10.0f,
+                                           vp->Pos.y + vp->Size.y - Trim::kPageInset - 10.0f),
+                                    ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+            ImGui::SetNextWindowSize(ImVec2(pick_w, pick_h));
+            ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, Trim::kPageRounding);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+            ImGui::PushStyleColor(ImGuiCol_PopupBg, Theme::bar_bg);
+            ImGui::PushStyleColor(ImGuiCol_Border, Theme::outline_dim);
+            if (ImGui::BeginPopup("theme_picker")) {
+                draw_panel_shadow(Trim::kPageRounding);
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImVec2 org = ImGui::GetWindowPos();
+
+                for (int i = 0; i < Theme::family_count(); ++i) {
+                    const ImVec2 at(org.x + pad + (i % cols) * (card_w + gap),
+                                    org.y + pad + (i / cols) * (card_h + label_h + gap));
+                    ImGui::SetCursorScreenPos(at);
+                    ImGui::PushID(i);
+                    if (ImGui::InvisibleButton("##card", ImVec2(card_w, card_h + label_h)))
+                        picked_theme = i;
+                    const bool hovered = ImGui::IsItemHovered();
+                    ImGui::PopID();
+
+                    const Theme::Family& fam = Theme::families()[i];
+                    draw_theme_card(dl, at, card_w, Theme::variant(fam, Theme::is_light()));
+
+                    const bool on = i == Theme::current();
+                    if (on || hovered)
+                        dl->AddRect(ImVec2(at.x - 3.0f, at.y - 3.0f),
+                                    ImVec2(at.x + card_w + 3.0f, at.y + card_h + 3.0f),
+                                    on ? Theme::outline_bright : Theme::outline_mid,
+                                    Trim::kPageRounding + 3.0f, 0, on ? 2.0f : 1.0f);
+
+                    const ImVec2 name_sz = ImGui::CalcTextSize(fam.name);
+                    dl->AddText(ImVec2(at.x + (card_w - name_sz.x) * 0.5f, at.y + card_h + 5.0f),
+                                on ? Theme::tab_text_on : Theme::tab_text_off, fam.name);
+                }
+
+                const ImVec2 pill0(org.x + pad, org.y + pick_h - pad - pill_h);
+                const ImVec2 pill1(org.x + pick_w - pad, pill0.y + pill_h);
+                const float half = (pill1.x - pill0.x) * 0.5f;
+                const bool lit = Theme::is_light();
+
+                const float pill_round = 8.0f;
+                dl->AddRectFilled(pill0, pill1, ImGui::ColorConvertFloat4ToU32(Theme::omnibox_bg),
+                                  pill_round);
+                dl->AddRect(pill0, pill1, Theme::outline_dim, pill_round, 0, 1.0f);
+
+                const ImVec2 knob0(pill0.x + 3.0f + half * Theme::light_amount(), pill0.y + 3.0f);
+                const ImVec2 knob1(knob0.x + half - 6.0f, pill1.y - 3.0f);
+                dl->AddRectFilled(knob0, knob1, Theme::plus_bg_active, pill_round - 2.0f);
+                dl->AddRect(knob0, knob1, Theme::outline_mid, pill_round - 2.0f, 0, 1.0f);
+
+                const char* modes[2] = { "Dark", "Light" };
+                for (int i = 0; i < 2; ++i) {
+                    ImGui::SetCursorScreenPos(ImVec2(pill0.x + i * half, pill0.y));
+                    ImGui::PushID(i);
+                    if (ImGui::InvisibleButton("##mode", ImVec2(half, pill_h))) picked_mode = i;
+                    ImGui::PopID();
+                    const ImVec2 sz = ImGui::CalcTextSize(modes[i]);
+                    dl->AddText(ImVec2(pill0.x + i * half + (half - sz.x) * 0.5f,
+                                       pill0.y + (pill_h - sz.y) * 0.5f),
+                                (i == 1) == lit ? Theme::tab_text_on : Theme::tab_text_off,
+                                modes[i]);
+                }
+                ImGui::EndPopup();
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::PopStyleVar(3);
+        }
+
+        if (picked_theme >= 0 || picked_mode >= 0) {
+            Theme::apply(picked_theme >= 0 ? picked_theme : Theme::current(),
+                         picked_mode >= 0 ? picked_mode == 1 : Theme::is_light());
+            Theme::save();
+            settle_frames = kSettleFrames;
+        }
 
         if (menu_clear_history) {
             history::clear();
@@ -1621,6 +1852,14 @@ int main() {
             auto body_it = active_tab.css_classes.find("body");
             const CssStyle* body_style = body_it != active_tab.css_classes.end()
                                        ? &body_it->second : nullptr;
+            // <body> is the canvas: its inline background wins over the stylesheet's.
+            if (const DomNode* body_node = find_body(&active_tab.page_dom)) {
+                if (body_node->has_inline_style &&
+                    (body_node->parsed_inline_style.has_bg ||
+                     body_node->parsed_inline_style.has_gradient)) {
+                    body_style = &body_node->parsed_inline_style;
+                }
+            }
             if (body_style && body_style->has_gradient) {
                 ImU32 col_start = ImGui::ColorConvertFloat4ToU32(body_style->gradient_start);
                 ImU32 col_end = ImGui::ColorConvertFloat4ToU32(body_style->gradient_end);
@@ -1676,7 +1915,7 @@ int main() {
                                       page_document_origin.y + ImGui::GetScrollY());
 
         CssStyle default_style;
-        default_style.color = ImVec4(0.95f, 0.95f, 0.95f, 1.0f);
+        default_style.color = Theme::page_text;
         default_style.has_color = true;
         default_style.font_size = active_tab.zoom;
         bool default_inline_flow = false;
@@ -1781,7 +2020,7 @@ int main() {
                        io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f ||
                        active_tab.show_alert || devtools::wants_frames(active_tab.id) ||
                        zoom::wants_frames();
-        if (ui_busy) settle_frames = kSettleFrames;
+        if (ui_busy || Theme::animating()) settle_frames = kSettleFrames;
         else if (settle_frames > 0) settle_frames--;
 
         ImGui::Render();

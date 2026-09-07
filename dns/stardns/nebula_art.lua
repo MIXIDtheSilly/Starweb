@@ -6,12 +6,18 @@
 
 local TAU = math.pi * 2
 
-local PAL = {
-  "#1a1040", "#22164f", "#2a1c5e", "#33236d", "#3d2b7c", "#48358b", "#54409a",
-  "#604ca9", "#6c59b8", "#7867c6", "#8376d4", "#8f85e0", "#9b94ea", "#a7a3f2",
-  "#b5b2f8", "#c4c1fd",
+local PAL = starArtRamp and starArtRamp() or {
+  "#100c30", "#1a163d", "#252049", "#2f2b56", "#3a3563", "#443f70", "#4f497c",
+  "#595389", "#645e96", "#6e68a3", "#7972af", "#837cbc", "#8e86c9", "#9891d6",
+  "#a39be2", "#ada5ef",
 }
 local NPAL = 16
+
+-- PAL is an upvalue of every draw below, so swapping it recolours the art in place.
+function starArtSetPalette(p)
+    PAL = p
+    NPAL = #p
+end
 
 local BAYER = {
    0,  8,  2, 10,

@@ -81,10 +81,9 @@ static ImVec2 measure_intrinsic(const DomNode& node, const CssStyle& merged, flo
         std::string src = node.src;
         if (src.find("://") == std::string::npos) src = resolve_url(tab.current_url, src);
         float natW = 0.0f, natH = 0.0f;
-        auto it = tab.page_textures.find(src);
-        if (it != tab.page_textures.end() && it->second.id != 0) {
-            natW = (float)it->second.width;
-            natH = (float)it->second.height;
+        if (const TextureInfo* tex = page_image(tab.id, node.node_id, src)) {
+            natW = (float)tex->width;
+            natH = (float)tex->height;
         }
         float w = merged.width > 0.0f ? merged.width : zpx(natW > 0.0f ? natW : 100.0f);
         float h = merged.height > 0.0f ? merged.height : zpx(natH > 0.0f ? natH : 100.0f);

@@ -1306,9 +1306,8 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             absolute_src = resolve_url(tab.current_url, node.src);
         }
         
-        auto tex_it = tab.page_textures.find(absolute_src);
-        if (tex_it != tab.page_textures.end() && tex_it->second.id != 0) {
-            const auto& tex = tex_it->second;
+        if (const TextureInfo* tex_ptr = page_image(tab.id, node.node_id, absolute_src)) {
+            const auto& tex = *tex_ptr;
             
             float w = merged.width > 0.0f ? merged.width : zpx((float)tex.width);
             float h = merged.height > 0.0f ? merged.height : zpx((float)tex.height);
@@ -1323,7 +1322,20 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
             
             ImGui::Image((void*)(intptr_t)tex.id, ImVec2(w, h));
         } else {
-            ImGui::Button("[Image Missing]", ImVec2(zpx(100.0f), zpx(100.0f)));
+            // A loading image holds the box it will fill, so nothing flashes.
+            float w = merged.width  > 0.0f ? merged.width  : zpx(100.0f);
+            float h = merged.height > 0.0f ? merged.height : zpx(100.0f);
+            float avail_width = ImGui::GetContentRegionAvail().x - (parent_accumulated_right + merged.margin_right + merged.padding_right);
+            if (avail_width < 0.0f) avail_width = 0.0f;
+            if (w > avail_width && avail_width > 0.0f) {
+                h *= avail_width / w;
+                w = avail_width;
+            }
+            if (page_image_failed(tab.id, absolute_src)) {
+                ImGui::Button("[Image Missing]", ImVec2(w, h));
+            } else {
+                ImGui::Dummy(ImVec2(w, h));
+            }
         }
     } else if (node.tag == "a") {
         std::string cleaned_text = collapse_whitespace(node.text_content);
@@ -1535,7 +1547,8 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
         } else if (type == "file") {
             bool open = FormSkin::Button("Choose File", input_label + "_btn", ImVec2(0, 0));
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.78f, 0.78f, 0.78f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(Theme::page_text.x, Theme::page_text.y,
+                                                        Theme::page_text.z, 0.65f));
             ImGui::TextUnformatted(node.value.empty()
                 ? "No file chosen"
                 : std::filesystem::path(node.value).filename().string().c_str());
@@ -1989,9 +2002,10 @@ void render_node(DomNode& node, const CssStyle& parent_style, bool& is_inline_fl
 
         {
             InputStyleGuard style_guard(merged);
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.53f, 0.34f, 0.84f, 0.65f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.53f, 0.34f, 0.84f, 0.85f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.43f, 0.24f, 0.74f, 1.00f));
+            const ImVec4& fa = Theme::form_accent;
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(fa.x, fa.y, fa.z, 0.65f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(fa.x, fa.y, fa.z, 0.85f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, Theme::form_accent_hover);
             
             if (!items.empty()) {
                 if (ImGui::Combo(combo_label.c_str(), &current_item, items.data(), items.size())) {
