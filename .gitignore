@@ -13,6 +13,7 @@ obj/
 # CMake build directory
 build/
 build-linux/
+build-mingw/
 
 # vcpkg (Windows dependency manager checkout)
 vcpkg/
@@ -33,6 +34,7 @@ Thumbs.db
 # builds
 /build
 /build-linux
+/build-mingw
 
 # cache
 cache/
@@ -49,8 +51,11 @@ __pycache__/
 
 # leaf certs the panel issues, and the private keys beside them
 issued/
+/dns/*.pem
+/dns/*.key
 
 # www (i have to remove it becuase of copyrighted content)
 /www
 # browser storage
 /storage
+dns/docker-compose.yml

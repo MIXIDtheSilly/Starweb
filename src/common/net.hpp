@@ -19,6 +19,7 @@
     #include <sys/socket.h>
     #include <netinet/in.h>
     #include <netdb.h>
+    #include <netinet/tcp.h>
     #include <arpa/inet.h>
     #include <unistd.h>
     #include <cerrno>
@@ -72,6 +73,12 @@ inline void set_send_timeout(socket_t s, int seconds) {
     tv.tv_usec = 0;
     ::setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
 #endif
+}
+
+// Nagle plus delayed ACK stalls the header write; the writes are batched by hand.
+inline int set_nodelay(socket_t s) {
+    int opt = 1;
+    return ::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char*)&opt, sizeof(opt));
 }
 
 inline int enable_reuseaddr(socket_t s) {

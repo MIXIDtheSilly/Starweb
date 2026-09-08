@@ -46,6 +46,7 @@ public:
     void close() override;
 
     const TlsInfo& info() const { return info_; }
+    const TlsInfo* tls_info() const override { return &info_; }
 
 private:
     TlsConn(SSL* ssl, net::socket_t fd) : ssl_(ssl), fd_(fd) {}

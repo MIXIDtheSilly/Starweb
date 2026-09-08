@@ -2,6 +2,7 @@
 // A stream connection: PlainConn for moon://, TlsConn (tls.hpp) for star://.
 
 #include "net.hpp"
+#include "tls_info.hpp"
 #include <string>
 
 struct Conn {
@@ -13,6 +14,8 @@ struct Conn {
 
     // Exposed so another thread can cancel a fetch by closing the fd.
     virtual net::socket_t fd() const = 0;
+
+    virtual const TlsInfo* tls_info() const { return nullptr; }  // null if plaintext
 
     virtual void close() = 0;
 };

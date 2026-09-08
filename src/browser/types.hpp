@@ -155,6 +155,7 @@ struct RequestTiming {
     double sent = -1.0;        // request bytes written
     double first_byte = -1.0;  // first byte of the response read
     double complete = -1.0;    // body finished
+    bool reused = false;        // pooled connection; connected/secured stay at -1
 };
 
 struct FetchResult {

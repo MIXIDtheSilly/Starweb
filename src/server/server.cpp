@@ -91,29 +91,47 @@ bool parse_byte_range(const std::string& header, uintmax_t file_size,
     return start <= end && start < file_size;
 }
 
-void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
-    std::string buffer;
+// Longer than the browser's pool timeout, so the client gives up first.
+constexpr int kIdleTimeoutSecs = 20;
+constexpr int kRequestTimeoutSecs = 5;
+
+// Bodies at or under this go out with the headers; larger ones stream from disk.
+constexpr uintmax_t kInlineBodyMax = 64u * 1024u;
+
+// `buffer` carries bytes read past the end of the previous request.
+bool handle_one(Conn& conn, std::string& buffer, const char* transport, int served) {
     char temp_buf[4096];
     StwpRequest req;
     size_t bytes_consumed = 0;
     bool request_parsed = false;
+    bool anything_read = false;
 
-    // Set socket receive timeout (5 seconds)
-    net::set_recv_timeout(conn->fd(), 5);
+    if (!buffer.empty() && parse_request(buffer, bytes_consumed, req)) {
+        request_parsed = true;
+    }
 
-    while (true) {
-        net::ssize_t_ bytes_received = conn->read(temp_buf, sizeof(temp_buf));
-        if (bytes_received <= 0) {
-            break; // Connection closed or timeout
-        }
-        buffer.append(temp_buf, bytes_received);
-        if (parse_request(buffer, bytes_consumed, req)) {
-            request_parsed = true;
-            break;
+    if (!request_parsed) {
+        net::set_recv_timeout(conn.fd(), kIdleTimeoutSecs);
+        while (true) {
+            net::ssize_t_ bytes_received = conn.read(temp_buf, sizeof(temp_buf));
+            if (bytes_received <= 0) {
+                break; // Connection closed or timeout
+            }
+            if (!anything_read) {
+                anything_read = true;
+                net::set_recv_timeout(conn.fd(), kRequestTimeoutSecs);
+            }
+            buffer.append(temp_buf, bytes_received);
+            if (parse_request(buffer, bytes_consumed, req)) {
+                request_parsed = true;
+                break;
+            }
         }
     }
 
     if (!request_parsed) {
+        // An idle connection closing is how keep-alive ends, not a client error.
+        if (!anything_read && buffer.empty()) return false;
         StwpResponse res;
         res.status_code = 400;
         res.status_text = "Bad Request";
@@ -122,16 +140,26 @@ void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
         res.headers["Content-Type"] = "text/plain";
         res.headers["Connection"] = "close";
         std::string res_str = res.serialize();
-        write_all(*conn, res_str.data(), res_str.size());
-        return;
+        write_all(conn, res_str.data(), res_str.size());
+        return false;
     }
 
-    std::cout << "[Server] [" << transport << "] Request: " << req.method << " " << req.path
-              << " " << req.version << std::endl;
+    buffer.erase(0, bytes_consumed);
+
+    std::cout << "[Server] [" << (served ? "kept alive" : transport) << "] Request: "
+              << req.method << " " << req.path << " " << req.version << std::endl;
+
+    bool keep_alive = false;
+    if (auto cn = req.headers.find("connection"); cn != req.headers.end()) {
+        std::string v = cn->second;
+        std::transform(v.begin(), v.end(), v.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        keep_alive = v.find("keep-alive") != std::string::npos &&
+                     v.find("close") == std::string::npos;
+    }
 
     StwpResponse res;
     res.headers["Server"] = "StarWeb/1.0";
-    res.headers["Connection"] = "close";
 
     // File bodies are sent straight from disk after the headers rather than being
     // copied into res.body: building a 350 MB response in memory cost ~3x the file
@@ -148,6 +176,7 @@ void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
         res.body = "This server speaks STWP/1.0 only.";
         res.headers["Content-Length"] = std::to_string(res.body.size());
         res.headers["Content-Type"] = "text/plain";
+        keep_alive = false;
             } else if (req.method != "GET") {
         res.status_code = 405;
         res.status_text = "Method Not Allowed";
@@ -212,10 +241,20 @@ void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
         }
     }
 
+    if (stream_body && body_length <= kInlineBodyMax) {
+        res.body.resize((size_t)body_length);
+        file.seekg((std::streamoff)body_offset);
+        file.read(res.body.data(), (std::streamsize)body_length);
+        if ((uintmax_t)file.gcount() != body_length) return false;  // truncated under us
+        stream_body = false;
+    }
+
+    res.headers["Connection"] = keep_alive ? "keep-alive" : "close";
+
     // res.body is empty on the streaming path, so this serializes to just the head.
     std::string res_str = res.serialize();
-    if (!write_all(*conn, res_str.data(), res_str.size())) return;
-    if (!stream_body) return;
+    if (!write_all(conn, res_str.data(), res_str.size())) return false;
+    if (!stream_body) return keep_alive;
 
     file.seekg((std::streamoff)body_offset);
     std::vector<char> buf(64 * 1024);
@@ -225,8 +264,15 @@ void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
         file.read(buf.data(), take);
         std::streamsize got = file.gcount();
         if (got <= 0) break;
-        if (!write_all(*conn, buf.data(), (size_t)got)) break;  // peer went away
+        if (!write_all(conn, buf.data(), (size_t)got)) return false;  // peer went away
         remaining -= (uintmax_t)got;
+    }
+    return keep_alive && remaining == 0;  // a short read must close
+}
+
+void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
+    std::string buffer;
+    for (int served = 0; handle_one(*conn, buffer, transport, served); ++served) {
     }
 }
 
@@ -276,6 +322,7 @@ net::socket_t make_listener(int port) {
 void serve_conn(net::socket_t fd, TlsContext* tls) {
     std::unique_ptr<Conn> conn;
     const char* transport = "moon/plain";
+    net::set_nodelay(fd);
     if (tls) {
         net::set_recv_timeout(fd, 5);
         std::string err;

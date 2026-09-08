@@ -8,8 +8,10 @@
 #include "../common/net.hpp"
 #include "../common/resolver.hpp"
 #include "../common/conn.hpp"
+#include "conn_pool.hpp"
 #include "../common/tls.hpp"
 #include <thread>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -173,6 +175,263 @@ void find_media_in_dom(const DomNode& node, std::vector<std::string>& srcs) {
     }
 }
 
+namespace {
+
+struct Exchange {
+    bool nothing_happened = false;  // nothing sent, nothing read: safe to resend
+    bool reusable = false;
+};
+
+std::unique_ptr<Conn> open_connection(const std::vector<stardns::Endpoint>& endpoints,
+                                      const ParsedURL& parsed, bool use_tls,
+                                      const std::string& port_str,
+                                      const RequestOptions& opt, FetchResult& result,
+                                      const std::function<double()>& stamp) {
+    net::socket_t socket_fd = net::kInvalidSocket;
+    bool connected = false;
+    for (const auto& ep : endpoints) {
+        socket_fd = socket(ep.family, SOCK_STREAM, 0);
+        if (!net::is_valid(socket_fd)) continue;
+
+        if (opt.on_socket && !opt.on_socket(socket_fd)) {
+            net::close(socket_fd);
+            result.error_message = "Cancelled";
+            return nullptr;
+        }
+
+        net::set_recv_timeout(socket_fd, opt.timeout_secs);
+        net::set_send_timeout(socket_fd, opt.timeout_secs);
+        net::set_nodelay(socket_fd);
+
+        if (connect(socket_fd, (const sockaddr*)&ep.addr, ep.len) != -1) {
+            connected = true;
+            break;
+        }
+
+        if (opt.on_socket_done) opt.on_socket_done(socket_fd);
+        net::close(socket_fd);
+    }
+
+    if (!connected) {
+        result.error_message = "Connection failed to " + parsed.host + ":" + port_str;
+        return nullptr;
+    }
+    result.timing.connected = stamp();
+
+    if (!use_tls) return std::make_unique<PlainConn>(socket_fd);
+
+    std::string err;
+    TlsContext* ctx = client_tls_ctx(err);
+    if (ctx) {
+        auto tconn = TlsConn::connect(*ctx, socket_fd, parsed.host,
+                                      parsed.host + ":" + port_str, err);
+        if (tconn) {
+            result.is_secure = true;
+            result.tls = tconn->info();
+            result.timing.secured = stamp();
+            return tconn;
+        }
+    }
+    result.error_message = err;
+    result.tls_error = true;
+    if (opt.on_socket_done) opt.on_socket_done(socket_fd);
+    net::close(socket_fd);
+    return nullptr;
+}
+
+Exchange run_exchange(Conn& conn, const ParsedURL& parsed, const std::string& port_str,
+                      const RequestOptions& opt, FetchResult& result,
+                      const std::function<double()>& stamp) {
+    Exchange ex;
+
+    StwpRequest req;
+    req.method = opt.method;
+    req.path = parsed.path;
+    for (const auto& [name, value] : opt.headers) req.headers[name] = value;
+    req.headers["Host"] = format_host(parsed.host) +
+        (parsed.port == default_port_for(parsed.scheme) ? "" : ":" + port_str);
+    req.headers["User-Agent"] = "Starmap/1.0";
+    req.headers["Star-Theme"] = Theme::request_header();
+    req.headers["Connection"] = "keep-alive";
+    if (!opt.body.empty()) {
+        req.body = opt.body;
+        req.headers["Content-Length"] = std::to_string(opt.body.size());
+    }
+
+    result.request_headers.assign(req.headers.begin(), req.headers.end());
+    std::sort(result.request_headers.begin(), result.request_headers.end());
+
+    std::string serialized_req = req.serialize();
+    if (!write_all(conn, serialized_req.data(), serialized_req.size())) {
+        result.error_message = "Failed to send request.";
+        ex.nothing_happened = true;
+        return ex;
+    }
+    result.timing.sent = stamp();
+
+    std::string raw_response;
+    char recv_buf[65536];
+    bool too_large = false;
+
+    // Headers come first regardless: whether the body can be streamed past the
+    // caller depends on what the response turns out to be.
+    constexpr size_t kMaxHeaderBytes = 64u * 1024u;
+    size_t header_end = std::string::npos;
+    size_t sep_len = 0;
+    bool headers_done = false;
+
+    while (true) {
+        if ((header_end = raw_response.find("\r\n\r\n")) != std::string::npos) {
+            sep_len = 4;
+            headers_done = true;
+            break;
+        }
+        if ((header_end = raw_response.find("\n\n")) != std::string::npos) {
+            sep_len = 2;
+            headers_done = true;
+            break;
+        }
+        if (raw_response.size() > kMaxHeaderBytes) {
+            too_large = true;
+            break;
+        }
+        net::ssize_t_ n = conn.read(recv_buf, sizeof(recv_buf));
+        if (n < 0) {
+            result.error_message = "Socket read failure.";
+            break;
+        }
+        if (n == 0) break;
+        if (result.timing.first_byte < 0.0) result.timing.first_byte = stamp();
+        raw_response.append(recv_buf, n);
+    }
+
+    if (raw_response.empty() && !headers_done) {
+        ex.nothing_happened = true;
+        if (result.error_message.empty()) result.error_message = "Connection closed by peer.";
+        return ex;
+    }
+
+    StwpResponse head_msg;
+    const bool head_ok =
+        headers_done &&
+        parse_response_headers(std::string_view(raw_response).substr(0, header_end), head_msg);
+
+    bool keepalive_ok = head_ok;
+    if (head_ok) {
+        auto cn = head_msg.headers.find("connection");
+        if (cn != head_msg.headers.end()) {
+            std::string v = cn->second;
+            std::transform(v.begin(), v.end(), v.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (v.find("close") != std::string::npos) keepalive_ok = false;
+        }
+    }
+
+    size_t declared = 0;
+    bool has_length = false;
+    if (head_ok) {
+        auto cl = head_msg.headers.find("content-length");
+        if (cl != head_msg.headers.end()) {
+            try {
+                declared = std::stoull(cl->second);
+                has_length = true;
+            } catch (...) {}
+        }
+    }
+
+    BodySink sink = opt.on_body_chunk;
+    if (head_ok && !sink && opt.on_headers) {
+        sink = opt.on_headers(head_msg.status_code, head_msg.headers);
+    }
+
+    if (sink) {
+        bool aborted = false;
+        size_t written = 0;
+        std::string prefix = raw_response.substr(header_end + sep_len);
+        if (!prefix.empty()) {
+            size_t take = has_length ? std::min(prefix.size(), declared) : prefix.size();
+            if (!sink(prefix.data(), take)) aborted = true;
+            written += take;
+        }
+
+        while (!aborted && (!has_length || written < declared)) {
+            net::ssize_t_ n = conn.read(recv_buf, sizeof(recv_buf));
+            if (n < 0) {
+                result.error_message = "Socket read failure.";
+                aborted = true;
+                break;
+            }
+            if (n == 0) break;
+            size_t take = (size_t)n;
+            if (has_length && written + take > declared) take = declared - written;
+            if (!sink(recv_buf, take)) {
+                aborted = true;
+                break;
+            }
+            written += take;
+        }
+
+        if (!aborted && (!has_length || written == declared)) {
+            result.success = true;
+            result.status_code = head_msg.status_code;
+            result.status_text = head_msg.status_text;
+            result.headers = head_msg.headers;
+            result.timing.complete = stamp();
+            // A streamed body never lands in result.body, so this is the only size record.
+            result.streamed_bytes = written;
+            ex.reusable = keepalive_ok && has_length;
+        } else if (result.error_message.empty()) {
+            result.error_message = "Body transfer incomplete.";
+        }
+        return ex;
+    }
+
+    const size_t want = has_length ? header_end + sep_len + declared : 0;
+    while (headers_done && !too_large && result.error_message.empty()) {
+        if (has_length && raw_response.size() >= want) break;
+        net::ssize_t_ bytes_received = conn.read(recv_buf, sizeof(recv_buf));
+        if (bytes_received < 0) {
+            result.error_message = "Socket read failure.";
+            break;
+        }
+        if (bytes_received == 0) {
+            break;
+        }
+        if (raw_response.size() + (size_t)bytes_received > opt.max_response_bytes) {
+            too_large = true;
+            break;
+        }
+        raw_response.append(recv_buf, bytes_received);
+    }
+
+    if (too_large) {
+        result.error_message = "Response exceeds size limit.";
+        return ex;
+    }
+    if (result.error_message == "Socket read failure.") {
+        return ex;
+    }
+
+    StwpResponse res_msg;
+    size_t bytes_consumed = 0;
+    if (!parse_response(raw_response, bytes_consumed, res_msg)) {
+        result.error_message = "Failed to parse STWP response.";
+        return ex;
+    }
+
+    result.success = true;
+    result.status_code = res_msg.status_code;
+    result.status_text = res_msg.status_text;
+    result.headers = res_msg.headers;
+    result.body = res_msg.body;
+    result.timing.complete = stamp();
+    // This client never pipelines, so extra bytes mean bad framing.
+    ex.reusable = keepalive_ok && has_length && bytes_consumed == raw_response.size();
+    return ex;
+}
+
+} // namespace
+
 FetchResult perform_request(const std::string& url_str, const RequestOptions& opt) {
     FetchResult result;
     const auto t_start = std::chrono::steady_clock::now();
@@ -203,225 +462,60 @@ FetchResult perform_request(const std::string& url_str, const RequestOptions& op
                                  : resolve_err);
         return result;
     }
-    result.timing.resolved = stamp();
+    const double resolved_at = stamp();
+    result.timing.resolved = resolved_at;
 
-    net::socket_t socket_fd = net::kInvalidSocket;
-    bool connected = false;
-    for (const auto& ep : endpoints) {
-        socket_fd = socket(ep.family, SOCK_STREAM, 0);
-        if (!net::is_valid(socket_fd)) continue;
+    const std::string origin = parsed.scheme + "://" + parsed.host + ":" + port_str;
 
-        if (opt.on_socket && !opt.on_socket(socket_fd)) {
-            net::close(socket_fd);
-            result.error_message = "Cancelled";
-            return result;
-        }
+    // First pass may reuse a pooled connection; if it turns out dead, retry on a
+    // fresh one.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        std::unique_ptr<Conn> conn;
+        bool reused = false;
 
-        net::set_recv_timeout(socket_fd, opt.timeout_secs);
-        net::set_send_timeout(socket_fd, opt.timeout_secs);
-
-        if (connect(socket_fd, (const sockaddr*)&ep.addr, ep.len) != -1) {
-            connected = true;
-            break;
-        }
-
-        if (opt.on_socket_done) opt.on_socket_done(socket_fd);
-        net::close(socket_fd);
-    }
-
-    if (!connected) {
-        result.error_message = "Connection failed to " + parsed.host + ":" + port_str;
-        return result;
-    }
-    result.timing.connected = stamp();
-
-    std::unique_ptr<Conn> conn;
-    if (use_tls) {
-        std::string err;
-        TlsContext* ctx = client_tls_ctx(err);
-        if (ctx) {
-            auto tconn = TlsConn::connect(*ctx, socket_fd, parsed.host,
-                                          parsed.host + ":" + port_str, err);
-            if (tconn) {
-                result.is_secure = true;
-                result.tls = tconn->info();
-                result.timing.secured = stamp();
-                conn = std::move(tconn);
+        if (attempt == 0) {
+            conn = connpool::acquire(origin);
+            if (conn) {
+                reused = true;
+                net::set_recv_timeout(conn->fd(), opt.timeout_secs);
+                net::set_send_timeout(conn->fd(), opt.timeout_secs);
+                if (opt.on_socket && !opt.on_socket(conn->fd())) {
+                    result.error_message = "Cancelled";
+                    return result;
+                }
+                if (const TlsInfo* ti = conn->tls_info()) {
+                    result.is_secure = true;
+                    result.tls = *ti;
+                }
+                result.timing.reused = true;
             }
         }
+
         if (!conn) {
-            result.error_message = err;
-            result.tls_error = true;
-            if (opt.on_socket_done) opt.on_socket_done(socket_fd);
-            net::close(socket_fd);
-            return result;
-        }
-    } else {
-        conn = std::make_unique<PlainConn>(socket_fd);
-    }
-
-    StwpRequest req;
-    req.method = opt.method;
-    req.path = parsed.path;
-    for (const auto& [name, value] : opt.headers) req.headers[name] = value;
-    req.headers["Host"] = format_host(parsed.host) +
-        (parsed.port == default_port_for(parsed.scheme) ? "" : ":" + port_str);
-    req.headers["User-Agent"] = "Starmap/1.0";
-    req.headers["Star-Theme"] = Theme::request_header();
-    req.headers["Connection"] = "close";
-    if (!opt.body.empty()) {
-        req.body = opt.body;
-        req.headers["Content-Length"] = std::to_string(opt.body.size());
-    }
-
-    result.request_headers.assign(req.headers.begin(), req.headers.end());
-    std::sort(result.request_headers.begin(), result.request_headers.end());
-
-    std::string serialized_req = req.serialize();
-    if (!write_all(*conn, serialized_req.data(), serialized_req.size())) {
-        result.error_message = "Failed to send request.";
-        if (opt.on_socket_done) opt.on_socket_done(socket_fd);
-        return result;
-    }
-    result.timing.sent = stamp();
-
-    std::string raw_response;
-    char recv_buf[65536];
-    bool too_large = false;
-
-    // Headers come first regardless: whether the body can be streamed past the
-    // caller depends on what the response turns out to be.
-    constexpr size_t kMaxHeaderBytes = 64u * 1024u;
-    size_t header_end = std::string::npos;
-    size_t sep_len = 0;
-    bool headers_done = false;
-
-    while (true) {
-        if ((header_end = raw_response.find("\r\n\r\n")) != std::string::npos) {
-            sep_len = 4;
-            headers_done = true;
-            break;
-        }
-        if ((header_end = raw_response.find("\n\n")) != std::string::npos) {
-            sep_len = 2;
-            headers_done = true;
-            break;
-        }
-        if (raw_response.size() > kMaxHeaderBytes) {
-            too_large = true;
-            break;
-        }
-        net::ssize_t_ n = conn->read(recv_buf, sizeof(recv_buf));
-        if (n < 0) {
-            result.error_message = "Socket read failure.";
-            break;
-        }
-        if (n == 0) break;
-        if (result.timing.first_byte < 0.0) result.timing.first_byte = stamp();
-        raw_response.append(recv_buf, n);
-    }
-
-    StwpResponse head_msg;
-    const bool head_ok =
-        headers_done &&
-        parse_response_headers(std::string_view(raw_response).substr(0, header_end), head_msg);
-
-    BodySink sink = opt.on_body_chunk;
-    if (head_ok && !sink && opt.on_headers) {
-        sink = opt.on_headers(head_msg.status_code, head_msg.headers);
-    }
-
-    if (sink) {
-        size_t declared = 0;
-        auto cl = head_msg.headers.find("content-length");
-        if (cl != head_msg.headers.end()) {
-            try { declared = std::stoull(cl->second); } catch (...) {}
+            conn = open_connection(endpoints, parsed, use_tls, port_str, opt, result, stamp);
+            if (!conn) return result;
         }
 
-        bool aborted = false;
-        size_t written = 0;
-        std::string prefix = raw_response.substr(header_end + sep_len);
-        if (!prefix.empty()) {
-            size_t take = declared ? std::min(prefix.size(), declared) : prefix.size();
-            if (!sink(prefix.data(), take)) aborted = true;
-            written += take;
+        const net::socket_t fd = conn->fd();
+        Exchange ex = run_exchange(*conn, parsed, port_str, opt, result, stamp);
+
+        if (ex.nothing_happened && reused) {
+            conn.reset();
+            if (opt.on_socket_done) opt.on_socket_done(fd);
+            result = FetchResult();
+            result.timing.resolved = resolved_at;
+            continue;
         }
 
-        while (!aborted && (declared == 0 || written < declared)) {
-            net::ssize_t_ n = conn->read(recv_buf, sizeof(recv_buf));
-            if (n < 0) {
-                result.error_message = "Socket read failure.";
-                aborted = true;
-                break;
-            }
-            if (n == 0) break;
-            size_t take = (size_t)n;
-            if (declared && written + take > declared) take = declared - written;
-            if (!sink(recv_buf, take)) {
-                aborted = true;
-                break;
-            }
-            written += take;
-        }
-
-        if (opt.on_socket_done) opt.on_socket_done(socket_fd);
-        conn.reset();
-
-        if (!aborted && (declared == 0 || written == declared)) {
-            result.success = true;
-            result.status_code = head_msg.status_code;
-            result.status_text = head_msg.status_text;
-            result.headers = head_msg.headers;
-            result.timing.complete = stamp();
-            // A streamed body never lands in result.body, so this is the only size record.
-            result.streamed_bytes = written;
-        } else if (result.error_message.empty()) {
-            result.error_message = "Body transfer incomplete.";
+        if (opt.on_socket_done) opt.on_socket_done(fd);
+        if (ex.reusable && result.success) {
+            connpool::release(origin, std::move(conn));
+        } else {
+            conn.reset();
         }
         return result;
     }
 
-    // Buffered: pull in the rest of the message for parse_response below.
-    while (headers_done && !too_large && result.error_message.empty()) {
-        net::ssize_t_ bytes_received = conn->read(recv_buf, sizeof(recv_buf));
-        if (bytes_received < 0) {
-            result.error_message = "Socket read failure.";
-            break;
-        }
-        if (bytes_received == 0) {
-            break;
-        }
-        if (raw_response.size() + (size_t)bytes_received > opt.max_response_bytes) {
-            too_large = true;
-            break;
-        }
-        raw_response.append(recv_buf, bytes_received);
-    }
-
-    if (opt.on_socket_done) opt.on_socket_done(socket_fd);
-    conn.reset();
-
-    if (too_large) {
-        result.error_message = "Response exceeds size limit.";
-        return result;
-    }
-    if (result.error_message == "Socket read failure.") {
-        return result;
-    }
-
-    StwpResponse res_msg;
-    size_t bytes_consumed = 0;
-    if (!parse_response(raw_response, bytes_consumed, res_msg)) {
-        result.error_message = "Failed to parse STWP response.";
-        return result;
-    }
-
-    result.success = true;
-    result.status_code = res_msg.status_code;
-    result.status_text = res_msg.status_text;
-    result.headers = res_msg.headers;
-    result.body = res_msg.body;
-    result.timing.complete = stamp();
     return result;
 }
 
@@ -469,6 +563,48 @@ FetchResult perform_fetch(int tab_id, const std::string& url_str, bool is_main_r
     }
     return result;
 }
+
+namespace {
+
+struct SubJob {
+    std::string url;
+    const char* initiator;
+    bool retry_once = false;
+    FetchResult res;
+};
+
+// Per origin, matching what mainstream browsers allow.
+constexpr std::size_t kMaxParallelFetches = 6;
+
+void run_subresource_jobs(int tab_id, std::vector<SubJob>& jobs) {
+    if (jobs.empty()) return;
+
+    auto run_one = [tab_id, &jobs](std::size_t i) {
+        SubJob& job = jobs[i];
+        job.res = perform_fetch(tab_id, job.url, false, {}, job.initiator);
+        if (!job.res.success && job.retry_once) {
+            job.res = perform_fetch(tab_id, job.url, false, {}, job.initiator);
+        }
+    };
+
+    if (jobs.size() == 1) {
+        run_one(0);
+        return;
+    }
+
+    std::atomic<std::size_t> next{0};
+    std::vector<std::thread> workers;
+    const std::size_t n = std::min(jobs.size(), kMaxParallelFetches);
+    workers.reserve(n);
+    for (std::size_t w = 0; w < n; ++w) {
+        workers.emplace_back([&] {
+            for (std::size_t i = next++; i < jobs.size(); i = next++) run_one(i);
+        });
+    }
+    for (std::thread& t : workers) t.join();
+}
+
+} // namespace
 
 void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_nav) {
     std::string final_url = url_str;
@@ -638,9 +774,16 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                     res.stylesheets.emplace_back("(inline)", css_content);
                 }
 
+                std::vector<SubJob> jobs;
+                auto want = [&](std::string url, const char* initiator,
+                                bool retry_once = false) -> int {
+                    jobs.push_back(SubJob{std::move(url), initiator, retry_once, {}});
+                    return (int)jobs.size() - 1;
+                };
+
                 std::vector<std::string> stylesheet_hrefs;
                 find_stylesheets_in_dom(res.dom, stylesheet_hrefs);
-
+                std::vector<int> sheet_jobs;
                 for (const auto& href : stylesheet_hrefs) {
                     std::string sheet_url = resolve_url(final_url, href);
                     if (is_mixed_content(page_secure, sheet_url)) {
@@ -651,38 +794,31 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                                               "blocked: mixed content");
                         continue;
                     }
-                    FetchResult sheet_res = perform_fetch(tab_id, sheet_url, false, {}, "stylesheet");
-                    if (sheet_res.success) {
-                        css_content += "\n" + sheet_res.body;
-                        res.stylesheets.emplace_back(sheet_url, sheet_res.body);
-                    }
+                    sheet_jobs.push_back(want(sheet_url, "stylesheet"));
                 }
-
-                parse_css(css_content, res.css_classes);
 
                 // The tab icon. Fetched here with the rest of the subresources so
                 // the strip has it the moment the page swaps in, and skipped
                 // silently on failure: a missing icon is not a page error.
                 std::string favicon_href;
                 find_favicon_in_dom(res.dom, favicon_href);
+                int favicon_job = -1;
+                std::string favicon_url;
                 if (!favicon_href.empty()) {
-                    std::string fav_url = resolve_url(final_url, favicon_href);
-                    if (is_mixed_content(page_secure, fav_url)) {
+                    favicon_url = resolve_url(final_url, favicon_href);
+                    if (is_mixed_content(page_secure, favicon_url)) {
                         devtools::log(tab_id, devtools::Level::Warn,
-                                      "blocked mixed-content favicon " + fav_url);
-                        devtools::net_blocked(tab_id, fav_url, "favicon",
+                                      "blocked mixed-content favicon " + favicon_url);
+                        devtools::net_blocked(tab_id, favicon_url, "favicon",
                                               "blocked: mixed content");
                     } else {
-                        FetchResult fav_res = perform_fetch(tab_id, fav_url, false, {}, "favicon");
-                        if (fav_res.success) {
-                            res.favicon_bytes = std::move(fav_res.body);
-                            res.favicon_url = fav_url;
-                        }
+                        favicon_job = want(favicon_url, "favicon");
                     }
                 }
 
                 std::vector<std::string> img_srcs;
                 find_images_in_dom(res.dom, img_srcs);
+                std::vector<int> image_jobs;
                 for (const auto& src : img_srcs) {
                     std::string img_url = resolve_url(final_url, src);
                     if (is_mixed_content(page_secure, img_url)) {
@@ -693,18 +829,8 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                                               "blocked: mixed content");
                         continue;
                     }
-                    FetchResult img_res = perform_fetch(tab_id, img_url, false, {}, "image");
                     // One retry: a subresource is easily lost to the connection.
-                    if (!img_res.success) {
-                        img_res = perform_fetch(tab_id, img_url, false, {}, "image");
-                    }
-                    if (img_res.success) {
-                        res.fetched_images[img_url] = img_res.body;
-                    } else {
-                        devtools::log(tab_id, devtools::Level::Warn,
-                                      "image failed to load: " + img_res.error_message,
-                                      img_url);
-                    }
+                    image_jobs.push_back(want(img_url, "image", true));
                 }
 
                 // Media is not fetched here at all: the player streams it on demand.
@@ -723,10 +849,10 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                     }
                 }
 
-                // Fetched in place so the engine still sees one list in document
-                // order. perform_fetch's scheme gate is what stops a page pulling
-                // code off an arbitrary host.
-                for (PageScript& script : res.scripts) {
+                // -1 means inline or blocked.
+                std::vector<int> script_jobs(res.scripts.size(), -1);
+                for (size_t i = 0; i < res.scripts.size(); ++i) {
+                    PageScript& script = res.scripts[i];
                     if (script.src.empty()) continue;
                     script.src = resolve_url(final_url, script.src);
                     if (is_mixed_content(page_secure, script.src)) {
@@ -737,17 +863,48 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
                                               "blocked: mixed content");
                         continue;
                     }
-                    FetchResult script_res = perform_fetch(tab_id, script.src, false, {}, "script");
-                    if (script_res.success && script_res.status_code == 200) {
-                        script.source = std::move(script_res.body);
+                    script_jobs[i] = want(script.src, "script");
+                }
+
+                run_subresource_jobs(tab_id, jobs);
+
+                for (int j : sheet_jobs) {
+                    if (!jobs[j].res.success) continue;
+                    css_content += "\n" + jobs[j].res.body;
+                    res.stylesheets.emplace_back(jobs[j].url, jobs[j].res.body);
+                }
+
+                parse_css(css_content, res.css_classes);
+
+                if (favicon_job >= 0 && jobs[favicon_job].res.success) {
+                    res.favicon_bytes = std::move(jobs[favicon_job].res.body);
+                    res.favicon_url = favicon_url;
+                }
+
+                for (int j : image_jobs) {
+                    if (jobs[j].res.success) {
+                        res.fetched_images[jobs[j].url] = std::move(jobs[j].res.body);
+                    } else {
+                        devtools::log(tab_id, devtools::Level::Warn,
+                                      "image failed to load: " + jobs[j].res.error_message,
+                                      jobs[j].url);
+                    }
+                }
+
+                for (size_t i = 0; i < res.scripts.size(); ++i) {
+                    const int j = script_jobs[i];
+                    if (j < 0) continue;
+                    FetchResult& sr = jobs[j].res;
+                    if (sr.success && sr.status_code == 200) {
+                        res.scripts[i].source = std::move(sr.body);
                     } else {
                         std::string why =
-                            script_res.success
-                                ? std::to_string(script_res.status_code) + " " + script_res.status_text
-                                : script_res.error_message;
-                        std::cerr << "[script] failed to load " << script.src << ": " << why << "\n";
+                            sr.success
+                                ? std::to_string(sr.status_code) + " " + sr.status_text
+                                : sr.error_message;
+                        std::cerr << "[script] failed to load " << jobs[j].url << ": " << why << "\n";
                         devtools::log(tab_id, devtools::Level::Error,
-                                      "failed to load script: " + why, script.src);
+                                      "failed to load script: " + why, jobs[j].url);
                     }
                 }
             } else {

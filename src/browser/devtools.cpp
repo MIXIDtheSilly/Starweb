@@ -1413,6 +1413,10 @@ void draw_timing(const NetRecord& r) {
     }
 
     ImGui::Spacing();
+    if (t.reused) {
+        ImGui::TextColored(Theme::dt_dim,
+                           "Served on a pooled connection: no connect, no handshake.");
+    }
     ImGui::Text("Total. %s", fmt_ms(r.ms).c_str());
     if (t.complete >= 0.0) {
         // The gap is the queueing either side of perform_request, worth showing.
@@ -1459,6 +1463,7 @@ void draw_net_selected(const NetRecord& r, TabState& st) {
                 if (!r.content_type.empty()) kv_row("Type", r.content_type);
                 if (r.done && !r.blocked) kv_row("Size", fmt_bytes(r.size));
                 kv_row("Transport", r.secure ? "star:// (TLS)" : "moon:// (plaintext)");
+                kv_row("Connection", r.timing.reused ? "reused (keep-alive)" : "new");
                 ImGui::EndTable();
             }
             section_label("Request headers");

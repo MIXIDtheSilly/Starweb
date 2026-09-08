@@ -7,7 +7,7 @@
 // namespace back in ICANN's hands. Everything else still goes to getaddrinfo,
 // so localhost and IP literals behave exactly as before.
 //
-//   STARWEB_DNS       server to ask, "host[:port]"   (default 127.0.0.1:5354)
+//   STARWEB_DNS       server to ask, "host[:port]"   (default 159.195.49.100:5354)
 //                     set to "off" to disable and use the system resolver
 //   STARWEB_DNS_ZONE  zone routed to it              (default web)
 
@@ -60,7 +60,7 @@ struct ServerAddr { std::string host; uint16_t port; };
 
 inline const ServerAddr& server() {
     static const ServerAddr s = [] {
-        std::string raw = env_or("STARWEB_DNS", "127.0.0.1:5354");
+        std::string raw = env_or("STARWEB_DNS", "159.195.49.100:5354");
         if (lower(raw) == "off" || lower(raw) == "system") return ServerAddr{"", 0};
         uint16_t port = 53;
         size_t colon = raw.rfind(':');

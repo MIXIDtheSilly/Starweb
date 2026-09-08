@@ -88,6 +88,7 @@ set(BROWSER_SRCS
     ${SRC}/browser/globals.cpp
     ${SRC}/browser/parser.cpp
     ${SRC}/browser/fetcher.cpp
+    ${SRC}/browser/conn_pool.cpp
     ${SRC}/browser/media_source.cpp
     ${SRC}/browser/renderer.cpp
     ${SRC}/browser/icons.cpp

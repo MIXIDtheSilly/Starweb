@@ -21,7 +21,7 @@ GET /index.html STWP/1.0
 Host: localhost
 User-Agent: Starmap/1.0
 Star-Theme: name=Nebula; scheme=dark; accent=#9461db; focus=#4937db
-Connection: close
+Connection: keep-alive
 
 ```
 
@@ -37,14 +37,37 @@ A response:
 STWP/1.0 200 OK
 Content-Length: 4142
 Content-Type: text/html
-Connection: close
+Connection: keep-alive
 
 <!DOCTYPE html>...
 ```
 
 Header names are case-insensitive and lowercased on parse. Bodies are delimited by
-`Content-Length`. Every request currently uses `Connection: close`, so one
-connection carries exactly one request/response pair.
+`Content-Length`, which every response carries.
+
+### Persistent connections
+
+A request that says `Connection: keep-alive` asks the server to hold the
+connection open for the next one; the response says `keep-alive` back when it
+will. Keep-alive is opt-in on both sides, so a client that sends nothing, or
+sends `Connection: close`, gets the original one-request-per-connection
+behaviour and an older server is free to answer `close` to a client that asked
+for more.
+
+Reuse is only sound while both ends agree where a message ends, so the server
+drops back to closing whenever it cannot promise that: a request it could not
+parse, a version it does not speak, or a file whose bytes ran out mid-send. The
+client parks a connection only after reading a body to its exact declared length.
+
+Requests are never pipelined. The client sends one request per connection at a
+time and reads its response in full before sending again; concurrency comes from
+opening several connections, not from stacking requests on one.
+
+Because a parked connection can be reaped by the far end at any moment, a client
+must be ready for a reused connection to fail on the first write or read, and
+retry once on a fresh one. The browser holds idle connections for 10 seconds and
+the server for 20, so under normal conditions the client is the side that lets
+go first.
 
 ## Range requests
 
@@ -108,18 +131,22 @@ loads nothing; there is no click-through to proceed anyway.
 
 ### Session resumption
 
-Each fetch opens its own connection, so a page with subresources would otherwise
-pay a full handshake per resource. The client keeps an in-memory session cache
-keyed by `host:port`, so the first connection to an origin handshakes in full and
-the rest resume:
+Keep-alive already spares most subresources a handshake, but a page still opens
+several connections per origin, and a later navigation starts again from cold.
+The client keeps an in-memory session cache keyed by `host:port`, so the first
+connection to an origin handshakes in full and the rest resume:
 
 ```
 [Server] [star/TLS full]    Request: GET /index.html
-[Server] [star/TLS resumed] Request: GET /style.css
-[Server] [star/TLS resumed] Request: GET /cat.jpg
+[Server] [kept alive]       Request: GET /style.css
+[Server] [kept alive]       Request: GET /cat.jpg
+[Server] [star/TLS resumed] Request: GET /photo.jpg
 ```
 
-The cache lives for the life of the process and is never written to disk. 0-RTT
+`kept alive` marks a request that arrived on a connection already open, so it
+handshook not at all; `resumed` marks a *new* connection that skipped the full
+handshake. The cache lives for the life of the process and is never written to
+disk. 0-RTT
 early data is deliberately **not** used: it is replay-unsafe, and these GETs are
 cheap enough that it would buy little.
 
@@ -154,7 +181,7 @@ StarWeb is a separate web, and the boundary is enforced rather than assumed:
   the system resolver and behaves exactly as before.
 
   ```sh
-  STARWEB_DNS=127.0.0.1:5354   # server to ask; "off" reverts to the system resolver
+  STARWEB_DNS=159.195.49.100:5354   # server to ask; "off" reverts to the system resolver
   STARWEB_DNS_ZONE=star        # the zone routed to it
   ```
 
