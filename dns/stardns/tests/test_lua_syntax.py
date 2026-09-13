@@ -39,7 +39,8 @@ def token(fake_db):
 def test_page_scripts_parse(token):
     pages = {"login": ui.login_page()}
     for path in PAGES:
-        res = panel.app.handle(Request(method="GET", path=f"{path}?t={token}"))
+        res = panel.app.handle(Request(method="GET", path=path,
+                                      headers={"cookie": f"{panel.COOKIE}={token}"}))
         assert res.status_code == 200, f"{path} -> {res.status_code}"
         pages[path] = res.text
     for name, html in pages.items():

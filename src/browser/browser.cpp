@@ -55,6 +55,7 @@
 #include "script.hpp"
 #include "devtools.hpp"
 #include "storage.hpp"
+#include "cookies.hpp"
 #include "history.hpp"
 #include "zoom.hpp"
 #include <filesystem>
@@ -208,6 +209,16 @@ static void draw_panel_shadow(float rounding) {
                     IM_COL32(0, 0, 0, (int)(90.0f * t * t)), rounding + e, 0, 1.0f);
     }
     dl->PopClipRect();
+}
+
+// Clip rects are square, so the sheet colour is stroked back over the rounded corners.
+static void frame_panel(ImDrawList* dl, ImVec2 a, ImVec2 b, float r, ImU32 col, float px) {
+    const float t = r;
+    const float o = t * 0.5f + px;
+    const float saved = dl->_FringeScale;
+    dl->_FringeScale = px;
+    dl->AddRect(ImVec2(a.x - o, a.y - o), ImVec2(b.x + o, b.y + o), col, r + o, 0, t);
+    dl->_FringeScale = saved;
 }
 
 // Sketched at 214x140, scaled to the width asked for.
@@ -908,6 +919,7 @@ int main() {
             }
         drain_page_images();
         storage::flush();
+        cookies::flush();
         history::flush();
 
         if (!g_pending_navs.empty()) {
@@ -1957,6 +1969,7 @@ int main() {
         ImGui::EndChild();
         const ImVec2 vp_rect_min = ImGui::GetItemRectMin();
         const ImVec2 vp_rect_max = ImGui::GetItemRectMax();
+        ImVec2 dt_rect_min, dt_rect_max;
         ImGui::PopStyleColor(2);
 
         if (dt_open) {
@@ -1990,7 +2003,26 @@ int main() {
                 Theme::dt_bg, Trim::kPageRounding, ImDrawFlags_RoundCornersAll);
             devtools::draw(active_tab);
             ImGui::EndChild();
+            dt_rect_min = ImGui::GetItemRectMin();
+            dt_rect_max = ImGui::GetItemRectMax();
         }
+
+        // The shell's draw list renders under its children, so frames go in a sibling.
+        ImGui::SetCursorScreenPos(vp_rect_min);
+        ImGui::BeginChild("##panel_corners", ImVec2(shell_avail.x, shell_avail.y), false,
+                          ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoScrollbar |
+                          ImGuiWindowFlags_NoBackground);
+        {
+            ImDrawList* frame_dl = ImGui::GetWindowDrawList();
+            const ImU32 sheet = ImGui::GetColorU32(ImGuiCol_WindowBg);
+            const float fb = ImGui::GetIO().DisplayFramebufferScale.y;
+            const float px = fb > 1.0f ? 1.0f / fb : 1.0f;
+            frame_panel(frame_dl, vp_rect_min, vp_rect_max, Trim::kPageRounding, sheet, px);
+            if (dt_open) {
+                frame_panel(frame_dl, dt_rect_min, dt_rect_max, Trim::kPageRounding, sheet, px);
+            }
+        }
+        ImGui::EndChild();
 
         if (active_tab.show_alert) {
             ImGui::OpenPopup("Alert");
@@ -2076,6 +2108,7 @@ int main() {
     g_history_favicons.clear();
 
     storage::flush(true);
+    cookies::flush(true);
     history::flush(true);
 
     ImGui_ImplOpenGL3_Shutdown();

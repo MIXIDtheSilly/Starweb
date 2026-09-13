@@ -1,3 +1,4 @@
+import pytest
 from starweb.message import Request, Response, parse_request, parse_response
 
 
@@ -74,3 +75,50 @@ def test_binary_body_survives():
     res = Response(body=payload, headers={"Content-Length": str(len(payload))})
     parsed, _ = parse_response(res.serialize())
     assert parsed.body == payload
+
+
+def test_set_cookie_defaults_to_a_stwp_only_session_cookie():
+    res = Response()
+    res.set_cookie("sid", "abc123")
+    assert res.headers["Set-Cookie"] == "sid=abc123; StwpOnly"
+
+
+def test_set_cookie_with_max_age():
+    res = Response().set_cookie("sid", "abc", max_age=604800)
+    assert res.headers["Set-Cookie"] == "sid=abc; Max-Age=604800; StwpOnly"
+
+
+def test_two_cookies_share_one_header():
+    res = Response()
+    res.set_cookie("sid", "abc")
+    res.set_cookie("theme", "dark", stwp_only=False)
+    assert res.headers["Set-Cookie"] == "sid=abc; StwpOnly | theme=dark"
+
+
+def test_delete_cookie_is_a_zero_max_age():
+    assert Response().delete_cookie("sid").headers["Set-Cookie"] == \
+        "sid=; Max-Age=0; StwpOnly"
+
+
+@pytest.mark.parametrize("name,value", [
+    ("a;b", "x"), ("a=b", "x"), ("a|b", "x"), ("a,b", "x"), ("", "x"),
+    ("a b", "x"), ("sid", "a;b"), ("sid", "a|b"), ("sid", "a\nb"),
+])
+def test_cookie_delimiters_are_rejected(name, value):
+    with pytest.raises(ValueError):
+        Response().set_cookie(name, value)
+
+
+def test_cookie_header_parsing():
+    req = Request(headers={"cookie": "sid=abc123; theme=dark"})
+    assert req.cookies == {"sid": "abc123", "theme": "dark"}
+
+
+def test_no_cookie_header_is_empty():
+    assert Request().cookies == {}
+
+
+def test_cookie_survives_serialization():
+    res = Response().set_cookie("sid", "abc", max_age=60)
+    parsed, _ = parse_response(res.serialize())
+    assert parsed.headers["set-cookie"] == "sid=abc; Max-Age=60; StwpOnly"

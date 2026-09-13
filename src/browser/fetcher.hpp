@@ -16,6 +16,7 @@ struct RequestOptions {
     std::string method = "GET";
     std::string body;
     std::vector<std::pair<std::string, std::string>> headers;
+    bool with_cookies = true;
     int timeout_secs = 4;
     std::size_t max_response_bytes = 128u * 1024u * 1024u;
     std::function<bool(net::socket_t)> on_socket;

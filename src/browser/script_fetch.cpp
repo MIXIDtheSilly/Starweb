@@ -529,6 +529,7 @@ int l_fetch(lua_State* L) {
     pf.tab_id = eng->tab_id();
 
     pf.opt.max_response_bytes = kMaxResponse;
+    pf.opt.with_cookies = !pf.needs_cors;
     pf.opt.headers.emplace_back("Origin", pf.origin);
 
     if (opts_idx) {

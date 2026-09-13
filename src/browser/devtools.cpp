@@ -15,6 +15,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "cookies.hpp"
 #include "fetcher.hpp"
 #include "globals.hpp"
 #include "media_player.hpp"
@@ -42,6 +43,13 @@ struct NodeBox {
 };
 
 using Clock = std::chrono::steady_clock;
+
+struct CookieJar {
+    std::vector<cookies::Entry> rows;
+    std::string origin;
+    std::uint64_t rev = 0;
+    bool valid = false;
+};
 
 // One request. Opened and closed on a worker thread, read only on the render
 // thread; the two halves travel through the pending queue below.
@@ -131,6 +139,8 @@ struct TabState {
     // Dev hook only; resolved in draw_sources, where the file list exists.
     std::string src_want;
     int src_want_line = 0;
+
+    CookieJar src_cookies;
 
     // Split lines and the y each one starts at, rebuilt when any part of the key
     // below changes.
@@ -1699,6 +1709,8 @@ struct SourceFile {
     bool favicon = false;
     // A localStorage entry: `text` points into the live store.
     bool stored = false;
+    // A cookie: `text` points at the value inside TabState::src_cookies.
+    const cookies::Entry* cookie = nullptr;
     // Stored values mutate in place, which address and length alone cannot show.
     std::uint64_t rev = 0;
     // Media: the page's own player, null until the element starts one. Never one
@@ -1707,7 +1719,8 @@ struct SourceFile {
     ImFont* font = nullptr;  // Font
 };
 
-void collect_sources(const Tab& tab, std::vector<SourceFile>& out) {
+void collect_sources(const Tab& tab, std::vector<SourceFile>& out,
+                     const CookieJar* jar = nullptr) {
     const FetchResult& page = tab.active_page;
     if (!page.body.empty()) {
         SourceFile f;
@@ -1799,6 +1812,19 @@ void collect_sources(const Tab& tab, std::vector<SourceFile>& out) {
         }
     }
 
+    if (jar) {
+        for (const cookies::Entry& c : jar->rows) {
+            SourceFile f;
+            f.group = "Cookies";
+            f.key = "cookie:" + c.name;
+            f.label = c.name;
+            f.text = &c.value;
+            f.cookie = &c;
+            f.rev = jar->rev;
+            out.push_back(std::move(f));
+        }
+    }
+
     // Only once something is loaded, so an empty tab still reads as empty. These
     // are the bundled faces a page can select; there is no @font-face to fetch.
     if (!out.empty()) {
@@ -1854,6 +1880,27 @@ std::string fmt_clock(double secs) {
     const int t = (int)secs;
     char buf[32];
     std::snprintf(buf, sizeof buf, "%d:%02d", t / 60, t % 60);
+    return buf;
+}
+
+std::string fmt_expiry(std::int64_t expires_at) {
+    if (expires_at == 0) return "session";
+    const std::int64_t left =
+        expires_at - (std::int64_t)std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::system_clock::now().time_since_epoch()).count();
+    if (left <= 0) return "expired";
+    char buf[48];
+    if (left >= 86400) {
+        std::snprintf(buf, sizeof buf, "expires in %lldd %lldh", (long long)(left / 86400),
+                      (long long)(left % 86400) / 3600);
+    } else if (left >= 3600) {
+        std::snprintf(buf, sizeof buf, "expires in %lldh %lldm", (long long)(left / 3600),
+                      (long long)(left % 3600) / 60);
+    } else if (left >= 60) {
+        std::snprintf(buf, sizeof buf, "expires in %lldm", (long long)(left / 60));
+    } else {
+        std::snprintf(buf, sizeof buf, "expires in %llds", (long long)left);
+    }
     return buf;
 }
 
@@ -2119,8 +2166,18 @@ void draw_source_view(TabState& st, const SourceFile* f) {
 }
 
 void draw_sources(Tab& tab, TabState& st) {
+    const std::string origin = storage::origin_for_url(tab.current_url);
+    const std::uint64_t jar_rev = cookies::revision();
+    if (!st.src_cookies.valid || st.src_cookies.rev != jar_rev ||
+        st.src_cookies.origin != origin) {
+        st.src_cookies.rows = cookies::entries(origin);
+        st.src_cookies.origin = origin;
+        st.src_cookies.rev = jar_rev;
+        st.src_cookies.valid = true;
+    }
+
     std::vector<SourceFile> files;
-    collect_sources(tab, files);
+    collect_sources(tab, files, &st.src_cookies);
 
     if (!st.src_want.empty()) {
         for (const SourceFile& f : files) {
@@ -2147,6 +2204,7 @@ void draw_sources(Tab& tab, TabState& st) {
     // Deferred: mutating the store here dangles the pointers `files` holds.
     enum class StoreEdit { None, Delete, Clear } edit = StoreEdit::None;
     std::string edit_key;
+    bool edit_cookies = false;
 
     ControlRow band;
     band.begin();
@@ -2166,13 +2224,27 @@ void draw_sources(Tab& tab, TabState& st) {
         ImGui::SetTooltip(textual ? "Copy this file to the clipboard"
                                   : "Copy this URL to the clipboard");
     }
-    if (sel && sel->stored) {
+    if (sel && (sel->stored || sel->cookie)) {
+        const bool jar = sel->cookie != nullptr;
         ImGui::SameLine(0.0f, 4.0f);
-        if (tool_button("Delete")) { edit = StoreEdit::Delete; edit_key = sel->label; }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this key from localStorage");
+        if (tool_button("Delete")) {
+            edit = StoreEdit::Delete;
+            edit_key = sel->label;
+            edit_cookies = jar;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(jar ? "Delete this cookie"
+                                  : "Remove this key from localStorage");
+        }
         ImGui::SameLine(0.0f, 4.0f);
-        if (tool_button("Clear")) edit = StoreEdit::Clear;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove every key this origin stored");
+        if (tool_button("Clear")) {
+            edit = StoreEdit::Clear;
+            edit_cookies = jar;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(jar ? "Delete every cookie of this origin"
+                                  : "Remove every key this origin stored");
+        }
     }
     if (textual) {
         ImGui::SameLine(0.0f, 8.0f);
@@ -2252,7 +2324,13 @@ void draw_sources(Tab& tab, TabState& st) {
             ImGui::SetScrollHereY(0.5f);
             st.src_scroll_to_pin = false;
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", f.key.c_str());
+        if (ImGui::IsItemHovered()) {
+            if (f.cookie) {
+                ImGui::SetTooltip("%s", fmt_expiry(f.cookie->expires_at).c_str());
+            } else {
+                ImGui::SetTooltip("%s", f.key.c_str());
+            }
+        }
         // Centred in the row: a Selectable's rect is grown by half an ItemSpacing
         // on each side.
         const ImVec2 rmn = ImGui::GetItemRectMin(), rmx = ImGui::GetItemRectMax();
@@ -2293,9 +2371,12 @@ void draw_sources(Tab& tab, TabState& st) {
     if (sel) {
         switch (sel->kind) {
             case SrcKind::Text:
-                if (sel->stored) {
+                if (sel->cookie) {
                     summary = sel->label + "  -  " + fmt_bytes(sel->text->size()) + ", " +
-                              storage::origin_for_url(tab.current_url);
+                              fmt_expiry(sel->cookie->expires_at) + ", " + origin;
+                } else if (sel->stored) {
+                    summary = sel->label + "  -  " + fmt_bytes(sel->text->size()) + ", " +
+                              origin;
                 } else if (sel->text) {
                     summary = sel->label + "  -  " + std::to_string(st.src_lines.size()) +
                               " lines, " + fmt_bytes(sel->text->size());
@@ -2326,9 +2407,14 @@ void draw_sources(Tab& tab, TabState& st) {
     footer.end();
 
     if (edit != StoreEdit::None) {
-        const std::string origin = storage::origin_for_url(tab.current_url);
-        if (edit == StoreEdit::Delete) storage::remove(origin, edit_key);
-        else storage::clear(origin);
+        if (edit_cookies) {
+            if (edit == StoreEdit::Delete) cookies::remove(origin, edit_key);
+            else cookies::clear(origin);
+        } else if (edit == StoreEdit::Delete) {
+            storage::remove(origin, edit_key);
+        } else {
+            storage::clear(origin);
+        }
         st.src_pin.clear();
         st.src_hl_line = 0;
     }

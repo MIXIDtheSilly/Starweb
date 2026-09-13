@@ -1,6 +1,7 @@
 #include "script.hpp"
 #include "script_fetch.hpp"
 #include "storage.hpp"
+#include "cookies.hpp"
 #include "types.hpp"
 #include "parser.hpp"
 #include "globals.hpp"
@@ -760,6 +761,7 @@ int ScriptEngine::p_install(lua_State* L) {
 
     install_fetch_api(L);
     install_storage_api(L);
+    install_cookies_api(L);
 
     lua_newtable(L);
     lua_newuserdatauv(L, 1, 0);
@@ -774,6 +776,7 @@ int ScriptEngine::p_install(lua_State* L) {
     lua_pushcfunction(L, &ScriptEngine::l_alert); lua_setfield(L, -2, "alert");
     lua_getglobal(L, "fetch");                    lua_setfield(L, -2, "fetch");
     lua_getglobal(L, "localStorage");             lua_setfield(L, -2, "localStorage");
+    lua_getglobal(L, "cookies");                  lua_setfield(L, -2, "cookies");
     lua_getglobal(L, "theme");                    lua_setfield(L, -2, "theme");
     lua_pushvalue(L, -1);
     lua_setglobal(L, "window");

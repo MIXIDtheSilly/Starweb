@@ -19,6 +19,9 @@ STATUS_TEXT = {
 
 _HEX = re.compile(r"[0-9a-fA-F]{6}")
 
+COOKIE = "sid"
+COOKIE_MAX_AGE = config.SESSION_DAYS * 24 * 60 * 60
+
 # Roles an asset URL can ask for instead of a hex, read off Star-Theme.
 _ROLES = {"accent": ui.ACCENT}
 
@@ -38,6 +41,12 @@ def _themed(req, role: str) -> str | None:
 app = App()
 
 
+def _signed_in(token: str) -> Response:
+    res = _json({"token": token})
+    res.set_cookie(COOKIE, token, max_age=COOKIE_MAX_AGE)
+    return res
+
+
 def _json(payload: dict, status: int = 200) -> Response:
     return Response(status, STATUS_TEXT.get(status, "Error"),
                     body=json.dumps(payload).encode(),
@@ -52,6 +61,13 @@ def _html(markup: str, status: int = 200) -> Response:
     return Response(status, STATUS_TEXT.get(status, "Error"),
                     body=markup.encode(),
                     headers={"Content-Type": "text/html; charset=utf-8"})
+
+
+def _token(req, payload: dict | None = None) -> str:
+    token = req.cookies.get(COOKIE, "")
+    if not token and payload is not None:
+        token = payload.get("token", "")
+    return token
 
 
 def _body(req) -> dict:
@@ -102,65 +118,73 @@ def icon(req, name, color):
                     headers={"Content-Type": "image/svg+xml"})
 
 
+# The fetcher follows no redirects, so a saved session is served home here.
 @app.route("/")
 def index(req):
-    return _html(ui.login_page())
+    try:
+        username = auth.user_for(_token(req))
+    except PanelError:
+        return _html(ui.login_page())
+    return _home(username)
 
 
 # The account home. Everything it lists is a shortcut into one of the tabs
 # below, so it does no counting of its own.
 @app.route("/panel")
 def panel(req):
-    token = req.query.get("t", "")
     try:
-        username = auth.user_for(token)
+        username = auth.user_for(_token(req))
+    except PanelError as e:
+        return _html(ui.error_page(e.message, e.status != 401), e.status)
+    return _home(username)
+
+
+def _home(username: str) -> Response:
+    try:
         domains = zones.list_domains(username)
     except PanelError as e:
-        return _html(ui.error_page(e.message), e.status)
+        return _html(ui.error_page(e.message, e.status != 401), e.status)
 
     series = analytics.daily_totals([d["name"] for d in domains])
     labels = analytics.day_labels()
     recent = recents.list_recent(username)
-    return _html(ui.home_page(username, token, domains, series, labels, recent))
+    return _html(ui.home_page(username, domains, series, labels, recent))
 
 
 @app.route("/search")
 def search_view(req):
-    token = req.query.get("t", "")
     try:
-        username = auth.user_for(token)
+        username = auth.user_for(_token(req))
         domains = zones.list_domains(username)
     except PanelError as e:
-        return _html(ui.error_page(e.message), e.status)
+        return _html(ui.error_page(e.message, e.status != 401), e.status)
 
-    return _html(ui.search_page(token, domains, req.query.get("q", "")))
+    return _html(ui.search_page(domains, req.query.get("q", "")))
 
 
 @app.route("/domains")
 def domains_view(req):
-    token = req.query.get("t", "")
     try:
-        username = auth.user_for(token)
+        username = auth.user_for(_token(req))
         domains = zones.list_domains(username)
     except PanelError as e:
-        return _html(ui.error_page(e.message), e.status)
+        return _html(ui.error_page(e.message, e.status != 401), e.status)
 
     counts = {d["name"]: db().records.count_documents({"domain": d["name"]})
               for d in domains}
     certs = {d["name"]: ca.latest(d["name"]) is not None for d in domains}
     queries = {d["name"]: analytics.total_queries(d["name"], days=14) for d in domains}
     series = {d["name"]: analytics.daily_counts(d["name"]) for d in domains}
-    return _html(ui.panel_page(username, token, domains, counts, certs, queries, series))
+    return _html(ui.panel_page(username, domains, counts, certs, queries, series))
 
 
 @app.route("/analytics")
 def analytics_view(req):
-    token = req.query.get("t", "")
     try:
-        username = auth.user_for(token)
+        username = auth.user_for(_token(req))
         domains = zones.list_domains(username)
     except PanelError as e:
-        return _html(ui.error_page(e.message), e.status)
+        return _html(ui.error_page(e.message, e.status != 401), e.status)
 
     rng = req.query.get("r", analytics.DEFAULT_RANGE)
     names = [d["name"] for d in domains]
@@ -170,26 +194,24 @@ def analytics_view(req):
     for name in names:
         counts, _ = analytics.series([name], rng)
         per_domain.append({"name": name, "series": counts, "total": sum(counts)})
-    return _html(ui.analytics_page(token, domains, series, labels,
-                                   per_domain, rng))
+    return _html(ui.analytics_page(domains, series, labels, per_domain, rng))
 
 
 @app.route("/analytics/<name>")
 def domain_analytics_view(req, name):
-    token = req.query.get("t", "")
     try:
-        username = auth.user_for(token)
+        username = auth.user_for(_token(req))
         domain = zones.get_domain(username, name)
         domains = zones.list_domains(username)
     except PanelError as e:
-        return _html(ui.error_page(e.message, token if token else None), e.status)
+        return _html(ui.error_page(e.message, e.status != 401), e.status)
 
     recents.touch(username, f"analytics:{domain['name']}",
                  domain["name"], "chart-pie", f"/analytics/{domain['name']}")
     rng = req.query.get("r", analytics.DEFAULT_RANGE)
     series, labels = analytics.series([domain["name"]], rng)
     return _html(ui.domain_analytics_page(
-        token, domain["name"], domains, series, labels, rng,
+        domain["name"], domains, series, labels, rng,
         analytics.total_queries(domain["name"])))
 
 
@@ -198,32 +220,30 @@ def domain_analytics_view(req, name):
 # arrives with the entity intact and the parameter lost.
 @app.route("/domain/<name>")
 def domain_view(req, name):
-    token = req.query.get("t", "")
     try:
-        username = auth.user_for(token)
+        username = auth.user_for(_token(req))
         domain = zones.get_domain(username, name)
         domains = zones.list_domains(username)
         records = zones.list_records(domain["name"])
     except PanelError as e:
-        return _html(ui.error_page(e.message, token if token else None), e.status)
+        return _html(ui.error_page(e.message, e.status != 401), e.status)
 
     recents.touch(username, f"domain:{domain['name']}", domain["name"],
                  "globe", f"/domain/{domain['name']}")
     ok, why = ca.ca_ready()
-    return _html(ui.domain_page(token, domain["name"], domains, records,
+    return _html(ui.domain_page(domain["name"], domains, records,
                                 ca.latest(domain["name"]),
                                 None if ok else why))
 
 
 @app.route("/cert/<name>/<what>")
 def cert_download(req, name, what):
-    token = req.query.get("t", "")
     try:
-        username = auth.user_for(token)
+        username = auth.user_for(_token(req))
         domain = zones.get_domain(username, name)
         filename, pem = ca.read_material(domain["name"], what)
     except PanelError as e:
-        return _html(ui.error_page(e.message, token if token else None), e.status)
+        return _html(ui.error_page(e.message, e.status != 401), e.status)
 
     return Response(200, body=pem.encode(), headers={
         "Content-Type": "text/plain; charset=utf-8",
@@ -238,7 +258,7 @@ def api_register(req):
         token = auth.register(payload.get("username", ""), payload.get("password", ""))
     except PanelError as e:
         return _fail(e)
-    return _json({"token": token})
+    return _signed_in(token)
 
 
 @app.route("/api/login", methods=["POST"])
@@ -248,7 +268,7 @@ def api_login(req):
         token = auth.login(payload.get("username", ""), payload.get("password", ""))
     except PanelError as e:
         return _fail(e)
-    return _json({"token": token})
+    return _signed_in(token)
 
 
 @app.route("/api/access", methods=["POST"])
@@ -259,23 +279,25 @@ def api_access(req):
                                        payload.get("password", ""))
     except PanelError as e:
         return _fail(e)
-    return _json({"token": token})
+    return _signed_in(token)
 
 
 @app.route("/api/logout", methods=["POST"])
 def api_logout(req):
     try:
-        auth.logout(_body(req).get("token", ""))
+        auth.logout(_token(req, _body(req)))
     except PanelError as e:
         return _fail(e)
-    return _json({"ok": True})
+    res = _json({"ok": True})
+    res.delete_cookie(COOKIE)
+    return res
 
 
 @app.route("/api/domains", methods=["POST"])
 def api_domains(req):
     try:
         payload = _body(req)
-        username = auth.user_for(payload.get("token", ""))
+        username = auth.user_for(_token(req, payload))
         domains = zones.list_domains(username)
     except PanelError as e:
         return _fail(e)
@@ -291,7 +313,7 @@ def api_domains(req):
 def api_domain_add(req):
     try:
         payload = _body(req)
-        username = auth.user_for(payload.get("token", ""))
+        username = auth.user_for(_token(req, payload))
         doc = zones.add_domain(username, payload.get("domain", ""))
     except PanelError as e:
         return _fail(e)
@@ -302,7 +324,7 @@ def api_domain_add(req):
 def api_domain_delete(req):
     try:
         payload = _body(req)
-        username = auth.user_for(payload.get("token", ""))
+        username = auth.user_for(_token(req, payload))
         zones.delete_domain(username, payload.get("domain", ""))
     except PanelError as e:
         return _fail(e)
@@ -313,7 +335,7 @@ def api_domain_delete(req):
 def api_records(req):
     try:
         payload = _body(req)
-        username = auth.user_for(payload.get("token", ""))
+        username = auth.user_for(_token(req, payload))
         domain = zones.get_domain(username, payload.get("domain", ""))
         records = zones.list_records(domain["name"])
     except PanelError as e:
@@ -330,7 +352,7 @@ def api_records(req):
 def api_record_add(req):
     try:
         payload = _body(req)
-        username = auth.user_for(payload.get("token", ""))
+        username = auth.user_for(_token(req, payload))
         doc = zones.add_record(username, payload.get("domain", ""),
                                payload.get("name", "@"), payload.get("type", ""),
                                payload.get("value", ""), payload.get("ttl"))
@@ -344,7 +366,7 @@ def api_record_add(req):
 def api_record_delete(req):
     try:
         payload = _body(req)
-        username = auth.user_for(payload.get("token", ""))
+        username = auth.user_for(_token(req, payload))
         zones.delete_record(username, payload.get("domain", ""),
                             payload.get("id", ""))
     except PanelError as e:
@@ -356,7 +378,7 @@ def api_record_delete(req):
 def api_cert_issue(req):
     try:
         payload = _body(req)
-        username = auth.user_for(payload.get("token", ""))
+        username = auth.user_for(_token(req, payload))
         domain = zones.get_domain(username, payload.get("domain", ""))
         doc = ca.issue(domain["name"])
     except PanelError as e:

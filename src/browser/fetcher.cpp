@@ -1,4 +1,5 @@
 #include "fetcher.hpp"
+#include "cookies.hpp"
 #include "globals.hpp"
 #include "parser.hpp"
 #include "devtools.hpp"
@@ -253,6 +254,13 @@ Exchange run_exchange(Conn& conn, const ParsedURL& parsed, const std::string& po
     req.headers["User-Agent"] = "Starmap/1.0";
     req.headers["Star-Theme"] = Theme::request_header();
     req.headers["Connection"] = "keep-alive";
+
+    const std::string cookie_origin =
+        parsed.scheme + "://" + format_host(parsed.host) + ":" + port_str;
+    if (opt.with_cookies) {
+        std::string jar = cookies::header_for(cookie_origin);
+        if (!jar.empty()) req.headers["Cookie"] = jar;
+    }
     if (!opt.body.empty()) {
         req.body = opt.body;
         req.headers["Content-Length"] = std::to_string(opt.body.size());
@@ -315,6 +323,13 @@ Exchange run_exchange(Conn& conn, const ParsedURL& parsed, const std::string& po
     const bool head_ok =
         headers_done &&
         parse_response_headers(std::string_view(raw_response).substr(0, header_end), head_msg);
+
+    if (head_ok && opt.with_cookies) {
+        auto sc = head_msg.headers.find("set-cookie");
+        if (sc != head_msg.headers.end()) {
+            cookies::apply_set_cookie(cookie_origin, sc->second);
+        }
+    }
 
     bool keepalive_ok = head_ok;
     if (head_ok) {

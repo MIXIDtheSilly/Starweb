@@ -188,6 +188,60 @@ StarWeb is a separate web, and the boundary is enforced rather than assumed:
   The server is `dns/` in this repo, which also registers the names and
   issues their certificates.
 
+## Cookies
+
+A server keeps a session by sending `Set-Cookie`; the browser then sends `Cookie`
+on every later request to the same origin, navigations included. This is the only
+mechanism that identifies a caller on a plain navigation, because nothing else a
+page can reach adds a header to one.
+
+```
+STWP/1.0 200 OK
+Set-Cookie: sid=nu4H2y...; Max-Age=604800; StwpOnly
+
+```
+
+```
+GET /panel STWP/1.0
+Cookie: sid=nu4H2y...; theme=dark
+
+```
+
+**Cookies are scoped to the origin** (scheme, host and port together). There is no
+`Domain`, `Path` or `Secure` attribute, because the origin already says what all
+three say in HTTP and says it more strictly: `star://a.web:443` and
+`star://a.web:9000` share nothing, and neither does `moon://a.web:443`.
+
+Two attributes remain:
+
+| Attribute | Meaning |
+| --- | --- |
+| `Max-Age=<seconds>` | How long the cookie lives. Absent, it is a session cookie, dropped when the browser exits and never written to disk. `0` or negative deletes the cookie. |
+| `StwpOnly` | The page's Lua cannot see the cookie. It is absent from `cookies`, and a script may not overwrite or delete it either, so it cannot be shadowed. |
+
+STWP headers are a mapping, so a name cannot repeat the way HTTP repeats
+`Set-Cookie` to set several at once. Several cookies ride in the one header joined
+by ` | ` instead:
+
+```
+Set-Cookie: sid=abc; Max-Age=60; StwpOnly | theme=dark; Max-Age=31536000
+```
+
+`|` is rejected in a cookie name or value, as are `;`, `=`, `,`, whitespace and
+control characters, which is what makes the split unambiguous. HTTP's `Expires`
+has no equivalent here; it is exactly the attribute whose embedded comma made
+folding `Set-Cookie` unsafe on the web.
+
+**Cookies are sent same-origin only.** A navigation or subresource load carries
+the cookies of the origin it is addressed to. A page script's `fetch` carries them
+only when the target origin matches the page's own, like the web's
+`credentials: "same-origin"` default. Since a cross-origin request never carries
+credentials, CSRF has nothing to ride on, and there is no `SameSite` attribute to
+get wrong.
+
+Limits: 4096 bytes per value, 256 per name, 64 cookies per origin. A cookie past
+any of those is dropped rather than truncated.
+
 ## Security policy
 
 Two rules apply to `star://` pages, both enforced in the browser:

@@ -187,6 +187,11 @@ static NSString* uti_for_content_type(const std::string& ct) {
     // Shared with the resource loader, which may still be feeding a request when
     // this player goes away.
     std::shared_ptr<MediaSource> _source;  // streaming only
+
+    BOOL _decodeChecked;
+    BOOL _hasVideoTrack;
+    BOOL _sawFrame;
+    double _silentSince;
 }
 
 - (std::vector<std::pair<double, double>>)bufferedSpans:(double)minGap {
@@ -201,6 +206,10 @@ static NSString* uti_for_content_type(const std::string& ct) {
 
 - (void)resetFields:(BOOL)audioOnly {
     _isAudioOnly = audioOnly;
+    _decodeChecked = NO;
+    _hasVideoTrack = NO;
+    _sawFrame = NO;
+    _silentSince = -1.0;
     _volume = 1.0f;
     _isPlaying = false;
     _duration = 0.0;
@@ -281,6 +290,7 @@ static NSString* uti_for_content_type(const std::string& ct) {
         if (_failed) {
             NSLog(@"[media] cannot decode %@", path);
         }
+        _decodeChecked = YES;
 
         [self attachToAsset:asset];
     }
@@ -381,6 +391,26 @@ static NSString* uti_for_content_type(const std::string& ct) {
             _isPlaying = false;
         }
 
+        // Undecodable video (H.264 4:4:4, some 10-bit) still plays audio.
+        if (!_isAudioOnly && !_decodeChecked &&
+            item.status == AVPlayerItemStatusReadyToPlay) {
+            _decodeChecked = YES;
+            AVAssetTrack* video = [item.asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
+            _hasVideoTrack = (video != nil);
+            if (video && !video.isDecodable) {
+                NSLog(@"[media] cannot decode video track");
+                _failed = YES;
+            }
+        }
+
+        if (!_isAudioOnly && !_failed && _hasVideoTrack && !_sawFrame && _currentTime > 0.0) {
+            if (_silentSince < 0.0) _silentSince = _currentTime;
+            if (_currentTime - _silentSince > 3.0) {
+                NSLog(@"[media] no video frame after %.1fs of playback", _currentTime - _silentSince);
+                _failed = YES;
+            }
+        }
+
         // Backstop for a stall the seek handler missed: UI says playing, player is
         // stopped rather than waiting for data.
         if (_isPlaying && _source &&
@@ -400,13 +430,16 @@ static NSString* uti_for_content_type(const std::string& ct) {
     if ([_videoOutput hasNewPixelBufferForItemTime:itemTime]) {
         CVPixelBufferRef pixelBuffer = [_videoOutput copyPixelBufferForItemTime:itemTime itemTimeForDisplay:NULL];
         if (pixelBuffer) {
+            _sawFrame = YES;
             CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
             
             int w = (int)CVPixelBufferGetWidth(pixelBuffer);
             int h = (int)CVPixelBufferGetHeight(pixelBuffer);
             void* baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+            size_t stride = CVPixelBufferGetBytesPerRow(pixelBuffer);
             
             glBindTexture(GL_TEXTURE_2D, _textureId);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(stride / 4));
             if (_width != w || _height != h) {
                 _width = w;
                 _height = h;
@@ -414,6 +447,8 @@ static NSString* uti_for_content_type(const std::string& ct) {
             } else {
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, _width, _height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, baseAddress);
             }
+            
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
             
             CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
             CVPixelBufferRelease(pixelBuffer);

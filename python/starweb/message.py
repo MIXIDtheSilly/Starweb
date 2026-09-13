@@ -57,6 +57,29 @@ def _decode(body: bytes, headers: dict[str, str]) -> str:
         return body.decode("utf-8", "replace")
 
 
+SET_COOKIE_SEPARATOR = "|"
+
+_BAD_NAME = set(";=,|") | {c for c in map(chr, range(33)) } | {"\x7f"}
+_BAD_VALUE = set(";|") | {c for c in map(chr, range(32))} | {"\x7f"}
+
+
+def _check_cookie(name: str, value: str) -> None:
+    if not name or set(name) & _BAD_NAME:
+        raise ValueError(f"invalid cookie name: {name!r}")
+    if set(value) & _BAD_VALUE:
+        raise ValueError(f"invalid cookie value for {name!r}")
+
+
+def parse_cookie_header(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for part in raw.split(";"):
+        name, sep, value = part.partition("=")
+        name = name.strip(_TRIM)
+        if sep and name:
+            out[name] = value.strip(_TRIM)
+    return out
+
+
 @dataclass
 class Request:
     method: str = "GET"
@@ -76,6 +99,10 @@ class Request:
     def json(self):
         import json
         return json.loads(self.body)
+
+    @property
+    def cookies(self) -> dict[str, str]:
+        return parse_cookie_header(self.headers.get("cookie", ""))
 
     @property
     def query(self) -> dict[str, str]:
@@ -122,6 +149,24 @@ class Response:
     def serialize(self) -> bytes:
         return _serialize(f"{self.version} {self.status_code} {self.status_text}",
                           self.headers, self.body)
+
+    def set_cookie(self, name: str, value: str, *, max_age: int | None = None,
+                   stwp_only: bool = True) -> "Response":
+        _check_cookie(name, value)
+        parts = [f"{name}={value}"]
+        if max_age is not None:
+            parts.append(f"Max-Age={int(max_age)}")
+        if stwp_only:
+            parts.append("StwpOnly")
+        cookie = "; ".join(parts)
+
+        existing = self.headers.get("Set-Cookie")
+        self.headers["Set-Cookie"] = (
+            f"{existing} {SET_COOKIE_SEPARATOR} {cookie}" if existing else cookie)
+        return self
+
+    def delete_cookie(self, name: str) -> "Response":
+        return self.set_cookie(name, "", max_age=0)
 
     @property
     def content_length(self) -> int:

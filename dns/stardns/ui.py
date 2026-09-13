@@ -2,10 +2,10 @@
 
 Written to what the StarWeb renderer supports, which shapes everything here:
 selectors are a bare tag or a single class name (no descendant or id
-selectors, and no element may carry two classes), `display:none` is not
+selectors, and no element may carry two classes), and `display:none` is not
 honoured, so views are separate pages rather than one page with hidden
-sections, and there is no cookie or local storage, so the session token
-travels in the URL.
+sections. The session rides in a StwpOnly cookie, so no page below handles
+the token at all.
 
 Two more renderer facts drive the layout below. A `<table>` paints its cells
 with the table's own colour, so per-cell styling is impossible; record lists
@@ -14,10 +14,10 @@ column carry a colour. And the main font is loaded with the default glyph
 range, so text stays inside ASCII and Latin-1: no em dashes, arrows or
 bullets.
 
-Links put the domain in the path and keep the token as the only query
-parameter. That started as a workaround: the renderer did not decode entities
-in attribute values, so `href="?a=1&amp;b=2"` arrived with `b` lost, and the
-parser was fixed on 2026-07-22, but the shape is the nicer one, so it stayed.
+Links put the domain in the path rather than the query. That started as a
+workaround: the renderer did not decode entities in attribute values, so
+`href="?a=1&amp;b=2"` arrived with `b` lost, and the parser was fixed on
+2026-07-22, but the shape is the nicer one, so it stayed.
 """
 
 import re
@@ -733,9 +733,9 @@ def _fit(name: str, limit: int) -> str:
     return name if len(name) <= limit else name[: limit - 3] + "..."
 
 
-def range_pills(active: str, path: str, token: str) -> tuple[str, list[str]]:
+def range_pills(active: str, path: str) -> tuple[str, list[str]]:
     """The window picker. Returns the markup and the links that drive it; the
-    selected window rides in `r` alongside the token."""
+    selected window rides in `r`."""
     pills, script = [], []
     for i, (key, short, *_) in enumerate(analytics.RANGES, 1):
         on = key == active
@@ -743,7 +743,7 @@ def range_pills(active: str, path: str, token: str) -> tuple[str, list[str]]:
       <div class="{'rgon' if on else 'rgoff'}" id="rp-{i}">
         <p class="{'rgtxt' if on else 'rgmut'}">{esc(short)}</p>
       </div>""")
-        script.append(f'link("rp-{i}", {lua_str(f"{path}?t={token}&r={key}")})')
+        script.append(f'link("rp-{i}", {lua_str(f"{path}?r={key}")})')
     return f'<div class="ranges">{"".join(pills)}</div>', script
 
 
@@ -1015,16 +1015,16 @@ end
 """
 
 
-def _search_widget(prefix: str, field_id: str, token: str,
+def _search_widget(prefix: str, field_id: str,
                    domains: list[dict]) -> tuple[str, str]:
     """A self-contained live search box: a header and SEARCH_SLOTS rows.
     `prefix` names everything (classes, ids, the Lua index/target/search
     function) so two calls with different prefixes share no state."""
-    items = [(label, icon, f"{path}?t={token}") for _, label, icon, path in TABS]
+    items = [(label, icon, path) for _, label, icon, path in TABS]
     for d in domains:
         name = d["name"]
-        items.append((name, "globe", f"/domain/{name}?t={token}"))
-        items.append((f"Analytics for {name}", "chart-pie", f"/analytics/{name}?t={token}"))
+        items.append((name, "globe", f"/domain/{name}"))
+        items.append((f"Analytics for {name}", "chart-pie", f"/analytics/{name}"))
     index = ",\n  ".join("{" + lua_str(label) + ", " + lua_str(icon) + ", " + lua_str(url) + "}"
                          for label, icon, url in items)
 
@@ -1086,7 +1086,7 @@ end)
     return markup, script
 
 
-def shell(active: str, token: str, domains: list[dict], content: str,
+def shell(active: str, domains: list[dict], content: str,
          art: bool = False) -> tuple[str, str]:
     """The signed-in frame. Returns the markup and the script that goes with it;
     a page appends its own icons and row links to the latter. The artwork is the
@@ -1099,9 +1099,9 @@ def shell(active: str, token: str, domains: list[dict], content: str,
       <img class="navico"{' id="navico"' if on else ''} src="{icon_src(icon, ACCENT_ROLE if on else '#8b8b96')}">
       <p class="{'navtxt' if on else 'navmut'}">{esc(label)}</p>
     </div>""")
-        script.append(f'link("nav-{key}", {lua_str(path + "?t=" + token)})')
+        script.append(f'link("nav-{key}", {lua_str(path)})')
 
-    qdrop_markup, qdrop_script = _search_widget("q", "qfld", token, domains)
+    qdrop_markup, qdrop_script = _search_widget("q", "qfld", domains)
     decoration = ('<canvas class="art-bl" id="art-bl"></canvas>\n'
                   '<canvas class="art-tr" id="art-tr"></canvas>') if art else ""
     body = f"""
@@ -1135,7 +1135,7 @@ def shell(active: str, token: str, domains: list[dict], content: str,
     # every tab can reach it.
     script.append(f"""
 document.getElementById("avatar"):addEventListener("click", function()
-    fetch("/api/logout", {{ method = "POST", json = {{ token = {lua_str(token)} }} }},
+    fetch("/api/logout", {{ method = "POST" }},
         function() location.assign("/") end)
 end)""")
     prelude = shapes.lua_icons() + ((shapes.lua_shapes() + ART) if art else "")
@@ -1179,7 +1179,7 @@ go:addEventListener("click", function()
             if err then go.textContent = err; return end
             local data = res:json()
             if not res.ok then go.textContent = data.error or "Log In"; return end
-            location.assign("/panel?t=" .. data.token)
+            location.assign("/panel")
         end)
 end)
 """
@@ -1203,7 +1203,7 @@ def _hub_column(title: str, rows: str, key: str) -> str:
 HUB_ROWS = 5
 
 
-def home_page(username: str, token: str, domains: list[dict],
+def home_page(username: str, domains: list[dict],
              series: list[int], labels: list[str],
              recent: list[dict] = ()) -> str:
     listed = domains[:HUB_ROWS]
@@ -1217,7 +1217,7 @@ def home_page(username: str, token: str, domains: list[dict],
           <img class="lchev" src="{icon_src('chevron-right', '#6f6f7c')}">
         </div>
         <div class="hair"></div>""")
-        target = f"/domain/{d['name']}?t={token}"
+        target = f"/domain/{d['name']}"
         script.append(f'link("row-{i}", {lua_str(target)})')
 
     if not listed:
@@ -1241,7 +1241,7 @@ def home_page(username: str, token: str, domains: list[dict],
           <img class="lchev" src="{icon_src('chevron-right', '#6f6f7c')}">
         </div>
         <div class="hair"></div>""")
-        script.append(f'link("rrow-{i}", {lua_str(r["path"] + "?t=" + token)})')
+        script.append(f'link("rrow-{i}", {lua_str(r["path"])})')
     if not rec_rows:
         rec_rows.append('        <p class="empty">Places you visit will show up '
                         'here.</p>')
@@ -1252,7 +1252,7 @@ def home_page(username: str, token: str, domains: list[dict],
         _hub_column("Recent", "".join(rec_rows), "rec"),
     ]
     for key, path in (("dom", "/domains"), ("ana", "/analytics")):
-        script.append(f'link("head-{key}", {lua_str(path + "?t=" + token)})')
+        script.append(f'link("head-{key}", {lua_str(path)})')
 
     content = f"""
     <div class="hub">
@@ -1277,13 +1277,13 @@ def home_page(username: str, token: str, domains: list[dict],
       </div>
     </div>"""
 
-    body, shell_script = shell("home", token, domains, content, art=True)
-    hdrop_markup, hdrop_script = _search_widget("h", "sfld", token, domains)
+    body, shell_script = shell("home", domains, content, art=True)
+    hdrop_markup, hdrop_script = _search_widget("h", "sfld", domains)
     script.append(f"""
 document.getElementById("i-search"):addEventListener("click", function()
     local q = document.getElementById("sfld").value
     if q ~= "" then
-        location.assign({lua_str(f"/search?t={token}&q=")} .. urlenc(q))
+        location.assign({lua_str("/search?q=")} .. urlenc(q))
     end
 end)""")
     # Retries until #vpmeter reports a width (unsized on the first frame),
@@ -1311,7 +1311,7 @@ heroPosition()""")
                 "\n" + hdrop_script)
 
 
-def panel_page(username: str, token: str, domains: list[dict],
+def panel_page(username: str, domains: list[dict],
                counts: dict[str, int], certs: dict[str, bool] | None = None,
                queries: dict[str, int] | None = None,
                series: dict[str, list[int]] | None = None) -> str:
@@ -1334,7 +1334,7 @@ def panel_page(username: str, token: str, domains: list[dict],
         rows.append(f"""
 <div class="drow" id="drow-{i}">
   <img class="dico" src="{icon_src('globe', '#8b8b96')}">
-  <a class="dname" href="/domain/{esc(name)}?t={esc(token)}">{esc(name)}</a>
+  <a class="dname" href="/domain/{esc(name)}">{esc(name)}</a>
   <canvas class="dspark" id="dchart-{i}"></canvas>
   <img class="dcert" src="{cert_icon}">
   <button class="btn-del" id="drop-{esc(name)}">Delete</button>
@@ -1384,11 +1384,10 @@ def panel_page(username: str, token: str, domains: list[dict],
     <p class="msg" id="msg"></p>
 
     </div>"""
-    body, shell_script = shell("domains", token, domains, content, art=True)
+    body, shell_script = shell("domains", domains, content, art=True)
 
     drops = "\n".join(f'bind({lua_str(d["name"])})' for d in domains)
     script = shell_script + "\n" + CHARTS + "\n" + "\n".join(icon_script) + f"""
-local token = {lua_str(token)}
 local msg = document.getElementById("msg")
 
 local function say(text, color)
@@ -1400,11 +1399,11 @@ local function bind(name)
     document.getElementById("drop-" .. name):addEventListener("click", function()
         say("Deleting " .. name .. "...")
         fetch("/api/domain/delete", {{ method = "POST",
-            json = {{ token = token, domain = name }} }}, function(err, res)
+            json = {{ domain = name }} }}, function(err, res)
             if err then return say(err, starPalette().danger) end
             local data = res:json()
             if not res.ok then return say(data.error or "Failed.", starPalette().danger) end
-            location.assign("/domains?t=" .. token)
+            location.assign("/domains")
         end)
     end)
 end
@@ -1416,11 +1415,11 @@ document.getElementById("add"):addEventListener("click", function()
     if name == "" then return say("Enter a name.", starPalette().danger) end
     say("Registering...")
     fetch("/api/domain/add", {{ method = "POST",
-        json = {{ token = token, domain = name }} }}, function(err, res)
+        json = {{ domain = name }} }}, function(err, res)
         if err then return say(err, starPalette().danger) end
         local data = res:json()
         if not res.ok then return say(data.error or "Failed.", starPalette().danger) end
-        location.assign("/domains?t=" .. token)
+        location.assign("/domains")
     end)
 end)
 """
@@ -1437,7 +1436,7 @@ def axis(labels: list[str], rng: str, cls: str = "trendlabs") -> str:
       </div>"""
 
 
-def analytics_page(token: str, domains: list[dict], series: list[int],
+def analytics_page(domains: list[dict], series: list[int],
                    labels: list[str], per_domain: list[dict],
                    rng: str = analytics.DEFAULT_RANGE) -> str:
     """per_domain is one dict per domain: {"name", "series", "total"}, all over
@@ -1452,7 +1451,7 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
       and something has looked it up. Register one from the Domains tab.</p>
     </div>
     </div>"""
-        body, script = shell("analytics", token, domains, content, art=True)
+        body, script = shell("analytics", domains, content, art=True)
         return page(f"{BRAND} - analytics", body, script)
 
     _, short, window, _, buckets, unit = analytics.spec(rng)
@@ -1461,7 +1460,7 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
     busiest = max(per_domain, key=lambda d: d["total"])
     busiest_name = _fit(busiest["name"], 13) if busiest["total"] > 0 else "-"
 
-    picker, script = range_pills(rng, "/analytics", token)
+    picker, script = range_pills(rng, "/analytics")
     rows = []
     for i, d in enumerate(per_domain, 1):
         rows.append(f"""
@@ -1474,7 +1473,7 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
         if i < len(per_domain):
             rows.append('    <div class="hair"></div>')
         script.append(f'chartLine("chart-dom-{i}", {lua_arr(d["series"])})')
-        target = f"/analytics/{d['name']}?t={token}&r={rng}"
+        target = f"/analytics/{d['name']}?r={rng}"
         script.append(f'link("spk-{i}", {lua_str(target)})')
 
     content = f"""
@@ -1504,17 +1503,17 @@ def analytics_page(token: str, domains: list[dict], series: list[int],
     </div>
     </div>"""
 
-    body, shell_script = shell("analytics", token, domains, content, art=True)
+    body, shell_script = shell("analytics", domains, content, art=True)
     script.insert(0, f'chartLine("chart-all", {lua_arr(series)})')
     return page(f"{BRAND} - analytics", body,
                 shell_script + "\n" + CHARTS + "\n" + "\n".join(script))
 
 
-def domain_analytics_page(token: str, domain: str, domains: list[dict], series: list[int],
+def domain_analytics_page(domain: str, domains: list[dict], series: list[int],
                           labels: list[str], rng: str, all_time: int) -> str:
     """One domain's own analytics over the selected window."""
     _, _, window, _, buckets, unit = analytics.spec(rng)
-    picker, script = range_pills(rng, f"/analytics/{domain}", token)
+    picker, script = range_pills(rng, f"/analytics/{domain}")
 
     total = sum(series)
     avg = round(total / buckets)
@@ -1570,10 +1569,10 @@ def domain_analytics_page(token: str, domain: str, domains: list[dict], series: 
     </div>
     </div>"""
 
-    body, shell_script = shell("analytics", token, domains, content, art=True)
+    body, shell_script = shell("analytics", domains, content, art=True)
     script += [
-        f'link("back-ana", {lua_str(f"/analytics?t={token}&r={rng}")})',
-        f'link("manage", {lua_str(f"/domain/{domain}?t={token}")})',
+        f'link("back-ana", {lua_str(f"/analytics?r={rng}")})',
+        f'link("manage", {lua_str(f"/domain/{domain}")})',
         f'chartLine("chart-dom", {lua_arr(series)})',
         f'chartBars("chart-days", {lua_arr(series)}, {lua_strs(labels)})',
     ]
@@ -1613,7 +1612,7 @@ def _record_rows(records: list[dict]) -> str:
     return head + "".join(rows)
 
 
-def domain_page(token: str, domain: str, domains: list[dict], records: list[dict],
+def domain_page(domain: str, domains: list[dict], records: list[dict],
                 cert: dict | None, ca_note: str | None) -> str:
     if ca_note:
         cert_body = f'<p class="bad">Certificates are unavailable: {esc(ca_note)}.</p>'
@@ -1628,8 +1627,8 @@ def domain_page(token: str, domain: str, domains: list[dict], records: list[dict
 <div class="kv"><p class="k">Names</p><p class="v">{esc(cert['sans'])}</p></div>
 <div class="kv"><p class="k">Expires</p><p class="v">{esc(cert['not_after'])}</p></div>
 <div class="certlinks">
-  <a href="/cert/{esc(domain)}/cert?t={esc(token)}">Download certificate</a>
-  <a href="/cert/{esc(domain)}/key?t={esc(token)}">Download private key</a>
+  <a href="/cert/{esc(domain)}/cert">Download certificate</a>
+  <a href="/cert/{esc(domain)}/key">Download private key</a>
 </div>
 <button class="btn" id="issue">Re-issue</button>"""
     else:
@@ -1693,14 +1692,13 @@ client on the network.</p>
     <p class="msg" id="msg"></p>
 
     </div>"""
-    body, shell_script = shell("domains", token, domains, content, art=True)
+    body, shell_script = shell("domains", domains, content, art=True)
 
     binds = "\n".join(f'bind({lua_str(str(r["_id"]))})' for r in records)
-    back_target = f"/domains?t={token}"
+    back_target = "/domains"
     script = shell_script + f"""
 link("back-all", {lua_str(back_target)})
 
-local token = {lua_str(token)}
 local domain = {lua_str(domain)}
 local msg = document.getElementById("msg")
 
@@ -1710,7 +1708,7 @@ local function say(text, color)
 end
 
 local function reload()
-    location.assign("/domain/" .. domain .. "?t=" .. token)
+    location.assign("/domain/" .. domain)
 end
 
 local function post(path, payload, done)
@@ -1726,7 +1724,7 @@ local function bind(id)
     document.getElementById("rm-" .. id):addEventListener("click", function()
         say("Deleting...")
         post("/api/record/delete",
-            {{ token = token, domain = domain, id = id }}, reload)
+            {{ domain = domain, id = id }}, reload)
     end)
 end
 
@@ -1735,7 +1733,7 @@ end
 document.getElementById("addrec"):addEventListener("click", function()
     say("Adding...")
     post("/api/record/add", {{
-        token = token, domain = domain,
+        domain = domain,
         name = document.getElementById("rname").value,
         type = document.getElementById("rtype").value,
         value = document.getElementById("rvalue").value,
@@ -1747,14 +1745,14 @@ local issue = document.getElementById("issue")
 if issue then
     issue:addEventListener("click", function()
         say("Signing... this takes a moment.")
-        post("/api/cert/issue", {{ token = token, domain = domain }}, reload)
+        post("/api/cert/issue", {{ domain = domain }}, reload)
     end)
 end
 """
     return page(f"{BRAND} - {domain}", body, script)
 
 
-def _search_rows(items: list[tuple[str, str, str]], token: str, prefix: str) -> tuple[str, list[str]]:
+def _search_rows(items: list[tuple[str, str, str]], prefix: str) -> tuple[str, list[str]]:
     """items: (label, icon, path). Same lrow/hair idiom as the account home
     columns, since these are the same thing: a navigable, icon-led list."""
     rows, script = [], []
@@ -1768,11 +1766,11 @@ def _search_rows(items: list[tuple[str, str, str]], token: str, prefix: str) -> 
 </div>""")
         if i < len(items):
             rows.append('<div class="hair"></div>')
-        script.append(f'link("{rid}", {lua_str(f"{path}?t={token}")})')
+        script.append(f'link("{rid}", {lua_str(path)})')
     return "".join(rows), script
 
 
-def search_page(token: str, domains: list[dict], q: str) -> str:
+def search_page(domains: list[dict], q: str) -> str:
     """Quick search results: pages, domains and per-domain analytics, the same
     three things the sidebar tabs reach. There is no live-as-you-type result
     list here (see the click handlers in shell()/home_page() for why), so this
@@ -1793,7 +1791,7 @@ def search_page(token: str, domains: list[dict], q: str) -> str:
                                  ("ANALYTICS", analytics_items, "sa")):
         if not items:
             continue
-        rows, rscript = _search_rows(items, token, prefix)
+        rows, rscript = _search_rows(items, prefix)
         script += rscript
         sections.append(f'<h3>{title}</h3>\n<div class="card">{rows}</div>')
 
@@ -1811,13 +1809,13 @@ def search_page(token: str, domains: list[dict], q: str) -> str:
     {''.join(sections)}
     </div>"""
 
-    body, shell_script = shell("", token, domains, content, art=True)
+    body, shell_script = shell("", domains, content, art=True)
     return page(f"{BRAND} - search", body, shell_script + "\n" + "\n".join(script))
 
 
-def error_page(message: str, token: str | None = None) -> str:
-    back = (f'<a href="/panel?t={esc(token)}">&lt; Back to your domains</a>'
-            if token else '<a href="/">&lt; Sign in</a>')
+def error_page(message: str, signed_in: bool = True) -> str:
+    back = ('<a href="/panel">&lt; Back to your domains</a>' if signed_in
+            else '<a href="/">&lt; Sign in</a>')
     body = band(tagline="Something went wrong") + f"""
 <div class="wrap">
 <div class="card-warn">

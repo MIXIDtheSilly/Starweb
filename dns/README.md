@@ -133,9 +133,13 @@ starweb post moon://localhost:8091/api/login \
   --json '{"username": "you", "password": "…"}'
 ```
 
+Browsers are authenticated by the `sid` cookie the sign-in routes set. Script
+clients have no cookie jar, so every route below also accepts the session in a
+`token` body field; the cookie wins when both are present.
+
 | Route | Body |
 |-------|------|
-| `POST /api/register`, `/api/login` | `username`, `password` → `token` |
+| `POST /api/register`, `/api/login` | `username`, `password` → `token`, and sets `sid` |
 | `POST /api/logout` | `token` |
 | `POST /api/domains` | `token` |
 | `POST /api/domain/add`, `/api/domain/delete` | `token`, `domain` |
@@ -143,7 +147,7 @@ starweb post moon://localhost:8091/api/login \
 | `POST /api/record/add` | `token`, `domain`, `name`, `type`, `value`, `ttl` |
 | `POST /api/record/delete` | `token`, `domain`, `id` |
 | `POST /api/cert/issue` | `token`, `domain` |
-| `GET /cert/<domain>/cert\|key?t=` | PEM download |
+| `GET /cert/<domain>/cert\|key` | PEM download |
 
 Errors come back as `{"error": "..."}` with a real status code.
 
@@ -173,12 +177,14 @@ offering a button that cannot work.
 
 ## Notes on the design
 
-**The session token is in the URL.** The renderer has no cookies and no local
-storage, and `display:none` is not honoured, so the panel cannot be one page
-with hidden views holding a token in memory across actions; it is server-
-rendered pages, and the token rides in `?t=`. That means it lands in history and
-in the omnibox. Fine for a private network, wrong for a public one; cookies in
-STWP would be the fix.
+**The session is a cookie.** `display:none` is not honoured and there is no DOM
+construction API, so the panel cannot be one page with hidden views holding a
+token in memory across actions; it is server-rendered pages, which means the
+server has to recognise the caller on a plain navigation. The token used to ride
+in `?t=` for want of anything better, where it landed in history and in the
+omnibox. STWP gained cookies instead, so the token is now an origin-scoped,
+StwpOnly `sid` that no URL and no page script ever sees. Panel URLs carry only
+what they are about.
 
 **Passwords** are scrypt (n=2^14, r=8, p=1) with a 16-byte salt. A login for an
 unknown user still pays the hash so the miss cannot be timed. Session tokens are
