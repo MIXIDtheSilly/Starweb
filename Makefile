@@ -62,7 +62,10 @@ else
     GL_LIBS = -lGL
 endif
 
-TARGETS = stwp_server stwp_client stwp_browser
+TARGETS = stwp_server stwp_client stwp_browser stwp_proxy
+
+PROXY_SRCS = $(wildcard src/proxy/*.cpp)
+PROXY_HDRS = $(wildcard src/proxy/*.hpp)
 
 all: $(TARGETS)
 
@@ -88,13 +91,16 @@ stwp_server: src/server/server.cpp src/common/tls.cpp $(COMMON_HDRS)
 stwp_client: src/client/client.cpp src/common/tls.cpp $(COMMON_HDRS)
 	$(CXX) $(CXXFLAGS) $(SSL_CFLAGS) src/client/client.cpp src/common/tls.cpp $(SSL_LIBS) -o stwp_client
 
+stwp_proxy: $(PROXY_SRCS) src/common/tls.cpp $(COMMON_HDRS) $(PROXY_HDRS)
+	$(CXX) $(CXXFLAGS) $(SSL_CFLAGS) $(PROXY_SRCS) src/common/tls.cpp $(SSL_LIBS) -o stwp_proxy
+
 stwp_browser: src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/conn_pool.cpp src/browser/media_source.cpp src/browser/renderer.cpp src/browser/icons.cpp src/browser/layout.cpp src/browser/zoom.cpp src/browser/devtools.cpp src/browser/script.cpp src/browser/script_fetch.cpp src/browser/storage.cpp src/browser/cookies.cpp src/browser/history.cpp src/browser/theme.cpp src/common/tls.cpp $(MEDIA_SRCS) $(IMGUI_OBJS) $(YOGA_OBJS) $(LUA_OBJS) $(COMMON_HDRS) $(BROWSER_HDRS)
 	$(CXX) $(CXXFLAGS) $(MEDIA_FLAGS) $(MEDIA_CFLAGS) $(GLFW_CFLAGS) $(SSL_CFLAGS) $(IMGUI_INC) $(YOGA_INC) $(LUA_INC) \
 		src/browser/browser.cpp src/browser/globals.cpp src/browser/parser.cpp src/browser/fetcher.cpp src/browser/conn_pool.cpp src/browser/media_source.cpp src/browser/renderer.cpp src/browser/icons.cpp src/browser/layout.cpp src/browser/zoom.cpp src/browser/devtools.cpp src/browser/script.cpp src/browser/script_fetch.cpp src/browser/storage.cpp src/browser/cookies.cpp src/browser/history.cpp src/browser/theme.cpp src/common/tls.cpp $(MEDIA_SRCS) $(IMGUI_OBJS) $(YOGA_OBJS) $(LUA_OBJS) \
 		$(GLFW_LIBS) $(GL_LIBS) $(MEDIA_LIBS) $(SSL_LIBS) -o stwp_browser
 
 clean:
-	rm -f stwp_server stwp_client stwp_browser
+	rm -f stwp_server stwp_client stwp_browser stwp_proxy
 	rm -rf $(OBJ_DIR)
 
 .PHONY: all clean

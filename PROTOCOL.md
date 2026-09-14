@@ -242,6 +242,36 @@ get wrong.
 Limits: 4096 bytes per value, 256 per name, 64 cookies per origin. A cookie past
 any of those is dropped rather than truncated.
 
+## Reverse proxies
+
+`stwp_proxy` (see `PROXY.md`) is a separate hop at the connection level. It
+negotiates keep-alive, TLS and `Connection` with each side independently. It also
+writes each message out again from the headers it parsed, so a request whose length
+it cannot be sure of (a `Content-Length` that is not a number, or two that disagree)
+is rejected with 400 instead of being passed on.
+
+It adds three request headers:
+
+| Header | Value |
+|--------|-------|
+| `Star-Forwarded-For` | client address, appended to any existing value with `, ` (a header cannot repeat) |
+| `Star-Forwarded-Proto` | `moon` or `star`, the scheme the client used |
+| `Star-Forwarded-Host` | the `Host` the client sent |
+
+Only the rightmost `Star-Forwarded-For` entry was written by the nearest proxy;
+anything to its left came from the client.
+
+Cookies need no rewriting. They are scoped to the origin, and the origin the browser
+sees is the proxy's.
+
+On `star://`, the TLS server name and `Host` must select the same site. A client that
+handshakes for `a.web` and then asks for `b.web` on that connection gets **`421
+Misdirected Request`**, and the connection closes. A certificate for one site
+therefore cannot be used to reach another site behind the same proxy.
+
+The proxy only forwards to `moon://` and `star://`, so the isolation rules above hold
+through it.
+
 ## Security policy
 
 Two rules apply to `star://` pages, both enforced in the browser:

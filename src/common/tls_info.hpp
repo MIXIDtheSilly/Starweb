@@ -15,4 +15,5 @@ struct TlsInfo {
     long verify_result = 0;     // X509_V_OK on success
     bool verified = false;
     bool resumed = false;       // handshake resumed a cached session
+    std::string sni;
 };

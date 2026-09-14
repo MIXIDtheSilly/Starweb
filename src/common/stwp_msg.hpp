@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <sstream>
@@ -199,5 +200,61 @@ inline bool parse_response(const std::string& raw_data, size_t& bytes_consumed, 
 
     res.body = raw_data.substr(header_end + header_len, content_length);
     bytes_consumed = total_required_len;
+    return true;
+}
+
+inline size_t find_header_end(std::string_view data, size_t& sep_len) {
+    auto crlf = data.find("\r\n\r\n");
+    auto lf = data.find("\n\n");
+    if (lf != std::string_view::npos && (crlf == std::string_view::npos || lf < crlf)) {
+        sep_len = 2;
+        return lf;
+    }
+    sep_len = 4;
+    return crlf;
+}
+
+// Stricter than parse_request: a header line without a colon, or two differing
+// Content-Length headers, rejects the whole head.
+inline bool parse_request_headers(std::string_view head, StwpRequest& req) {
+    std::vector<std::string_view> lines;
+    for (size_t start = 0;;) {
+        auto pos = head.find('\n', start);
+        lines.push_back(head.substr(start, pos == std::string_view::npos ? pos : pos - start));
+        if (pos == std::string_view::npos) break;
+        start = pos + 1;
+    }
+
+    std::string line = trim(lines[0]);
+    auto sp1 = line.find(' ');
+    if (sp1 == std::string::npos) return false;
+    auto sp2 = line.find(' ', sp1 + 1);
+    if (sp2 == std::string::npos) return false;
+    req.method = line.substr(0, sp1);
+    req.path = line.substr(sp1 + 1, sp2 - sp1 - 1);
+    req.version = line.substr(sp2 + 1);
+    if (req.method.empty() || req.path.empty()) return false;
+
+    for (size_t i = 1; i < lines.size(); ++i) {
+        if (trim(lines[i]).empty()) continue;
+        auto [name, value] = parse_header_line(lines[i]);
+        if (name.empty()) return false;
+        if (name == "content-length") {
+            auto it = req.headers.find(name);
+            if (it != req.headers.end() && it->second != value) return false;
+        }
+        req.headers[name] = value;
+    }
+    return true;
+}
+
+inline bool parse_content_length(std::string_view v, uint64_t& out) {
+    if (v.empty() || v.size() > 18) return false;
+    uint64_t n = 0;
+    for (char c : v) {
+        if (c < '0' || c > '9') return false;
+        n = n * 10 + (uint64_t)(c - '0');
+    }
+    out = n;
     return true;
 }

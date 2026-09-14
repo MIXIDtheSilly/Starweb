@@ -17,6 +17,8 @@ struct Conn {
 
     virtual const TlsInfo* tls_info() const { return nullptr; }  // null if plaintext
 
+    virtual void shutdown_write() { net::shutdown_write(fd()); }
+
     virtual void close() = 0;
 };
 

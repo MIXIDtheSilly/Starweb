@@ -1,10 +1,6 @@
 #include <iostream>
 #include <string>
 #include <thread>
-#include <vector>
-#include <fstream>
-#include <sstream>
-#include <filesystem>
 #include <cstring>
 #include <cstdint>
 #include <csignal>
@@ -14,89 +10,11 @@
 #include "../common/conn.hpp"
 #include "../common/tls.hpp"
 #include "../common/stwp_msg.hpp"
-
-std::string sanitize_path(std::string path) {
-    // Prevent directory traversal
-    if (path.find("..") != std::string::npos) {
-        return "";
-    }
-    // Strip query parameters and fragment identifiers
-    auto query_pos = path.find('?');
-    if (query_pos != std::string::npos) {
-        path = path.substr(0, query_pos);
-    }
-    auto hash_pos = path.find('#');
-    if (hash_pos != std::string::npos) {
-        path = path.substr(0, hash_pos);
-    }
-    // Default to /index.html if path is root
-    if (path == "/" || path.empty()) {
-        path = "/index.html";
-    }
-    return path;
-}
-
-std::string get_content_type(const std::string& path) {
-    auto dot = path.find_last_of('.');
-    if (dot == std::string::npos) return "application/octet-stream";
-    std::string ext = path.substr(dot);
-    
-    // Standard and custom mime types
-    if (ext == ".html" || ext == ".htm") return "text/html";
-    if (ext == ".css") return "text/css";
-    if (ext == ".lua") return "application/x-lua";
-    if (ext == ".png") return "image/png";
-    if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
-    if (ext == ".gif") return "image/gif";
-    if (ext == ".txt") return "text/plain";
-    if (ext == ".mov" || ext == ".mp4") return "video/mp4";
-    if (ext == ".mp3") return "audio/mpeg";
-    return "application/octet-stream";
-}
-
-// Parses a single `bytes=a-b` range against a known file size. Multi-range is not
-// supported; returning false here means the caller answers 416, not a full 200.
-// Also handles the suffix form `bytes=-N`, which media players use to read a
-// trailing moov atom.
-bool parse_byte_range(const std::string& header, uintmax_t file_size,
-                      uintmax_t& start, uintmax_t& end) {
-    if (file_size == 0) return false;
-
-    const std::string prefix = "bytes=";
-    if (header.rfind(prefix, 0) != 0) return false;
-    std::string spec = trim(header.substr(prefix.size()));
-    if (spec.find(',') != std::string::npos) return false;
-
-    auto dash = spec.find('-');
-    if (dash == std::string::npos) return false;
-    std::string first = trim(spec.substr(0, dash));
-    std::string last = trim(spec.substr(dash + 1));
-    if (first.empty() && last.empty()) return false;
-
-    try {
-        if (first.empty()) {
-            uintmax_t n = std::stoull(last);
-            if (n == 0) return false;
-            start = n >= file_size ? 0 : file_size - n;
-            end = file_size - 1;
-        } else {
-            start = std::stoull(first);
-            end = last.empty() ? file_size - 1 : std::stoull(last);
-        }
-    } catch (...) {
-        return false;
-    }
-
-    if (end >= file_size) end = file_size - 1;
-    return start <= end && start < file_size;
-}
+#include "../common/static_files.hpp"
 
 // Longer than the browser's pool timeout, so the client gives up first.
 constexpr int kIdleTimeoutSecs = 20;
 constexpr int kRequestTimeoutSecs = 5;
-
-// Bodies at or under this go out with the headers; larger ones stream from disk.
-constexpr uintmax_t kInlineBodyMax = 64u * 1024u;
 
 // `buffer` carries bytes read past the end of the previous request.
 bool handle_one(Conn& conn, std::string& buffer, const char* transport, int served) {
@@ -132,15 +50,8 @@ bool handle_one(Conn& conn, std::string& buffer, const char* transport, int serv
     if (!request_parsed) {
         // An idle connection closing is how keep-alive ends, not a client error.
         if (!anything_read && buffer.empty()) return false;
-        StwpResponse res;
-        res.status_code = 400;
-        res.status_text = "Bad Request";
-        res.body = "Failed to parse STWP request.";
-        res.headers["Content-Length"] = std::to_string(res.body.size());
-        res.headers["Content-Type"] = "text/plain";
-        res.headers["Connection"] = "close";
-        std::string res_str = res.serialize();
-        write_all(conn, res_str.data(), res_str.size());
+        static_files::send_text(conn, StwpResponse{}, 400, "Bad Request",
+                                "Failed to parse STWP request.", false);
         return false;
     }
 
@@ -161,160 +72,23 @@ bool handle_one(Conn& conn, std::string& buffer, const char* transport, int serv
     StwpResponse res;
     res.headers["Server"] = "StarWeb/1.0";
 
-    // File bodies are sent straight from disk after the headers rather than being
-    // copied into res.body: building a 350 MB response in memory cost ~3x the file
-    // once serialize() had made its own copy.
-    std::ifstream file;
-    bool stream_body = false;
-    uintmax_t body_offset = 0, body_length = 0;
-
     // An HTTP/1.1 request line parses fine here, so without this an HTTP client
     // would be served content.
     if (req.version != "STWP/1.0") {
-        res.status_code = 505;
-        res.status_text = "Version Not Supported";
-        res.body = "This server speaks STWP/1.0 only.";
-        res.headers["Content-Length"] = std::to_string(res.body.size());
-        res.headers["Content-Type"] = "text/plain";
-        keep_alive = false;
-            } else if (req.method != "GET") {
-        res.status_code = 405;
-        res.status_text = "Method Not Allowed";
-        res.body = "Only GET method is supported.";
-        res.headers["Content-Length"] = std::to_string(res.body.size());
-        res.headers["Content-Type"] = "text/plain";
-    } else {
-        std::string safe_path = sanitize_path(req.path);
-        if (safe_path.empty()) {
-            res.status_code = 403;
-            res.status_text = "Forbidden";
-            res.body = "Access Denied.";
-            res.headers["Content-Length"] = std::to_string(res.body.size());
-            res.headers["Content-Type"] = "text/plain";
-        } else {
-            std::string file_path = "www" + safe_path;
-            file.open(file_path, std::ios::binary);
-            if (!file) {
-                res.status_code = 404;
-                res.status_text = "Not Found";
-                res.body = "File not found: " + safe_path;
-                res.headers["Content-Length"] = std::to_string(res.body.size());
-                res.headers["Content-Type"] = "text/plain";
-            } else {
-                file.seekg(0, std::ios::end);
-                uintmax_t file_size = (uintmax_t)file.tellg();
-
-                res.headers["Accept-Ranges"] = "bytes";
-                res.headers["Content-Type"] = get_content_type(safe_path);
-
-                auto range_it = req.headers.find("range");
-                uintmax_t start = 0, end = 0;
-                bool ranged = range_it != req.headers.end() &&
-                              parse_byte_range(range_it->second, file_size, start, end);
-
-                if (ranged) {
-                    res.status_code = 206;
-                    res.status_text = "Partial Content";
-                    res.headers["Content-Range"] =
-                        "bytes " + std::to_string(start) + "-" + std::to_string(end) +
-                        "/" + std::to_string(file_size);
-                    res.headers["Content-Length"] = std::to_string(end - start + 1);
-                    body_offset = start;
-                    body_length = end - start + 1;
-                    stream_body = true;
-                } else if (range_it != req.headers.end()) {
-                    res.status_code = 416;
-                    res.status_text = "Range Not Satisfiable";
-                    res.headers["Content-Range"] = "bytes */" + std::to_string(file_size);
-                    res.headers["Content-Type"] = "text/plain";
-                    res.body.clear();
-                    res.headers["Content-Length"] = "0";
-                } else {
-                    res.status_code = 200;
-                    res.status_text = "OK";
-                    res.headers["Content-Length"] = std::to_string(file_size);
-                    body_offset = 0;
-                    body_length = file_size;
-                    stream_body = true;
-                }
-            }
-        }
+        return static_files::send_text(conn, res, 505, "Version Not Supported",
+                                       "This server speaks STWP/1.0 only.", false).keep_alive;
     }
-
-    if (stream_body && body_length <= kInlineBodyMax) {
-        res.body.resize((size_t)body_length);
-        file.seekg((std::streamoff)body_offset);
-        file.read(res.body.data(), (std::streamsize)body_length);
-        if ((uintmax_t)file.gcount() != body_length) return false;  // truncated under us
-        stream_body = false;
+    if (req.method != "GET") {
+        return static_files::send_text(conn, res, 405, "Method Not Allowed",
+                                       "Only GET method is supported.", keep_alive).keep_alive;
     }
-
-    res.headers["Connection"] = keep_alive ? "keep-alive" : "close";
-
-    // res.body is empty on the streaming path, so this serializes to just the head.
-    std::string res_str = res.serialize();
-    if (!write_all(conn, res_str.data(), res_str.size())) return false;
-    if (!stream_body) return keep_alive;
-
-    file.seekg((std::streamoff)body_offset);
-    std::vector<char> buf(64 * 1024);
-    uintmax_t remaining = body_length;
-    while (remaining > 0) {
-        std::streamsize take = (std::streamsize)std::min<uintmax_t>(buf.size(), remaining);
-        file.read(buf.data(), take);
-        std::streamsize got = file.gcount();
-        if (got <= 0) break;
-        if (!write_all(conn, buf.data(), (size_t)got)) return false;  // peer went away
-        remaining -= (uintmax_t)got;
-    }
-    return keep_alive && remaining == 0;  // a short read must close
+    return static_files::send_file(conn, "www", req.path, req, res, keep_alive).keep_alive;
 }
 
 void handle_client(std::unique_ptr<Conn> conn, const char* transport) {
     std::string buffer;
     for (int served = 0; handle_one(*conn, buffer, transport, served); ++served) {
     }
-}
-
-// An IPv6 socket with V6ONLY off also serves IPv4 peers as v4-mapped addresses.
-// Falls back to IPv4 where that is refused or IPv6 is unavailable.
-net::socket_t make_listener(int port) {
-    net::socket_t fd = socket(AF_INET6, SOCK_STREAM, 0);
-    if (net::is_valid(fd)) {
-        net::enable_reuseaddr(fd);
-        int v6only = 0;
-        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&v6only, sizeof(v6only));
-
-        sockaddr_in6 address6{};
-        address6.sin6_family = AF_INET6;
-        address6.sin6_addr = in6addr_any;
-        address6.sin6_port = htons(port);
-
-        if (bind(fd, (struct sockaddr*)&address6, sizeof(address6)) == 0 &&
-            listen(fd, 10) == 0) {
-            return fd;
-                }
-        net::close(fd);
-        }
-
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (!net::is_valid(fd)) return net::kInvalidSocket;
-    net::enable_reuseaddr(fd);
-
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(port);
-
-    if (bind(fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
-        net::close(fd);
-        return net::kInvalidSocket;
-    }
-    if (listen(fd, 10) < 0) {
-        net::close(fd);
-        return net::kInvalidSocket;
-    }
-    return fd;
 }
 
 // The handshake runs here, in the worker thread, so a slow client can't stall
@@ -394,7 +168,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    net::socket_t plain_listener = make_listener(port);
+    net::socket_t plain_listener = net::listen_tcp(port);
     if (!net::is_valid(plain_listener)) {
         std::cerr << "Failed to listen on port " << port << "." << std::endl;
         return 1;
@@ -403,7 +177,7 @@ int main(int argc, char* argv[]) {
 
     std::thread tls_thread;
     if (tls_ctx) {
-        net::socket_t tls_listener = make_listener(tls_port);
+        net::socket_t tls_listener = net::listen_tcp(tls_port);
         if (!net::is_valid(tls_listener)) {
             std::cerr << "Failed to listen on TLS port " << tls_port << "." << std::endl;
         } else {

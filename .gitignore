@@ -2,6 +2,7 @@
 stwp_server
 stwp_client
 stwp_browser
+stwp_proxy
 
 # Objects and Archives
 obj/

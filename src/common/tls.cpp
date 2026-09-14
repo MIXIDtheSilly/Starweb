@@ -153,6 +153,19 @@ std::unique_ptr<TlsContext> TlsContext::make_client(const std::string& ca_path,
     return std::unique_ptr<TlsContext>(new TlsContext(ctx));
 }
 
+void TlsContext::set_sni_selector(std::function<TlsContext*(const std::string&)> selector) {
+    sni_selector_ = std::move(selector);
+    static int (*const callback)(SSL*, int*, void*) = [](SSL* ssl, int*, void* arg) -> int {
+        auto* self = static_cast<TlsContext*>(arg);
+        const char* name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+        TlsContext* chosen = self->sni_selector_(name ? name : "");
+        if (chosen && chosen->ctx_ != SSL_get_SSL_CTX(ssl)) SSL_set_SSL_CTX(ssl, chosen->ctx_);
+        return SSL_TLSEXT_ERR_OK;
+    };
+    SSL_CTX_set_tlsext_servername_arg(ctx_, this);
+    SSL_CTX_set_tlsext_servername_callback(ctx_, callback);
+}
+
 TlsContext::~TlsContext() {
     if (ctx_) SSL_CTX_free(ctx_);
 }
@@ -229,6 +242,7 @@ void TlsConn::capture_info() {
     if (proto && plen) info_.alpn.assign((const char*)proto, plen);
 
     info_.resumed = (SSL_session_reused(ssl_) == 1);
+    if (const char* sni = SSL_get_servername(ssl_, TLSEXT_NAMETYPE_host_name)) info_.sni = sni;
     info_.verify_result = SSL_get_verify_result(ssl_);
     X509* cert = SSL_get1_peer_certificate(ssl_);
     if (cert) {
@@ -263,6 +277,15 @@ net::ssize_t_ TlsConn::write(const void* buf, size_t len) {
     return -1;
 }
 
+// close_notify first: OpenSSL 3 peers treat a bare FIN as a truncation error.
+void TlsConn::shutdown_write() {
+    if (ssl_ && !shutdown_sent_) {
+        SSL_shutdown(ssl_);
+        shutdown_sent_ = true;
+    }
+    net::shutdown_write(fd_);
+}
+
 void TlsConn::close() {
     if (ssl_) {
         // TLS 1.3 sends tickets after the handshake, so collecting the session
@@ -276,7 +299,7 @@ void TlsConn::close() {
                 }
             }
         }
-        SSL_shutdown(ssl_);
+        if (!shutdown_sent_) SSL_shutdown(ssl_);
         SSL_free(ssl_);
         ssl_ = nullptr;
     }

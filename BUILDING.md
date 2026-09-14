@@ -1,7 +1,8 @@
 # Building StarWeb
 
-The project builds on **macOS, Linux, and Windows**. There are three binaries:
-`stwp_server`, `stwp_client`, and `stwp_browser`.
+The project builds on **macOS, Linux, and Windows**. There are four binaries:
+`stwp_server`, `stwp_client`, `stwp_browser`, and `stwp_proxy` (a reverse
+proxy, see `PROXY.md`).
 
 The media player in the browser uses a platform-specific backend, selected
 automatically by the build system:
@@ -36,7 +37,8 @@ make            # or: cmake -S . -B build && cmake --build build
 automatically at `/usr/local/opt/openssl@3` (Intel) or `/opt/homebrew/opt/openssl@3`
 (Apple Silicon), so no `PKG_CONFIG_PATH` export is needed.
 
-Binaries land in the project root (`stwp_server`, `stwp_client`, `stwp_browser`).
+Binaries land in the project root (`stwp_server`, `stwp_client`, `stwp_browser`,
+`stwp_proxy`).
 
 ---
 
@@ -53,7 +55,8 @@ sudo apt install build-essential pkg-config libglfw3-dev libgl1-mesa-dev libssl-
 make            # or: cmake -S . -B build && cmake --build build
 ```
 
-Binaries land in the project root (`stwp_server`, `stwp_client`, `stwp_browser`).
+Binaries land in the project root (`stwp_server`, `stwp_client`, `stwp_browser`,
+`stwp_proxy`).
 Audio output uses ALSA or PulseAudio, discovered at runtime by miniaudio; no
 extra build-time audio dependency is required.
 
@@ -157,7 +160,8 @@ and TLS details.
 **Run both from the project root**, not from inside `build/`. `stwp_server`
 resolves content paths relative to its current working directory (`www/` +
 the requested path), so if you `cd` into the build directory first, it'll
-report `File not found` for everything. This applies on every platform.
+report `File not found` for everything. This applies on every platform. `stwp_proxy` is run the
+same way; `PROXY.md` covers its configuration.
 
 ---
 

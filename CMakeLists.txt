@@ -83,6 +83,10 @@ target_link_libraries(stwp_server PRIVATE Threads::Threads OpenSSL::SSL OpenSSL:
 add_executable(stwp_client ${SRC}/client/client.cpp ${SRC}/common/tls.cpp)
 target_link_libraries(stwp_client PRIVATE Threads::Threads OpenSSL::SSL OpenSSL::Crypto ${NET_LIBS})
 
+file(GLOB PROXY_SRCS ${SRC}/proxy/*.cpp)
+add_executable(stwp_proxy ${PROXY_SRCS} ${SRC}/common/tls.cpp)
+target_link_libraries(stwp_proxy PRIVATE Threads::Threads OpenSSL::SSL OpenSSL::Crypto ${NET_LIBS})
+
 set(BROWSER_SRCS
     ${SRC}/browser/browser.cpp
     ${SRC}/browser/globals.cpp

@@ -6,6 +6,7 @@
 #include "tls_info.hpp"
 #include <openssl/ssl.h>
 #include <string>
+#include <functional>
 #include <memory>
 
 // Both contexts are TLS 1.3-only; the client trusts ca_path and nothing else.
@@ -22,9 +23,12 @@ public:
 
     SSL_CTX* raw() const { return ctx_; }
 
+    void set_sni_selector(std::function<TlsContext*(const std::string&)> selector);
+
 private:
     explicit TlsContext(SSL_CTX* ctx) : ctx_(ctx) {}
     SSL_CTX* ctx_ = nullptr;
+    std::function<TlsContext*(const std::string&)> sni_selector_;
 };
 
 class TlsConn : public Conn {
@@ -43,6 +47,7 @@ public:
     net::ssize_t_ read(void* buf, size_t len) override;
     net::ssize_t_ write(const void* buf, size_t len) override;
     net::socket_t fd() const override { return fd_; }
+    void shutdown_write() override;
     void close() override;
 
     const TlsInfo& info() const { return info_; }
@@ -56,4 +61,5 @@ private:
     net::socket_t fd_ = net::kInvalidSocket;
     std::string session_key_;
     TlsInfo info_;
+    bool shutdown_sent_ = false;
 };
