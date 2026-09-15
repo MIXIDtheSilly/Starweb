@@ -369,6 +369,25 @@ static double idle_wait_reported(GLFWwindow* window) {
 #define STB_IMAGE_IMPLEMENTATION
 #include "../thirdparty/stb_image.h"
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include "app_icon.hpp"
+
+// Only X11 needs this; Wayland takes the icon from the .desktop file.
+static void set_window_icon(GLFWwindow* window) {
+#if defined(GLFW_PLATFORM_WAYLAND)
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) return;
+#endif
+    std::vector<GLFWimage> images;
+    for (const AppIconPng& png : kAppIcons) {
+        int w = 0, h = 0, n = 0;
+        unsigned char* px = stbi_load_from_memory(png.data, (int)png.size, &w, &h, &n, 4);
+        if (px) images.push_back({ w, h, px });
+    }
+    if (!images.empty()) glfwSetWindowIcon(window, (int)images.size(), images.data());
+    for (GLFWimage& img : images) stbi_image_free(img.pixels);
+}
+#endif
+
 #define NANOSVG_IMPLEMENTATION
 #include "../thirdparty/nanosvg.h"
 #define NANOSVGRAST_IMPLEMENTATION
@@ -592,7 +611,30 @@ static const TextureInfo* history_favicon(const std::string& url) {
     return it->second.id != 0 ? &it->second : nullptr;
 }
 
-int main() {
+#if defined(_WIN32)
+// Attach to the parent terminal, or open a new console.
+static void open_console() {
+    if (!AttachConsole(ATTACH_PARENT_PROCESS) && !AllocConsole()) return;
+    FILE* f = nullptr;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    freopen_s(&f, "CONOUT$", "w", stderr);
+    freopen_s(&f, "CONIN$", "r", stdin);
+    std::cout.clear();
+    std::cerr.clear();
+    std::clog.clear();
+    std::cin.clear();
+}
+#endif
+
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--console") == 0) {
+#if defined(_WIN32)
+            open_console();
+#endif
+        }
+    }
+
     net::Startup net_startup;
     std::filesystem::create_directories("cache");
     prune_media_cache(256ull * 1024 * 1024);
@@ -631,6 +673,9 @@ int main() {
         glfwTerminate();
         return 1;
     }
+#if !defined(_WIN32) && !defined(__APPLE__)
+    set_window_icon(window);
+#endif
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
 

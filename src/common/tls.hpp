@@ -9,7 +9,7 @@
 #include <functional>
 #include <memory>
 
-// Both contexts are TLS 1.3-only; the client trusts ca_path and nothing else.
+// All contexts are TLS 1.3-only; a client trusts its CA and nothing else.
 class TlsContext {
 public:
     static std::unique_ptr<TlsContext> make_server(const std::string& cert_path,
@@ -17,6 +17,9 @@ public:
                                                     std::string& err);
     static std::unique_ptr<TlsContext> make_client(const std::string& ca_path,
                                                     std::string& err);
+    // CA as PEM text instead of a file path.
+    static std::unique_ptr<TlsContext> make_client_pem(const std::string& ca_pem,
+                                                        std::string& err);
     ~TlsContext();
     TlsContext(const TlsContext&) = delete;
     TlsContext& operator=(const TlsContext&) = delete;

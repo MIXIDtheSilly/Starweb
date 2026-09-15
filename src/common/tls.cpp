@@ -1,5 +1,6 @@
 #include "tls.hpp"
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/x509v3.h>
 #include <cstring>
 #include <mutex>
@@ -136,20 +137,54 @@ std::unique_ptr<TlsContext> TlsContext::make_server(const std::string& cert_path
     return std::unique_ptr<TlsContext>(new TlsContext(ctx));
 }
 
-std::unique_ptr<TlsContext> TlsContext::make_client(const std::string& ca_path,
-                                                    std::string& err) {
+static SSL_CTX* new_client_ctx(std::string& err) {
     SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) { err = "SSL_CTX_new: " + ssl_err(); return nullptr; }
 
     SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+    return ctx;
+}
+
+std::unique_ptr<TlsContext> TlsContext::make_client(const std::string& ca_path,
+                                                    std::string& err) {
+    SSL_CTX* ctx = new_client_ctx(err);
+    if (!ctx) return nullptr;
 
     if (SSL_CTX_load_verify_locations(ctx, ca_path.c_str(), nullptr) != 1) {
         err = "loading CA " + ca_path + ": " + ssl_err();
         SSL_CTX_free(ctx);
         return nullptr;
     }
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+    return std::unique_ptr<TlsContext>(new TlsContext(ctx));
+}
+
+std::unique_ptr<TlsContext> TlsContext::make_client_pem(const std::string& ca_pem,
+                                                        std::string& err) {
+    SSL_CTX* ctx = new_client_ctx(err);
+    if (!ctx) return nullptr;
+
+    BIO* bio = BIO_new_mem_buf(ca_pem.data(), (int)ca_pem.size());
+    if (!bio) {
+        err = "BIO_new_mem_buf: " + ssl_err();
+        SSL_CTX_free(ctx);
+        return nullptr;
+    }
+    X509_STORE* store = SSL_CTX_get_cert_store(ctx);
+    int added = 0;
+    while (X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr)) {
+        if (X509_STORE_add_cert(store, cert) == 1) ++added;
+        X509_free(cert);
+    }
+    BIO_free(bio);
+    ERR_clear_error();  // reaching end of PEM queues a harmless error
+
+    if (added == 0) {
+        err = "loading embedded CA: no certificate found";
+        SSL_CTX_free(ctx);
+        return nullptr;
+    }
     return std::unique_ptr<TlsContext>(new TlsContext(ctx));
 }
 

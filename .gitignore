@@ -40,8 +40,9 @@ Thumbs.db
 # cache
 cache/
 
-# certs
-/certs
+# certs (except the public root)
+/certs/*
+!/certs/starweb_root.pem
 
 # python
 __pycache__/

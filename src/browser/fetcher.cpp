@@ -11,6 +11,7 @@
 #include "../common/conn.hpp"
 #include "conn_pool.hpp"
 #include "../common/tls.hpp"
+#include "embedded_ca.hpp"
 #include <thread>
 #include <atomic>
 #include <chrono>
@@ -20,7 +21,6 @@
 #include <cstring>
 #include <algorithm>
 #include <cctype>
-#include <filesystem>
 #include <iostream>
 
 namespace {
@@ -31,26 +31,13 @@ std::once_flag tls_ctx_once;
 std::unique_ptr<TlsContext> g_client_tls;
 std::string g_client_tls_err;
 
-// The root CA has to be found wherever the browser was launched from: failing to
-// load it kills every star:// fetch for the life of the process, not just one.
-// Anchored on the executable, with the build-tree layout (binary at the repo
-// root, certs/ beside it) and a bare CWD lookup as fallbacks.
-std::string default_ca_path() {
-    namespace fs = std::filesystem;
-    const fs::path rel = fs::path("certs") / "starweb_root.pem";
-    for (const fs::path& base : {app_dir(), app_dir().parent_path(), fs::path(".")}) {
-        std::error_code ec;
-        fs::path candidate = base / rel;
-        if (fs::exists(candidate, ec) && !ec) return candidate.string();
-    }
-    return rel.string();  // nothing found; report the familiar path in the error
-}
-
+// Uses the embedded root CA unless STARWEB_CA points at another one.
 TlsContext* client_tls_ctx(std::string& err) {
     std::call_once(tls_ctx_once, []() {
         const char* env = std::getenv("STARWEB_CA");
-        std::string ca = (env && *env) ? std::string(env) : default_ca_path();
-        g_client_tls = TlsContext::make_client(ca, g_client_tls_err);
+        g_client_tls = (env && *env)
+                           ? TlsContext::make_client(env, g_client_tls_err)
+                           : TlsContext::make_client_pem(kStarwebRootPem, g_client_tls_err);
     });
     if (!g_client_tls) err = g_client_tls_err;
     return g_client_tls.get();
@@ -622,19 +609,18 @@ void run_subresource_jobs(int tab_id, std::vector<SubJob>& jobs) {
 } // namespace
 
 void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_nav) {
-    std::string final_url = url_str;
-    if (final_url.find("://") == std::string::npos) {
-        final_url = "moon://" + final_url;
-    }
+    auto normalize = [](std::string url) {
+        if (auto p = parse_url(url)) {
+            url = p->scheme + "://" + format_host(p->host) + port_suffix(p->scheme, p->port) + p->path;
+        }
+        return url;
+    };
 
-    auto opt_url = parse_url(final_url);
-    if (opt_url) {
-        std::string scheme = opt_url->scheme;
-        std::string host = opt_url->host;
-        int port = opt_url->port;
-        std::string path = opt_url->path;
-        final_url = scheme + "://" + format_host(host) + port_suffix(scheme, port) + path;
-    }
+    // No scheme: try star://, fall back to moon:// only if the connection fails
+    // (never on TLS errors, so the downgrade can't be forced).
+    const bool scheme_guessed = url_str.find("://") == std::string::npos;
+    std::string final_url = normalize(scheme_guessed ? "star://" + url_str : url_str);
+    std::string fallback_url = scheme_guessed ? normalize("moon://" + url_str) : std::string();
 
     devtools::on_navigation_start(tab_id);
 
@@ -663,10 +649,7 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
     std::strncpy(tab->url_input, final_url.c_str(), sizeof(tab->url_input) - 1);
     tab->url_input[sizeof(tab->url_input) - 1] = '\0';
 
-    std::thread([tab_id, final_url]() {
-        // Navigating straight at a video means the response is the whole file, so it
-        // goes to disk as it arrives rather than through memory. Only decidable once
-        // the headers name a content type.
+    std::thread([tab_id, final_url, fallback_url]() mutable {
         // Navigating straight at a video: the headers are all that is needed to build
         // the page, and the body is dropped so the player can stream it by range
         // instead of the whole file arriving before anything renders.
@@ -691,6 +674,25 @@ void start_async_fetch(int tab_id, const std::string& url_str, bool is_history_n
         };
 
         FetchResult res = perform_fetch(tab_id, final_url, true, opt, "document");
+
+        if (!fallback_url.empty() && !res.success && !res.tls_error &&
+            res.error_message.rfind("Connection failed", 0) == 0) {
+            {
+                std::lock_guard<std::mutex> lock(fetch_mutex);
+                Tab* t = find_tab_by_id(tab_id);
+                if (!t || t->current_url != final_url) return;  // closed or superseded
+                t->current_url = fallback_url;
+                t->status_text = "Fetching " + fallback_url + "...";
+                std::strncpy(t->url_input, fallback_url.c_str(), sizeof(t->url_input) - 1);
+                t->url_input[sizeof(t->url_input) - 1] = '\0';
+                if (t->history_index >= 0 && t->history_index < (int)t->navigation_history.size() &&
+                    t->navigation_history[t->history_index] == final_url) {
+                    t->navigation_history[t->history_index] = fallback_url;
+                }
+            }
+            final_url = fallback_url;
+            res = perform_fetch(tab_id, final_url, true, opt, "document");
+        }
 
         if (media_nav) {
             res.success = true;

@@ -1,0 +1,4 @@
+// GLFW uses GLFW_ICON as the window and taskbar icon.
+GLFW_ICON ICON "@STARMAP_ICO@"
+
+@STARMAP_MANIFEST_RESOURCE@

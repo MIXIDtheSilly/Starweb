@@ -37,8 +37,9 @@ make            # or: cmake -S . -B build && cmake --build build
 automatically at `/usr/local/opt/openssl@3` (Intel) or `/opt/homebrew/opt/openssl@3`
 (Apple Silicon), so no `PKG_CONFIG_PATH` export is needed.
 
-Binaries land in the project root (`stwp_server`, `stwp_client`, `stwp_browser`,
-`stwp_proxy`).
+Binaries land in the project root with `make` (`stwp_server`, `stwp_client`,
+`stwp_browser`, `stwp_proxy`), or with CMake each in its own folder (`build/browser/`,
+`build/server/`, `build/client/`, `build/proxy/`).
 
 ---
 
@@ -55,8 +56,9 @@ sudo apt install build-essential pkg-config libglfw3-dev libgl1-mesa-dev libssl-
 make            # or: cmake -S . -B build && cmake --build build
 ```
 
-Binaries land in the project root (`stwp_server`, `stwp_client`, `stwp_browser`,
-`stwp_proxy`).
+Binaries land in the project root with `make` (`stwp_server`, `stwp_client`,
+`stwp_browser`, `stwp_proxy`), or with CMake each in its own folder (`build/browser/`,
+`build/server/`, `build/client/`, `build/proxy/`).
 Audio output uses ALSA or PulseAudio, discovered at runtime by miniaudio; no
 extra build-time audio dependency is required.
 
@@ -80,7 +82,11 @@ cmake --build build --config Release
 
 Replace `C:/path/to/vcpkg` with your actual vcpkg checkout (e.g. `$env:VCPKG_ROOT`
 if that's set, or wherever you cloned it; it's a placeholder, not a literal path).
-Binaries land in `build\Release\`.
+Each program lands in its own folder (`build\browser\`, `build\server\`,
+`build\client\`, `build\proxy\`) together with the DLLs it needs: vcpkg copies
+them for MSVC builds, and with MinGW (MSYS2) the build copies them itself. In a
+MinGW build the browser keeps its DLLs in `build\browser\lib\`; a manifest built
+into `stwp_browser.exe` tells Windows to load them from there.
 
 **Troubleshooting**:
 
@@ -119,8 +125,8 @@ wsl -d Ubuntu -u root -- bash -c "cd /mnt/e/Github_projects/StarWeb && \
 **Run** (see the "Running the binaries" note below for why `cd` to the project root matters):
 
 ```powershell
-wsl -d Ubuntu -u root -- bash -c "cd /mnt/e/Github_projects/StarWeb && ./build-linux/stwp_server"
-wsl -d Ubuntu -u root -- bash -c "cd /mnt/e/Github_projects/StarWeb && ./build-linux/stwp_browser"
+wsl -d Ubuntu -u root -- bash -c "cd /mnt/e/Github_projects/StarWeb && ./build-linux/server/stwp_server"
+wsl -d Ubuntu -u root -- bash -c "cd /mnt/e/Github_projects/StarWeb && ./build-linux/browser/stwp_browser"
 ```
 
 On Windows 11, WSLg shows `stwp_browser`'s GUI as a normal desktop window

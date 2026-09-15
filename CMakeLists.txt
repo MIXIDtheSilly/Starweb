@@ -7,6 +7,9 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
 set(SRC ${CMAKE_SOURCE_DIR}/src)
 set(IMGUI_DIR ${SRC}/thirdparty/imgui)
 
@@ -111,6 +114,42 @@ set(BROWSER_SRCS
 add_executable(stwp_browser ${BROWSER_SRCS})
 target_link_libraries(stwp_browser PRIVATE imgui yoga lua Threads::Threads OpenSSL::SSL OpenSSL::Crypto ${NET_LIBS})
 
+# Embed the public StarWeb root CA in the browser.
+set(STARWEB_ROOT_CA ${CMAKE_SOURCE_DIR}/certs/starweb_root.pem)
+if(NOT EXISTS ${STARWEB_ROOT_CA})
+    message(FATAL_ERROR "${STARWEB_ROOT_CA} not found: run tools/make_certs.sh")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${STARWEB_ROOT_CA})
+file(READ ${STARWEB_ROOT_CA} STARWEB_ROOT_PEM)
+configure_file(${SRC}/browser/embedded_ca.hpp.in ${CMAKE_BINARY_DIR}/generated/embedded_ca.hpp @ONLY)
+target_include_directories(stwp_browser PRIVATE ${CMAKE_BINARY_DIR}/generated)
+
+if(WIN32)
+    set(STARMAP_ICO ${SRC}/browser/img/starmap.ico)
+    set(STARMAP_MANIFEST_RESOURCE "")
+    if(MINGW)
+        # Linked before MinGW's default-manifest.o, so ld keeps this manifest.
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(STARMAP_ARCH amd64)
+        else()
+            set(STARMAP_ARCH x86)
+        endif()
+        set(STARMAP_MANIFEST ${CMAKE_BINARY_DIR}/CMakeFiles/stwp_browser.manifest)
+        configure_file(${SRC}/browser/stwp_browser.manifest.in ${STARMAP_MANIFEST} @ONLY)
+        set(STARMAP_MANIFEST_RESOURCE "1 24 \"${STARMAP_MANIFEST}\"")
+    endif()
+    set(STARMAP_RC ${CMAKE_BINARY_DIR}/CMakeFiles/starmap.rc)
+    configure_file(${SRC}/browser/starmap.rc.in ${STARMAP_RC} @ONLY)
+    target_sources(stwp_browser PRIVATE ${STARMAP_RC})
+    set_property(SOURCE ${STARMAP_RC} APPEND PROPERTY OBJECT_DEPENDS ${STARMAP_ICO} ${STARMAP_MANIFEST})
+
+    # No console window; run with --console to get one.
+    set_target_properties(stwp_browser PROPERTIES WIN32_EXECUTABLE ON)
+    if(MSVC)
+        target_link_options(stwp_browser PRIVATE /ENTRY:mainCRTStartup)
+    endif()
+endif()
+
 if(APPLE)
     target_sources(stwp_browser PRIVATE ${SRC}/browser/media_player_mac.mm)
     set_source_files_properties(${SRC}/browser/media_player_mac.mm
@@ -130,4 +169,40 @@ else()
     if(UNIX)
         target_link_libraries(stwp_browser PRIVATE ${CMAKE_DL_LIBS} m)
     endif()
+endif()
+
+# One folder per program. $<0:> stops Visual Studio adding Release/ or Debug/.
+foreach(app browser server client proxy)
+    set_target_properties(stwp_${app} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${app}$<0:>)
+endforeach()
+
+file(GLOB BROWSER_FONTS ${CMAKE_SOURCE_DIR}/fonts/*)
+add_custom_command(TARGET stwp_browser POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:stwp_browser>/fonts
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${BROWSER_FONTS} $<TARGET_FILE_DIR:stwp_browser>/fonts
+    VERBATIM)
+
+add_custom_command(TARGET stwp_proxy POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:stwp_proxy>/conf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/conf/stwp_proxy.conf $<TARGET_FILE_DIR:stwp_proxy>/conf
+    VERBATIM)
+
+# vcpkg already copies DLLs next to MSVC builds; MinGW needs it done by hand.
+if(MINGW)
+    get_filename_component(MINGW_BIN_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
+    foreach(exe stwp_server stwp_client stwp_proxy stwp_browser)
+        set(dll_subdir_args "")
+        if(exe STREQUAL stwp_browser)
+            set(dll_subdir_args -DDLL_SUBDIR=lib -DARCH=${STARMAP_ARCH})
+        endif()
+        add_custom_command(TARGET ${exe} POST_BUILD
+            COMMAND ${CMAKE_COMMAND}
+                -DEXE=$<TARGET_FILE:${exe}>
+                -DSEARCH_DIRS=${MINGW_BIN_DIR}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                ${dll_subdir_args}
+                -P ${CMAKE_SOURCE_DIR}/tools/copy_runtime_dlls.cmake
+            VERBATIM)
+    endforeach()
 endif()

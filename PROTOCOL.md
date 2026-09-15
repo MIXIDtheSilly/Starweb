@@ -118,7 +118,9 @@ A `star://` server's certificate must satisfy all of:
 
 - **Chain**: signed by a CA in the client's trust store. The trust anchor is the
   StarWeb root CA (`certs/starweb_root.pem`), overridable via the `STARWEB_CA`
-  environment variable. The system root store is not consulted.
+  environment variable. The browser embeds that certificate at build time, so it
+  needs no file at runtime; `STARWEB_CA` still replaces it. The system root store
+  is not consulted.
 - **Hostname**: the URL's host must match the certificate's SAN. DNS names are
   checked with `X509_VERIFY_PARAM_set1_host`, IP literals with
   `X509_VERIFY_PARAM_set1_ip_asc`. This is a separate check from the chain: a
@@ -292,7 +294,10 @@ star://host[:port]/path
 
 The port is elided from the canonical form when it is the scheme default (8490 for
 `star`, 8090 for `moon`). The `Host` header follows the same rule. A URL typed
-without a scheme is assumed to be `moon://`.
+without a scheme is tried as `star://` first; the browser falls back to `moon://`
+only when nothing accepts the connection on the `star://` port. A failed TLS
+handshake or a bad certificate does not fall back, so a network attacker cannot
+force the downgrade.
 
 ## Certificates for local development
 
